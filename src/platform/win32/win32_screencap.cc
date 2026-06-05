@@ -33,23 +33,25 @@ void UpdateHoverRect(POINT pt);
 #pragma region Structures
 struct {
     std::vector<sc_monitor_info> monitors;
-    sc_capture_options options = { 0 };
-    HWND overlayHwnd = nullptr;
-    bool capturing = false;
-    bool mouseDown = false;
-    bool dragging = false;
-    bool snapDrag = false;
-    bool wasDragging = false;
-    POINT dragStart = { 0 };
-    sc_rect currentRect = { 0 };
-    bool captureReady = false;
-    sc_rect finalRect = { 0 };
-    HWND hoveredHwnd = nullptr;
-    HWND finalHwnd = nullptr;
-    HDC frozenDC = nullptr;
-    HBITMAP frozenBitmap = nullptr;
+    sc_capture_options options  = { 0 };
+    HWND overlayHwnd            = nullptr;
+    sc_rect currentRect         = { 0 };
+    sc_rect finalRect           = { 0 };
+    POINT dragStart             = { 0 };
+    HWND hoveredHwnd            = nullptr;
+    HWND finalHwnd              = nullptr;
+    HDC frozenDC                = nullptr;
+    HBITMAP frozenBitmap        = nullptr;
+
     std::vector<sc_ocr_line> ocrLines;
-    std::mutex ocrMutex;
+    std::mutex               ocrMutex;
+
+    bool capturing    = false;
+    bool captureReady = false;
+    bool mouseDown    = false;
+    bool dragging     = false;
+    bool snapDrag     = false;
+    bool wasDragging  = false;
 } state;
 
 struct FindWindowData {
