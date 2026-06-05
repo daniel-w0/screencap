@@ -24,6 +24,7 @@ workspace "screencap"
 
   filter "system:windows"
     defines { "SC_PLATFORM_WINDOWS", "_CRT_SECURE_NO_WARNINGS" }
+    links { "dwmapi", "windowsapp" }
 
   filter {}
 
@@ -31,6 +32,9 @@ workspace "screencap"
     kind "WindowedApp"
     files { "src/**.cc", "src/**.h", "ext/**.h" }
     includedirs { "src", "ext" }
+
+    pchheader "pch.h"
+    pchsource "src/pch.cc"
 
     filter "files:**.rc"
       buildaction "ResourceCompile"

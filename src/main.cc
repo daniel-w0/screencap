@@ -1,17 +1,16 @@
+#include "pch.h"
 #if defined(SC_PLATFORM_WINDOWS)
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX
 #  include <Windows.h>
-#  include <cstdlib>
 #endif
 
-#include <cstdio>
-#include <cstdint>
-#include <string>
-#include <iostream>
-#include <chrono>
-#include <filesystem>
 #include "platform/platform_screencap.h"
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
 constexpr int HOTKEY_ID_SCREENSHOT = 1;
 constexpr int HOTKEY_ID_SCREENSHOT_CLIPBOARD = 2;
