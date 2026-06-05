@@ -16,6 +16,9 @@
 #include <cstring>
 #include <algorithm>
 #include <vector>
+#include <mutex>
+#include <thread>
+#include <memory>
 
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.Imaging.h>
@@ -40,6 +43,7 @@ static HWND g_overlayHwnd = nullptr;
 static bool g_capturing = false;
 static bool g_mouseDown = false;
 static bool g_dragging = false;
+static bool g_snapDrag = false;
 static bool g_wasDragging = false;
 static POINT g_dragStart = { 0 };
 static sc_rect g_currentRect = { 0 };
@@ -50,6 +54,14 @@ static HWND g_finalHwnd = nullptr;
 
 static HDC g_frozenDC = nullptr;
 static HBITMAP g_frozenBitmap = nullptr;
+
+struct sc_ocr_line {
+    sc_rect rect;
+    std::vector<sc_rect> chars;
+};
+
+static std::vector<sc_ocr_line> g_ocrLines;
+static std::mutex g_ocrMutex;
 
 struct FindWindowData {
     POINT pt;
@@ -96,6 +108,199 @@ void _sc_get_monitors(std::vector<sc_monitor_info>& monitors) {
     }, reinterpret_cast<LPARAM>(&monitors));
 }
 
+void _sc_run_ocr_async() {
+    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+    int scale = 2;
+    winrt::Windows::Media::Ocr::OcrEngine probe = winrt::Windows::Media::Ocr::OcrEngine::TryCreateFromUserProfileLanguages();
+    if (probe) {
+        uint32_t maxDim = probe.MaxImageDimension();
+        while (scale > 1 && ((uint32_t)(vw * scale) > maxDim || (uint32_t)(vh * scale) > maxDim)) {
+            --scale;
+        }
+    }
+
+    int sw = vw * scale;
+    int sh = vh * scale;
+
+    HDC hScaledDC = CreateCompatibleDC(g_frozenDC);
+    HBITMAP hScaledBmp = CreateCompatibleBitmap(g_frozenDC, sw, sh);
+    SelectObject(hScaledDC, hScaledBmp);
+    SetStretchBltMode(hScaledDC, HALFTONE);
+    SetBrushOrgEx(hScaledDC, 0, 0, nullptr);
+    StretchBlt(hScaledDC, 0, 0, sw, sh, g_frozenDC, 0, 0, vw, vh, SRCCOPY);
+
+    BITMAPINFOHEADER bih = {};
+    bih.biSize = sizeof(BITMAPINFOHEADER);
+    bih.biWidth = sw;
+    bih.biHeight = -sh;
+    bih.biPlanes = 1;
+    bih.biBitCount = 32;
+    bih.biCompression = BI_RGB;
+
+    auto bits = std::make_shared<std::vector<unsigned char>>(sw * sh * 4);
+    GetDIBits(hScaledDC, hScaledBmp, 0, sh, bits->data(), (BITMAPINFO*)&bih, DIB_RGB_COLORS);
+
+    DeleteObject(hScaledBmp);
+    DeleteDC(hScaledDC);
+
+    std::thread([bits, sw, sh, scale, vx, vy]() {
+        winrt::init_apartment();
+        try {
+            winrt::Windows::Storage::Streams::DataWriter writer;
+            writer.WriteBytes(winrt::array_view<const uint8_t>(bits->data(), sw * sh * 4));
+            winrt::Windows::Storage::Streams::IBuffer buffer = writer.DetachBuffer();
+
+            winrt::Windows::Graphics::Imaging::SoftwareBitmap bitmap =
+                winrt::Windows::Graphics::Imaging::SoftwareBitmap::CreateCopyFromBuffer(
+                    buffer,
+                    winrt::Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8,
+                    sw, sh,
+                    winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Ignore);
+
+            winrt::Windows::Media::Ocr::OcrEngine engine = winrt::Windows::Media::Ocr::OcrEngine::TryCreateFromUserProfileLanguages();
+            if (engine) {
+                winrt::Windows::Media::Ocr::OcrResult result = engine.RecognizeAsync(bitmap).get();
+
+                std::vector<sc_ocr_line> lines;
+                for (auto const& line : result.Lines()) {
+                    sc_ocr_line ol = {};
+                    bool first = true;
+                    int minx = 0, miny = 0, maxx = 0, maxy = 0;
+                    for (auto const& word : line.Words()) {
+                        auto wr = word.BoundingRect();
+                        sc_rect box = { (int)(wr.X / scale) + vx, (int)(wr.Y / scale) + vy, (int)(wr.Width / scale), (int)(wr.Height / scale) };
+
+                        int n = (int)word.Text().size();
+                        if (n < 1) n = 1;
+                        for (int c = 0; c < n; ++c) {
+                            int x0 = box.x + box.width * c / n;
+                            int x1 = box.x + box.width * (c + 1) / n;
+                            sc_rect ch = { x0, box.y, x1 - x0, box.height };
+                            ol.chars.push_back(ch);
+                        }
+
+                        if (first) {
+                            minx = box.x; miny = box.y;
+                            maxx = box.x + box.width; maxy = box.y + box.height;
+                            first = false;
+                        } else {
+                            minx = std::min(minx, box.x);
+                            miny = std::min(miny, box.y);
+                            maxx = std::max(maxx, box.x + box.width);
+                            maxy = std::max(maxy, box.y + box.height);
+                        }
+                    }
+                    if (!first) {
+                        ol.rect = { minx, miny, maxx - minx, maxy - miny };
+                        lines.push_back(ol);
+                    }
+                }
+
+                std::lock_guard<std::mutex> lock(g_ocrMutex);
+                g_ocrLines = lines;
+            }
+        } catch (...) {}
+    }).detach();
+}
+
+bool _sc_rects_intersect(const sc_rect& a, const sc_rect& b) {
+    return a.x < b.x + b.width && a.x + a.width > b.x &&
+           a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+bool _sc_snap_to_text(const sc_rect& drag, sc_rect& out) {
+    std::lock_guard<std::mutex> lock(g_ocrMutex);
+    bool found = false;
+    int minx = 0, miny = 0, maxx = 0, maxy = 0;
+    for (const auto& line : g_ocrLines) {
+        for (const auto& w : line.chars) {
+            if (!_sc_rects_intersect(drag, w)) continue;
+            if (!found) {
+                minx = w.x; miny = w.y;
+                maxx = w.x + w.width; maxy = w.y + w.height;
+                found = true;
+            } else {
+                minx = std::min(minx, w.x);
+                miny = std::min(miny, w.y);
+                maxx = std::max(maxx, w.x + w.width);
+                maxy = std::max(maxy, w.y + w.height);
+            }
+        }
+    }
+    if (found) out = { minx, miny, maxx - minx, maxy - miny };
+    return found;
+}
+
+bool _sc_text_at_point(POINT pt, sc_rect& out) {
+    std::lock_guard<std::mutex> lock(g_ocrMutex);
+    for (const auto& line : g_ocrLines) {
+        if (pt.x >= line.rect.x && pt.x < line.rect.x + line.rect.width &&
+            pt.y >= line.rect.y && pt.y < line.rect.y + line.rect.height) {
+            out = line.rect;
+            return true;
+        }
+    }
+    return false;
+}
+
+std::wstring _sc_ocr_text(winrt::Windows::Media::Ocr::OcrResult const& result) {
+    struct Frag {
+        int cy;
+        int height;
+        int left;
+        std::wstring text;
+    };
+
+    std::vector<Frag> frags;
+    for (auto const& line : result.Lines()) {
+        int top = 0, bottom = 0, left = 0;
+        bool first = true;
+        for (auto const& word : line.Words()) {
+            auto r = word.BoundingRect();
+            int t = (int)r.Y;
+            int b = (int)(r.Y + r.Height);
+            int l = (int)r.X;
+            if (first) {
+                top = t; bottom = b; left = l;
+                first = false;
+            } else {
+                top = std::min(top, t);
+                bottom = std::max(bottom, b);
+                left = std::min(left, l);
+            }
+        }
+        if (first) continue;
+        frags.push_back({ (top + bottom) / 2, bottom - top, left, std::wstring(line.Text().c_str()) });
+    }
+
+    std::sort(frags.begin(), frags.end(), [](const Frag& a, const Frag& b) {
+        return a.cy < b.cy;
+    });
+
+    std::wstring text;
+    size_t i = 0;
+    while (i < frags.size()) {
+        size_t j = i + 1;
+        while (j < frags.size() && std::abs(frags[j].cy - frags[i].cy) < frags[i].height / 2) {
+            ++j;
+        }
+        std::sort(frags.begin() + i, frags.begin() + j, [](const Frag& a, const Frag& b) {
+            return a.left < b.left;
+        });
+        if (!text.empty()) text += L"\r\n";
+        for (size_t k = i; k < j; ++k) {
+            if (k > i) text += L" ";
+            text += frags[k].text;
+        }
+        i = j;
+    }
+    return text;
+}
+
 BOOL CALLBACK FindWindowProc(HWND hwnd, LPARAM lParam) {
     FindWindowData* data = reinterpret_cast<FindWindowData*>(lParam);
     if (hwnd == data->overlayHwnd) return TRUE;
@@ -140,12 +345,13 @@ void UpdateHoverRect(POINT pt) {
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_SETCURSOR:
-            SetCursor(LoadCursor(nullptr, IDC_CROSS));
+            SetCursor(LoadCursor(nullptr, g_options.extract_text ? IDC_IBEAM : IDC_CROSS));
             return TRUE;
         case WM_MOUSEMOVE: {
             if (!g_capturing) break;
             POINT pt;
             GetCursorPos(&pt);
+
             if (g_mouseDown) {
                 if (!g_dragging) {
                     if (std::abs(pt.x - g_dragStart.x) > 3 || std::abs(pt.y - g_dragStart.y) > 3) {
@@ -153,13 +359,27 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     }
                 }
                 if (g_dragging) {
-                    g_currentRect.x = std::min(g_dragStart.x, pt.x);
-                    g_currentRect.y = std::min(g_dragStart.y, pt.y);
-                    g_currentRect.width = std::abs(pt.x - g_dragStart.x);
-                    g_currentRect.height = std::abs(pt.y - g_dragStart.y);
+                    sc_rect dragRect;
+                    dragRect.x = std::min(g_dragStart.x, pt.x);
+                    dragRect.y = std::min(g_dragStart.y, pt.y);
+                    dragRect.width = std::abs(pt.x - g_dragStart.x);
+                    dragRect.height = std::abs(pt.y - g_dragStart.y);
+
+                    sc_rect snapped;
+                    if (g_snapDrag && _sc_snap_to_text(dragRect, snapped)) {
+                        g_currentRect = snapped;
+                    } else {
+                        g_currentRect = dragRect;
+                    }
                 }
             } else {
-                UpdateHoverRect(pt);
+                sc_rect textRect;
+                if (g_options.extract_text && _sc_text_at_point(pt, textRect)) {
+                    g_hoveredHwnd = nullptr;
+                    g_currentRect = textRect;
+                } else {
+                    UpdateHoverRect(pt);
+                }
             }
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
@@ -170,6 +390,8 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             GetCursorPos(&pt);
             g_mouseDown = true;
             g_dragStart = pt;
+            sc_rect textRect;
+            g_snapDrag = g_options.extract_text && _sc_text_at_point(pt, textRect);
             SetCapture(hwnd);
             return 0;
         }
@@ -325,6 +547,7 @@ void sc_begin_capture(sc_capture_options options) {
     g_mouseDown = false;
     g_dragging = false;
     g_wasDragging = false;
+    g_snapDrag = false;
     g_captureReady = false;
     g_hoveredHwnd = nullptr;
     g_finalHwnd = nullptr;
@@ -375,6 +598,14 @@ void sc_begin_capture(sc_capture_options options) {
         return;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(g_ocrMutex);
+        g_ocrLines.clear();
+    }
+    if (options.extract_text) {
+        _sc_run_ocr_async();
+    }
+
     if (!g_overlayHwnd) {
         WNDCLASSA wc = { 0 };
         wc.lpfnWndProc = OverlayWndProc;
@@ -419,6 +650,8 @@ bool sc_capture_update(sc_capture_info& ci) {
             ci.height = captureHeight;
 
             if (g_options.extract_text) {
+                ci.width = captureWidth * 2;
+                ci.height = captureHeight * 2;
                 while (ci.width < 40 || ci.height < 40) {
                     ci.width *= 2;
                     ci.height *= 2;
@@ -430,6 +663,8 @@ bool sc_capture_update(sc_capture_info& ci) {
             HDC hMemoryDC = CreateCompatibleDC(g_frozenDC);
             HBITMAP hBitmap = CreateCompatibleBitmap(g_frozenDC, ci.width, ci.height);
             SelectObject(hMemoryDC, hBitmap);
+            SetStretchBltMode(hMemoryDC, HALFTONE);
+            SetBrushOrgEx(hMemoryDC, 0, 0, nullptr);
 
             bool windowCaptured = false;
             if (g_finalHwnd && !g_wasDragging && IsWindow(g_finalHwnd)) {
@@ -474,26 +709,37 @@ bool sc_capture_update(sc_capture_info& ci) {
 
             if (g_options.extract_text) {
                 try {
+                    int pad = 24;
+                    int pw = (int)ci.width + pad * 2;
+                    int ph = (int)ci.height + pad * 2;
+                    std::vector<unsigned char> padded(pw * ph * 4);
+                    unsigned char bgB = ci.data[0], bgG = ci.data[1], bgR = ci.data[2];
+                    for (int i = 0; i < pw * ph; ++i) {
+                        padded[i * 4 + 0] = bgB;
+                        padded[i * 4 + 1] = bgG;
+                        padded[i * 4 + 2] = bgR;
+                        padded[i * 4 + 3] = 255;
+                    }
+                    for (int y = 0; y < (int)ci.height; ++y) {
+                        memcpy(&padded[((y + pad) * pw + pad) * 4], &ci.data[y * (int)ci.width * 4], (int)ci.width * 4);
+                    }
+
                     winrt::Windows::Storage::Streams::DataWriter writer;
-                    writer.WriteBytes(winrt::array_view<const uint8_t>(ci.data, ci.width * ci.height * 4));
+                    writer.WriteBytes(winrt::array_view<const uint8_t>(padded.data(), pw * ph * 4));
                     winrt::Windows::Storage::Streams::IBuffer buffer = writer.DetachBuffer();
                     
                     winrt::Windows::Graphics::Imaging::SoftwareBitmap bitmap = 
                         winrt::Windows::Graphics::Imaging::SoftwareBitmap::CreateCopyFromBuffer(
                             buffer, 
                             winrt::Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8, 
-                            ci.width, ci.height, 
-                            winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Premultiplied);
+                            pw, ph, 
+                            winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Ignore);
 
                     winrt::Windows::Media::Ocr::OcrEngine engine = winrt::Windows::Media::Ocr::OcrEngine::TryCreateFromUserProfileLanguages();
                     if (engine) {
                         winrt::Windows::Media::Ocr::OcrResult result = engine.RecognizeAsync(bitmap).get();
                         
-                        std::wstring text;
-                        for (auto const& line : result.Lines()) {
-                            text += line.Text().c_str();
-                            text += L"\r\n";
-                        }
+                        std::wstring text = _sc_ocr_text(result);
                         
                         if (OpenClipboard(nullptr)) {
                             EmptyClipboard();
