@@ -30,6 +30,7 @@
 #  include <WinUser.h>
 #  include <wingdi.h>
 #  include <dwmapi.h>
+#  include <shellapi.h>
 
 #  include <winrt/Windows.Foundation.h>
 #  include <winrt/Windows.Foundation.Collections.h>

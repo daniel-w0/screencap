@@ -2,6 +2,10 @@
 #include "platform/platform_screencap.h"
 #include "screencap.h"
 
+#define WM_TRAYICON (WM_USER + 1)
+constexpr int TRAY_MENU_SETTINGS = 1001;
+constexpr int TRAY_MENU_EXIT = 1002;
+
 #pragma region OCR Decl
 using DataWriter = winrt::Windows::Storage::Streams::DataWriter;
 using IBuffer = winrt::Windows::Storage::Streams::IBuffer;
@@ -26,8 +30,10 @@ sc_internal std::wstring _ocr_text(OcrResult const& result);
 
 #pragma region Windows Decl
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK TrayUtilityWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 BOOL CALLBACK FindWindowProc(HWND hwnd, LPARAM lParam);
 void UpdateHoverRect(POINT pt);
+void RegisterTrayIcon(HWND hwnd);
 #pragma endregion
 
 #pragma region Structures
@@ -40,6 +46,7 @@ struct {
     POINT dragStart             = { 0 };
     HWND hoveredHwnd            = nullptr;
     HWND finalHwnd              = nullptr;
+    HWND backgroundHwnd         = nullptr;
     HDC frozenDC                = nullptr;
     HBITMAP frozenBitmap        = nullptr;
 
@@ -157,6 +164,24 @@ void sc_initialize() {
     wc.hCursor = LoadCursor(nullptr, IDC_CROSS);
     wc.lpszClassName = "ScOverlayWindow";
     RegisterClassA(&wc);
+
+    WNDCLASSA wcUtility = {};
+    wcUtility.lpfnWndProc = TrayUtilityWndProc;
+    wcUtility.hInstance = GetModuleHandle(nullptr);
+    wcUtility.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wcUtility.lpszClassName = "ScTrayUtilityWindow";
+    RegisterClassA(&wcUtility);
+
+    state.backgroundHwnd = CreateWindowExA(
+        0, "ScTrayUtilityWindow", nullptr, 0,
+        0, 0, 0, 0,
+        HWND_MESSAGE,
+        nullptr, GetModuleHandle(nullptr), nullptr
+    );
+
+    if (state.backgroundHwnd) {
+        RegisterTrayIcon(state.backgroundHwnd);
+    }
 }
 
 void sc_begin_capture(sc_capture_options options) {
@@ -706,6 +731,44 @@ case WM_PAINT: {
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
+LRESULT CALLBACK TrayUtilityWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_TRAYICON: {
+            if (LOWORD(lParam) == WM_RBUTTONUP || LOWORD(lParam) == WM_LBUTTONUP) {
+                POINT pt;
+                GetCursorPos(&pt);
+
+                HMENU hMenu = CreatePopupMenu();
+                AppendMenuA(hMenu, MF_STRING, TRAY_MENU_SETTINGS, "Settings...");
+                AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
+                AppendMenuA(hMenu, MF_STRING, TRAY_MENU_EXIT, "Exit");
+
+                SetForegroundWindow(hwnd);
+                TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, 0, hwnd, nullptr);
+                DestroyMenu(hMenu);
+            }
+            return 0;
+        }
+
+        case WM_COMMAND: {
+            int wmId = LOWORD(wParam);
+            if (wmId == TRAY_MENU_SETTINGS) {
+                OutputDebugStringA("Opening Settings UI Window...\n");
+            } 
+            else if (wmId == TRAY_MENU_EXIT) {
+                NOTIFYICONDATAA nid = {};
+                nid.cbSize = sizeof(NOTIFYICONDATAA);
+                nid.hWnd = hwnd;
+                nid.uID = 1;
+                Shell_NotifyIconA(NIM_DELETE, &nid);
+                PostQuitMessage(0);
+            }
+            return 0;
+        }
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
 BOOL CALLBACK FindWindowProc(HWND hwnd, LPARAM lParam) {
     FindWindowData* data = reinterpret_cast<FindWindowData*>(lParam);
     if (hwnd == data->overlayHwnd || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
@@ -740,6 +803,20 @@ void UpdateHoverRect(POINT pt) {
         GetRealWindowRect(data.result, &r);
         state.currentRect = { r.left, r.top, r.right - r.left, r.bottom - r.top };
     }
+}
+
+void RegisterTrayIcon(HWND hwnd) {
+    NOTIFYICONDATAA nid = {};
+    nid.cbSize = sizeof(NOTIFYICONDATAA);
+    nid.hWnd = hwnd;
+    nid.uID = 1;
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    nid.uCallbackMessage = WM_TRAYICON;
+
+    nid.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    strcpy_s(nid.szTip, "Screencap Utility");
+
+    Shell_NotifyIconA(NIM_ADD, &nid);
 }
 #pragma endregion
 
