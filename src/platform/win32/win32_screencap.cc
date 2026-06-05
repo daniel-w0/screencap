@@ -37,6 +37,15 @@
 #ifndef PW_RENDERFULLCONTENT
 #define PW_RENDERFULLCONTENT 2
 #endif
+
+using DataWriter = winrt::Windows::Storage::Streams::DataWriter;
+using IBuffer = winrt::Windows::Storage::Streams::IBuffer;
+using SoftwareBitmap = winrt::Windows::Graphics::Imaging::SoftwareBitmap;
+using OcrEngine = winrt::Windows::Media::Ocr::OcrEngine;
+using BitmapPixelFormat = winrt::Windows::Graphics::Imaging::BitmapPixelFormat;
+using BitmapAlphaMode = winrt::Windows::Graphics::Imaging::BitmapAlphaMode;
+using OcrResult = winrt::Windows::Media::Ocr::OcrResult;
+
 #include <iostream>
 
 struct sc_ocr_line {
@@ -120,7 +129,7 @@ void _sc_run_ocr_async() {
     int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
     int scale = 2;
-    winrt::Windows::Media::Ocr::OcrEngine probe = winrt::Windows::Media::Ocr::OcrEngine::TryCreateFromUserProfileLanguages();
+    OcrEngine probe = OcrEngine::TryCreateFromUserProfileLanguages();
     if (probe) {
         uint32_t maxDim = probe.MaxImageDimension();
         while (scale > 1 && ((uint32_t)(vw * scale) > maxDim || (uint32_t)(vh * scale) > maxDim)) {
@@ -155,20 +164,15 @@ void _sc_run_ocr_async() {
     std::thread([bits, sw, sh, scale, vx, vy]() {
         winrt::init_apartment();
         try {
-            winrt::Windows::Storage::Streams::DataWriter writer;
+            DataWriter writer;
             writer.WriteBytes(winrt::array_view<const uint8_t>(bits->data(), sw * sh * 4));
-            winrt::Windows::Storage::Streams::IBuffer buffer = writer.DetachBuffer();
+            IBuffer buffer = writer.DetachBuffer();
 
-            winrt::Windows::Graphics::Imaging::SoftwareBitmap bitmap =
-                winrt::Windows::Graphics::Imaging::SoftwareBitmap::CreateCopyFromBuffer(
-                    buffer,
-                    winrt::Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8,
-                    sw, sh,
-                    winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Ignore);
+            SoftwareBitmap bitmap = SoftwareBitmap::CreateCopyFromBuffer(buffer, BitmapPixelFormat::Bgra8, sw, sh, BitmapAlphaMode::Ignore);
+            OcrEngine engine = OcrEngine::TryCreateFromUserProfileLanguages();
 
-            winrt::Windows::Media::Ocr::OcrEngine engine = winrt::Windows::Media::Ocr::OcrEngine::TryCreateFromUserProfileLanguages();
             if (engine) {
-                winrt::Windows::Media::Ocr::OcrResult result = engine.RecognizeAsync(bitmap).get();
+                OcrResult result = engine.RecognizeAsync(bitmap).get();
 
                 std::vector<sc_ocr_line> lines;
                 for (auto const& line : result.Lines()) {
@@ -252,7 +256,7 @@ bool _sc_text_at_point(POINT pt, sc_rect& out) {
     return false;
 }
 
-std::wstring _sc_ocr_text(winrt::Windows::Media::Ocr::OcrResult const& result) {
+std::wstring _sc_ocr_text(OcrResult const& result) {
     struct Frag {
         int cy;
         int height;
@@ -730,20 +734,15 @@ bool sc_capture_update(sc_capture_info& ci) {
                         memcpy(&padded[((y + pad) * pw + pad) * 4], &ci.data[y * (int)ci.width * 4], (int)ci.width * 4);
                     }
 
-                    winrt::Windows::Storage::Streams::DataWriter writer;
+                    DataWriter writer;
                     writer.WriteBytes(winrt::array_view<const uint8_t>(padded.data(), pw * ph * 4));
-                    winrt::Windows::Storage::Streams::IBuffer buffer = writer.DetachBuffer();
+                    IBuffer buffer = writer.DetachBuffer();
                     
-                    winrt::Windows::Graphics::Imaging::SoftwareBitmap bitmap = 
-                        winrt::Windows::Graphics::Imaging::SoftwareBitmap::CreateCopyFromBuffer(
-                            buffer, 
-                            winrt::Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8, 
-                            pw, ph, 
-                            winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Ignore);
+                    SoftwareBitmap bitmap = SoftwareBitmap::CreateCopyFromBuffer(buffer, BitmapPixelFormat::Bgra8, pw, ph, BitmapAlphaMode::Ignore);
 
-                    winrt::Windows::Media::Ocr::OcrEngine engine = winrt::Windows::Media::Ocr::OcrEngine::TryCreateFromUserProfileLanguages();
+                    OcrEngine engine = OcrEngine::TryCreateFromUserProfileLanguages();
                     if (engine) {
-                        winrt::Windows::Media::Ocr::OcrResult result = engine.RecognizeAsync(bitmap).get();
+                        OcrResult result = engine.RecognizeAsync(bitmap).get();
                         
                         std::wstring text = _sc_ocr_text(result);
                         
