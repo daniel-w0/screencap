@@ -141,6 +141,30 @@ sc_internal void _sc_get_monitors(std::vector<sc_monitor_info>& monitors) {
         return TRUE;
     }, reinterpret_cast<LPARAM>(&monitors));
 }
+
+sc_internal std::string _sc_get_key_display_string(uint32_t modifiers, uint32_t key) {
+    std::string res;
+    if (modifiers & MOD_CONTROL) res += "Ctrl + ";
+    if (modifiers & MOD_SHIFT)   res += "Shift + ";
+    if (modifiers & MOD_ALT)     res += "Alt + ";
+
+    if (key == VK_SNAPSHOT) {
+        res += "PrintScreen";
+    } else {
+        char keyName[32] = { 0 };
+        UINT scanCode = MapVirtualKeyA(key, MAPVK_VK_TO_VSC);
+        LONG lParamValue = (scanCode & 0xFF) << 16;
+        if (key >= VK_PRIOR && key <= VK_HELP) lParamValue |= (1 << 24);
+        if (GetKeyNameTextA(lParamValue, keyName, sizeof(keyName)) > 0) {
+            res += keyName;
+        }
+        else {
+            res += (char)key;
+        }
+    }
+    return res;
+}
+
 #pragma endregion
 
 #pragma region Screencap
@@ -834,6 +858,8 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     static HBRUSH hPillOnBrush = nullptr;
     static HBRUSH hPillOffBrush = nullptr;
     static HBRUSH hThumbBrush = nullptr;
+    static HBRUSH hGreenBrush = nullptr;
+    static HBRUSH hRedBrush = nullptr;
 
     switch (msg) {
         case WM_CREATE: {
@@ -856,6 +882,8 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             hPillOnBrush = CreateSolidBrush(RGB(0, 120, 215));
             hPillOffBrush = CreateSolidBrush(RGB(100, 100, 100));
             hThumbBrush = CreateSolidBrush(RGB(255, 255, 255));
+            hGreenBrush = CreateSolidBrush(RGB(34, 139, 34));
+            hRedBrush = CreateSolidBrush(RGB(178, 34, 34));
             return 0;
         }
 
@@ -885,7 +913,6 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
             SetBkMode(memDC, TRANSPARENT);
 
-            // Draw "General" Tab Button
             bool drawGenHover = hoverGeneral || (activeTab == TAB_GENERAL);
             HBRUSH hGenTabBrush = CreateSolidBrush(drawGenHover ? RGB(45, 45, 45) : RGB(32, 32, 32));
             FillRect(memDC, &tabGeneralRect, hGenTabBrush);
@@ -894,7 +921,6 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             SetTextColor(memDC, activeTab == TAB_GENERAL ? RGB(255, 255, 255) : RGB(200, 200, 200));
             TextOutA(memDC, tabGeneralRect.left + 15, tabGeneralRect.top + 7, "General", 7);
 
-            // Draw "Input" Tab Button
             bool drawInputHover = hoverInput || (activeTab == TAB_INPUT);
             HBRUSH hInputTabBrush = CreateSolidBrush(drawInputHover ? RGB(45, 45, 45) : RGB(32, 32, 32));
             FillRect(memDC, &tabInputRect, hInputTabBrush);
@@ -903,7 +929,6 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             SetTextColor(memDC, activeTab == TAB_INPUT ? RGB(255, 255, 255) : RGB(200, 200, 200));
             TextOutA(memDC, tabInputRect.left + 15, tabInputRect.top + 7, "Input", 5);
 
-            // Draw Right Side Page Content based on selected layout page view
             SelectObject(memDC, hFont);
             SetTextColor(memDC, RGB(240, 240, 240));
 
@@ -928,7 +953,27 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                     FillRect(memDC, &thumbRect, hThumbBrush);
                 }
             } else if (activeTab == TAB_INPUT) {
-                TextOutA(memDC, 175, 30, "Keyboard hotkeys and input options can be placed here.", 53);
+                int startY = 20;
+                for (size_t i = 0; i < g_app.hotkeys.size(); ++i) {
+                    const auto& hk = g_app.hotkeys[i];
+                    RECT rowRect = { 160, startY + (int)i * 35, cr.right - 20, startY + (int)i * 35 + 30 };
+                    
+                    FillRect(memDC, &rowRect, hRowNormalBrush);
+
+                    RECT indicatorRect = { rowRect.left + 10, rowRect.top + 10, rowRect.left + 20, rowRect.top + 20 };
+                    FillRect(memDC, &indicatorRect, hk.registered ? hGreenBrush : hRedBrush);
+
+                    const char* idName = sc_hotkey_id_strings[hk.id];
+                    TextOutA(memDC, rowRect.left + 30, rowRect.top + 6, idName, (int)strlen(idName));
+
+                    std::string bindStr = _sc_get_key_display_string(hk.modifiers, hk.key);
+                    int textWidth = 0;
+                    SIZE textSize;
+                    if (GetTextExtentPoint32A(memDC, bindStr.c_str(), (int)bindStr.length(), &textSize)) {
+                        textWidth = textSize.cx;
+                    }
+                    TextOutA(memDC, rowRect.right - textWidth - 15, rowRect.top + 6, bindStr.c_str(), (int)bindStr.length());
+                }
             }
 
             BitBlt(hdc, 0, 0, cr.right, cr.bottom, memDC, 0, 0, SRCCOPY);
@@ -1022,6 +1067,8 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             DeleteObject(hPillOnBrush);
             DeleteObject(hPillOffBrush);
             DeleteObject(hThumbBrush);
+            DeleteObject(hGreenBrush);
+            DeleteObject(hRedBrush);
             return 0;
         }
     }
