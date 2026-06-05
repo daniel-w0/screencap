@@ -3,14 +3,14 @@
 #  define NOMINMAX
 #  include <Windows.h>
 #  include <cstdlib>
-#endif // SC_PLATFORM_WINDOWS
+#endif
+
 #include <cstdio>
 #include <cstdint>
 #include <string>
 #include <iostream>
 #include <chrono>
 #include <thread>
-
 #include "platform/platform_screencap.h"
 
 constexpr int HOTKEY_ID_SCREENSHOT = 1;
@@ -28,8 +28,13 @@ int entry(int argc, char** argv) {
         while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_HOTKEY && msg.wParam == HOTKEY_ID_SCREENSHOT) {
                 printf("Screenshot hotkey pressed\n");
-                sc_begin_capture();
+                sc_capture_options options = {};
+                options.include_cursor = true;
+                options.copy_to_clipboard = true;
+                sc_begin_capture(options);
             }
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
         }
 
         sc_capture_info ci;
@@ -62,4 +67,4 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     return entry(__argc, __argv);
 }
-#endif // SC_PLATFORM_WINDOWS
+#endif
