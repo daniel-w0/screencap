@@ -25,6 +25,7 @@ struct sc_monitor_info {
 struct sc_capture_options {
     bool include_cursor;
     bool copy_to_clipboard;
+    bool extract_text;
 };
 
 #define sc_internal static

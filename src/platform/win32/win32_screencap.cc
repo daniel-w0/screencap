@@ -8,6 +8,7 @@
 #include <wingdi.h>
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "windowsapp.lib")
 #include <cstdlib>
 #include <cstdio>
 #include <cstdint>
@@ -15,6 +16,12 @@
 #include <cstring>
 #include <algorithm>
 #include <vector>
+
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Graphics.Imaging.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Media.Ocr.h>
+#include <winrt/Windows.Storage.Streams.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -24,6 +31,7 @@
 #ifndef PW_RENDERFULLCONTENT
 #define PW_RENDERFULLCONTENT 2
 #endif
+#include <iostream>
 
 static std::vector<sc_monitor_info> g_monitors;
 static sc_capture_options g_options = { 0 };
@@ -281,6 +289,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 }
 
 void sc_initialize() {
+    winrt::init_apartment();
     SetProcessDPIAware();
     _sc_get_monitors(g_monitors);
 }
@@ -349,8 +358,19 @@ bool sc_capture_update(sc_capture_info& ci) {
             int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
             int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
 
-            ci.width = g_finalRect.width;
-            ci.height = g_finalRect.height;
+            int captureWidth = g_finalRect.width;
+            int captureHeight = g_finalRect.height;
+
+            ci.width = captureWidth;
+            ci.height = captureHeight;
+
+            if (g_options.extract_text) {
+                while (ci.width < 40 || ci.height < 40) {
+                    ci.width *= 2;
+                    ci.height *= 2;
+                }
+            }
+
             ci.channels = 4;
 
             HDC hMemoryDC = CreateCompatibleDC(g_frozenDC);
@@ -375,7 +395,7 @@ bool sc_capture_update(sc_capture_info& ci) {
                     int dx = rDwm.left - rWin.left;
                     int dy = rDwm.top - rWin.top;
 
-                    BitBlt(hMemoryDC, 0, 0, ci.width, ci.height, hTempDC, dx, dy, SRCCOPY);
+                    StretchBlt(hMemoryDC, 0, 0, ci.width, ci.height, hTempDC, dx, dy, captureWidth, captureHeight, SRCCOPY);
                     windowCaptured = true;
                 }
 
@@ -384,7 +404,7 @@ bool sc_capture_update(sc_capture_info& ci) {
             }
 
             if (!windowCaptured) {
-                BitBlt(hMemoryDC, 0, 0, ci.width, ci.height, g_frozenDC, g_finalRect.x - vx, g_finalRect.y - vy, SRCCOPY);
+                StretchBlt(hMemoryDC, 0, 0, ci.width, ci.height, g_frozenDC, g_finalRect.x - vx, g_finalRect.y - vy, captureWidth, captureHeight, SRCCOPY);
             }
 
             BITMAPINFOHEADER bih = {};
@@ -398,11 +418,50 @@ bool sc_capture_update(sc_capture_info& ci) {
             ci.data = new unsigned char[ci.width * ci.height * 4];
             GetDIBits(hMemoryDC, hBitmap, 0, ci.height, ci.data, (BITMAPINFO*)&bih, DIB_RGB_COLORS);
 
-            if (g_options.copy_to_clipboard) {
+            if (g_options.extract_text) {
+                try {
+                    winrt::Windows::Storage::Streams::DataWriter writer;
+                    writer.WriteBytes(winrt::array_view<const uint8_t>(ci.data, ci.width * ci.height * 4));
+                    winrt::Windows::Storage::Streams::IBuffer buffer = writer.DetachBuffer();
+
+                    winrt::Windows::Graphics::Imaging::SoftwareBitmap bitmap =
+                        winrt::Windows::Graphics::Imaging::SoftwareBitmap::CreateCopyFromBuffer(
+                            buffer,
+                            winrt::Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8,
+                            ci.width, ci.height,
+                            winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Premultiplied);
+
+                    winrt::Windows::Media::Ocr::OcrEngine engine = winrt::Windows::Media::Ocr::OcrEngine::TryCreateFromUserProfileLanguages();
+                    if (engine) {
+                        winrt::Windows::Media::Ocr::OcrResult result = engine.RecognizeAsync(bitmap).get();
+
+                        std::wstring text;
+                        for (auto const& line : result.Lines()) {
+                            text += line.Text().c_str();
+                            text += L"\r\n";
+                        }
+
+                        if (OpenClipboard(nullptr)) {
+                            EmptyClipboard();
+                            size_t memSize = (text.length() + 1) * sizeof(wchar_t);
+                            HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, memSize);
+                            if (hMem) {
+                                memcpy(GlobalLock(hMem), text.c_str(), memSize);
+                                GlobalUnlock(hMem);
+                                SetClipboardData(CF_UNICODETEXT, hMem);
+                            }
+                            CloseClipboard();
+                        }
+                    }
+                } catch (winrt::hresult_error const& ex) {
+                    std::wcerr << L"OCR Failed: " << ex.message().c_str() << std::endl;
+                } catch (...) {
+                    fprintf(stderr, "OCR Failed\n");
+                }
+            } else if (g_options.copy_to_clipboard) {
                 if (OpenClipboard(nullptr)) {
                     EmptyClipboard();
-                    
-                    // CF_DIB for native apps
+
                     size_t dibSize = sizeof(BITMAPINFOHEADER) + (ci.width * ci.height * 4);
                     HGLOBAL hGlobalDIB = GlobalAlloc(GMEM_MOVEABLE, dibSize);
                     if (hGlobalDIB) {
@@ -414,14 +473,13 @@ bool sc_capture_update(sc_capture_info& ci) {
                     }
 
                     _sc_swap_channels((uint32_t*)ci.data, ci.width * ci.height);
-                    
-                    // for modern apps like discord. cf_dib doesn't work here
+
                     std::vector<unsigned char> pngData;
                     stbi_write_png_to_func([](void* context, void* data, int size) {
                         auto* vec = static_cast<std::vector<unsigned char>*>(context);
                         auto* bytes = static_cast<unsigned char*>(data);
                         vec->insert(vec->end(), bytes, bytes + size);
-                    }, &pngData, ci.width, ci.height, 4, ci.data, ci.width * 4);
+                        }, &pngData, ci.width, ci.height, 4, ci.data, ci.width * 4);
 
                     UINT formatPNG = RegisterClipboardFormatA("PNG");
                     HGLOBAL hGlobalPNG = GlobalAlloc(GMEM_MOVEABLE, pngData.size());
