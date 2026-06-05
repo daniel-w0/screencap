@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "platform/platform_screencap.h"
 #include "screencap.h"
+#include <dwmapi.h>
 
 #define WM_TRAYICON (WM_USER + 1)
 constexpr int TRAY_MENU_SETTINGS = 1001;
@@ -20,6 +21,13 @@ struct sc_ocr_line {
     std::vector<sc_rect> chars;
 };
 
+struct Win32Toggle {
+    RECT rect;
+    const char* text;
+    bool* targetValue;
+    bool isHovered;
+};
+
 sc_internal OcrResult _ocr_get_bitmap_result(const unsigned char* data, int w, int h);
 sc_internal void _ocr_run_async();
 sc_internal bool _sc_rects_intersect(const sc_rect& a, const sc_rect& b);
@@ -31,6 +39,7 @@ sc_internal std::wstring _ocr_text(OcrResult const& result);
 #pragma region Windows Decl
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK TrayUtilityWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 BOOL CALLBACK FindWindowProc(HWND hwnd, LPARAM lParam);
 void UpdateHoverRect(POINT pt);
 void RegisterTrayIcon(HWND hwnd);
@@ -46,7 +55,7 @@ struct {
     POINT dragStart             = { 0 };
     HWND hoveredHwnd            = nullptr;
     HWND finalHwnd              = nullptr;
-    HWND backgroundHwnd         = nullptr;
+    HWND backgroundHwnd          = nullptr;
     HDC frozenDC                = nullptr;
     HBITMAP frozenBitmap        = nullptr;
 
@@ -59,13 +68,15 @@ struct {
     bool dragging     = false;
     bool snapDrag     = false;
     bool wasDragging  = false;
-} state;
+} g_state;
 
 struct FindWindowData {
     POINT pt;
     HWND result;
     HWND overlayHwnd;
 };
+
+static sc_app g_app;
 #pragma endregion
 
 #pragma region Utils
@@ -96,7 +107,7 @@ sc_internal void _sc_swap_channels(uint32_t* pixels, int totalPixels) {
 
 
 sc_internal const sc_monitor_info* _sc_monitor_at_point(POINT pt) {
-    for (const auto& m : state.monitors) {
+    for (const auto& m : g_state.monitors) {
         if (pt.x >= m.rect.x && pt.x < m.rect.x + m.rect.width &&
             pt.y >= m.rect.y && pt.y < m.rect.y + m.rect.height) {
             return &m;
@@ -153,10 +164,39 @@ sc_internal bool _sc_write_to_clipboard(UINT format, const void* data, size_t si
     return true;
 }
 
+bool _sc_init_app() {
+    g_app = {};
+    g_app.running = true;
+
+    g_app.hotkeys[sc_hotkey_screenshot] = { sc_hotkey_id::sc_hotkey_screenshot, 0, VK_SNAPSHOT };
+    g_app.hotkeys[sc_hotkey_clipboard] = { sc_hotkey_id::sc_hotkey_clipboard, MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT };
+    g_app.hotkeys[sc_hotkey_ocr] = { sc_hotkey_id::sc_hotkey_ocr, MOD_CONTROL | MOD_ALT, VK_SNAPSHOT };
+    g_app.hotkeys[sc_hotkey_active_window] = { sc_hotkey_id::sc_hotkey_active_window, MOD_ALT, VK_SNAPSHOT };
+    g_app.hotkeys[sc_hotkey_current_monitor] = { sc_hotkey_id::sc_hotkey_current_monitor, MOD_CONTROL, VK_SNAPSHOT };
+    g_app.hotkeys[sc_hotkey_fallback_screenshot] = { sc_hotkey_id::sc_hotkey_fallback_screenshot, MOD_CONTROL | MOD_ALT, 'C' };
+
+    for (auto& hk : g_app.hotkeys) {
+        hk.registered = RegisterHotKey(nullptr, hk.id, hk.modifiers | MOD_NOREPEAT, hk.key);
+        if (!hk.registered) {
+            fprintf(stderr, "Failed to register hotkey: %s\n", sc_hotkey_id_strings[hk.id]);
+        }
+    }
+
+    HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD prev_mode;
+    if (GetConsoleMode(hInput, &prev_mode)) {
+        SetConsoleMode(hInput, ENABLE_EXTENDED_FLAGS | (prev_mode & ~ENABLE_QUICK_EDIT_MODE));
+    }
+
+    return true;
+}
+
 void sc_initialize() {
+    _sc_init_app();
+
     winrt::init_apartment();
     SetProcessDPIAware();
-    _sc_get_monitors(state.monitors);
+    _sc_get_monitors(g_state.monitors);
 
     WNDCLASSA wc = {};
     wc.lpfnWndProc = OverlayWndProc;
@@ -172,44 +212,84 @@ void sc_initialize() {
     wcUtility.lpszClassName = "ScTrayUtilityWindow";
     RegisterClassA(&wcUtility);
 
-    state.backgroundHwnd = CreateWindowExA(
+    g_state.backgroundHwnd = CreateWindowExA(
         0, "ScTrayUtilityWindow", nullptr, 0,
         0, 0, 0, 0,
         HWND_MESSAGE,
         nullptr, GetModuleHandle(nullptr), nullptr
     );
 
-    if (state.backgroundHwnd) {
-        RegisterTrayIcon(state.backgroundHwnd);
+    if (g_state.backgroundHwnd) {
+        RegisterTrayIcon(g_state.backgroundHwnd);
     }
 }
 
+bool sc_running() {
+    return g_app.running;
+}
+
+void _sc_shutdown() {
+    g_app.running = false;
+    for (const auto& hk : g_app.hotkeys) {
+        if (hk.registered) {
+            UnregisterHotKey(nullptr, hk.id);
+        }
+    }
+}
+
+bool sc_update(sc_capture_options& active_options) {
+    MSG msg = {};
+    if (GetMessageA(&msg, nullptr, 0, 0) > 0) {
+        if (msg.message == WM_DESTROY || (msg.message == WM_COMMAND && msg.wParam == TRAY_MENU_EXIT)) {
+            _sc_shutdown();
+            return false;
+        } if (msg.message == WM_HOTKEY) {
+            active_options.include_cursor = false;
+            active_options.extract_text = (msg.wParam == sc_hotkey_ocr);
+
+            if (msg.wParam == sc_hotkey_active_window) {
+                active_options.mode = sc_capture_mode::window_under_cursor;
+            } else if (msg.wParam == sc_hotkey_current_monitor) {
+                active_options.mode = sc_capture_mode::monitor_under_cursor;
+            } else {
+                active_options.mode = sc_capture_mode::interactive;
+            }
+
+            sc_begin_capture(active_options);
+        }
+
+        TranslateMessage(&msg);
+        DispatchMessageA(&msg);
+    }
+    return true;
+}
+
 void sc_begin_capture(sc_capture_options options) {
-    if (state.capturing) {
+    if (g_state.capturing) {
         return;
     }
-    state.capturing = true;
-    state.options = options;
-    state.mouseDown = false;
-    state.dragging = false;
-    state.wasDragging = false;
-    state.snapDrag = false;
-    state.captureReady = false;
-    state.hoveredHwnd = nullptr;
-    state.finalHwnd = nullptr;
+    g_state.capturing = true;
+    g_state.options = options;
+    g_state.mouseDown = false;
+    g_state.dragging = false;
+    g_state.wasDragging = false;
+    g_state.snapDrag = false;
+    g_state.captureReady = false;
+    g_state.hoveredHwnd = nullptr;
+    g_state.finalHwnd = nullptr;
 
     int vx, vy, vw, vh;
     _sc_get_display_metrics(vx, vy, vw, vh);
     
     HDC hScreenDC = GetDC(nullptr);
-    if (state.frozenDC) {
-        DeleteDC(state.frozenDC);
-        DeleteObject(state.frozenBitmap);
+    if (g_state.frozenDC) {
+        DeleteDC(g_state.frozenDC);
+        DeleteObject(g_state.frozenBitmap);
     }
-    state.frozenDC = CreateCompatibleDC(hScreenDC);
-    state.frozenBitmap = CreateCompatibleBitmap(hScreenDC, vw, vh);
-    SelectObject(state.frozenDC, state.frozenBitmap);
-    BitBlt(state.frozenDC, 0, 0, vw, vh, hScreenDC, vx, vy, SRCCOPY);
+    g_state.frozenDC = CreateCompatibleDC(hScreenDC);
+    g_state.frozenBitmap = CreateCompatibleBitmap(hScreenDC, vw, vh);
+    SelectObject(g_state.frozenDC, g_state.frozenBitmap);
+    BitBlt(g_state.frozenDC, 0, 0, vw, vh, hScreenDC, vx, vy, SRCCOPY);
     ReleaseDC(nullptr, hScreenDC);
 
     POINT pt;
@@ -219,34 +299,34 @@ void sc_begin_capture(sc_capture_options options) {
         if (HWND hwnd = GetAncestor(WindowFromPoint(pt), GA_ROOT)) {
             RECT rect;
             GetRealWindowRect(hwnd, &rect);
-            state.finalRect = { rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top };
-            state.finalHwnd = hwnd;
-            state.captureReady = true;
+            g_state.finalRect = { rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top };
+            g_state.finalHwnd = hwnd;
+            g_state.captureReady = true;
         } else {
-            state.capturing = false;
+            g_state.capturing = false;
         }
         return;
     } else if (options.mode == sc_capture_mode::monitor_under_cursor) {
         if (const auto* m = _sc_monitor_at_point(pt)) {
-            state.finalRect = m->rect;
-            state.captureReady = true;
+            g_state.finalRect = m->rect;
+            g_state.captureReady = true;
         } else {
-            state.capturing = false;
+            g_state.capturing = false;
         }
         return;
     }
 
     {
-        std::lock_guard<std::mutex> lock(state.ocrMutex);
-        state.ocrLines.clear();
+        std::lock_guard<std::mutex> lock(g_state.ocrMutex);
+        g_state.ocrLines.clear();
     }
 
     if (options.extract_text) {
         _ocr_run_async();
     }
 
-    if (!state.overlayHwnd) {        
-        state.overlayHwnd = CreateWindowExA(
+    if (!g_state.overlayHwnd) {        
+        g_state.overlayHwnd = CreateWindowExA(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW, 
             "ScOverlayWindow", "ScreenshotOverlay", 
             WS_POPUP, 
@@ -254,35 +334,35 @@ void sc_begin_capture(sc_capture_options options) {
             nullptr, nullptr, GetModuleHandle(nullptr), nullptr
         );
     } else {
-        SetWindowPos(state.overlayHwnd, HWND_TOPMOST, vx, vy, vw, vh, SWP_NOACTIVATE);
+        SetWindowPos(g_state.overlayHwnd, HWND_TOPMOST, vx, vy, vw, vh, SWP_NOACTIVATE);
     }
 
     UpdateHoverRect(pt);
-    ShowWindow(state.overlayHwnd, SW_SHOW);
-    SetForegroundWindow(state.overlayHwnd);
-    SetFocus(state.overlayHwnd);
+    ShowWindow(g_state.overlayHwnd, SW_SHOW);
+    SetForegroundWindow(g_state.overlayHwnd);
+    SetFocus(g_state.overlayHwnd);
 }
 
 bool sc_capture_update(sc_capture_info& ci) {
-    if (!state.captureReady) {
+    if (!g_state.captureReady) {
         return false;
     }
-    state.captureReady = false;
-    state.capturing = false;
+    g_state.captureReady = false;
+    g_state.capturing = false;
     
-    if (state.finalRect.width <= 0 || state.finalRect.height <= 0 || !state.frozenDC) {
+    if (g_state.finalRect.width <= 0 || g_state.finalRect.height <= 0 || !g_state.frozenDC) {
         return false;
     }
 
     int vx, vy, vw, vh;
     _sc_get_display_metrics(vx, vy, vw, vh);
     
-    int captureWidth = state.finalRect.width;
-    int captureHeight = state.finalRect.height;
+    int captureWidth = g_state.finalRect.width;
+    int captureHeight = g_state.finalRect.height;
     ci.width = captureWidth;
     ci.height = captureHeight;
 
-    if (state.options.extract_text) {
+    if (g_state.options.extract_text) {
         ci.width *= 2;
         ci.height *= 2;
         while (ci.width < 40 || ci.height < 40) {
@@ -292,22 +372,22 @@ bool sc_capture_update(sc_capture_info& ci) {
     }
     ci.channels = 4;
 
-    HDC hMemoryDC = CreateCompatibleDC(state.frozenDC);
-    HBITMAP hBitmap = CreateCompatibleBitmap(state.frozenDC, ci.width, ci.height);
+    HDC hMemoryDC = CreateCompatibleDC(g_state.frozenDC);
+    HBITMAP hBitmap = CreateCompatibleBitmap(g_state.frozenDC, ci.width, ci.height);
     SelectObject(hMemoryDC, hBitmap);
     SetStretchBltMode(hMemoryDC, HALFTONE);
 
     bool windowCaptured = false;
-    if (state.finalHwnd && !state.wasDragging && IsWindow(state.finalHwnd)) {
+    if (g_state.finalHwnd && !g_state.wasDragging && IsWindow(g_state.finalHwnd)) {
         RECT rWin;
-        GetWindowRect(state.finalHwnd, &rWin);
-        HDC hTempDC = CreateCompatibleDC(state.frozenDC);
-        HBITMAP hTempBmp = CreateCompatibleBitmap(state.frozenDC, rWin.right - rWin.left, rWin.bottom - rWin.top);
+        GetWindowRect(g_state.finalHwnd, &rWin);
+        HDC hTempDC = CreateCompatibleDC(g_state.frozenDC);
+        HBITMAP hTempBmp = CreateCompatibleBitmap(g_state.frozenDC, rWin.right - rWin.left, rWin.bottom - rWin.top);
         SelectObject(hTempDC, hTempBmp);
 
-        if (PrintWindow(state.finalHwnd, hTempDC, PW_RENDERFULLCONTENT)) {
+        if (PrintWindow(g_state.finalHwnd, hTempDC, PW_RENDERFULLCONTENT)) {
             RECT rDwm;
-            GetRealWindowRect(state.finalHwnd, &rDwm);
+            GetRealWindowRect(g_state.finalHwnd, &rDwm);
             StretchBlt(
                 hMemoryDC, 0, 0, ci.width, ci.height, 
                 hTempDC, rDwm.left - rWin.left, rDwm.top - rWin.top, 
@@ -322,7 +402,7 @@ bool sc_capture_update(sc_capture_info& ci) {
     if (!windowCaptured) {
         StretchBlt(
             hMemoryDC, 0, 0, ci.width, ci.height, 
-            state.frozenDC, state.finalRect.x - vx, state.finalRect.y - vy, 
+            g_state.frozenDC, g_state.finalRect.x - vx, g_state.finalRect.y - vy, 
             captureWidth, captureHeight, SRCCOPY
         );
     }
@@ -338,7 +418,7 @@ bool sc_capture_update(sc_capture_info& ci) {
     ci.data = new unsigned char[ci.width * ci.height * 4];
     GetDIBits(hMemoryDC, hBitmap, 0, ci.height, ci.data, (BITMAPINFO*)&bih, DIB_RGB_COLORS);
 
-    if (state.options.extract_text) {
+    if (g_state.options.extract_text) {
         try {
             int pad = 24;
             int pw = (int)ci.width + pad * 2;
@@ -366,7 +446,7 @@ bool sc_capture_update(sc_capture_info& ci) {
         } catch (std::exception& e) {
             fprintf(stderr, "OCR failed: %s\n", e.what());
         }
-    } else if (state.options.copy_to_clipboard && OpenClipboard(nullptr)) {
+    } else if (g_state.options.copy_to_clipboard && OpenClipboard(nullptr)) {
         EmptyClipboard();
         _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), ci.data, ci.width * ci.height * 4);
 
@@ -401,32 +481,32 @@ void sc_cleanup(sc_capture_info& ci) {
     ci.channels = 0;
     ci.channels_swapped = false;
 
-    if (state.overlayHwnd) {
-        DestroyWindow(state.overlayHwnd);
-        state.overlayHwnd = nullptr;
+    if (g_state.overlayHwnd) {
+        DestroyWindow(g_state.overlayHwnd);
+        g_state.overlayHwnd = nullptr;
     }
-    if (state.frozenDC) {
-        DeleteDC(state.frozenDC);
-        state.frozenDC = nullptr;
+    if (g_state.frozenDC) {
+        DeleteDC(g_state.frozenDC);
+        g_state.frozenDC = nullptr;
     }
-    if (state.frozenBitmap) {
-        DeleteObject(state.frozenBitmap);
-        state.frozenBitmap = nullptr;
+    if (g_state.frozenBitmap) {
+        DeleteObject(g_state.frozenBitmap);
+        g_state.frozenBitmap = nullptr;
     }
 
-    state.capturing = false;
-    state.captureReady = false;
-    state.mouseDown = false;
-    state.dragging = false;
-    state.snapDrag = false;
-    state.wasDragging = false;
+    g_state.capturing = false;
+    g_state.captureReady = false;
+    g_state.mouseDown = false;
+    g_state.dragging = false;
+    g_state.snapDrag = false;
+    g_state.wasDragging = false;
 
-    state.hoveredHwnd = nullptr;
-    state.finalHwnd = nullptr;
+    g_state.hoveredHwnd = nullptr;
+    g_state.finalHwnd = nullptr;
 
     {
-        std::lock_guard<std::mutex> lock(state.ocrMutex);
-        state.ocrLines.clear();
+        std::lock_guard<std::mutex> lock(g_state.ocrMutex);
+        g_state.ocrLines.clear();
     }
 }
 
@@ -503,10 +583,10 @@ bool sc_capture_desktop(int8_t desktop, sc_capture_info& ci) {
             desktop = m->id;
         }
     }
-    if (desktop >= state.monitors.size()) {
+    if (desktop >= g_state.monitors.size()) {
         return false;
     }
-    return sc_capture_region(state.monitors[desktop].rect, ci);
+    return sc_capture_region(g_state.monitors[desktop].rect, ci);
 }
 
 bool sc_save_capture(const char* filename, sc_capture_info& ci) {
@@ -523,39 +603,39 @@ bool sc_save_capture(const char* filename, sc_capture_info& ci) {
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_SETCURSOR:
-            SetCursor(LoadCursor(nullptr, state.options.extract_text ? IDC_IBEAM : IDC_CROSS));
+            SetCursor(LoadCursor(nullptr, g_state.options.extract_text ? IDC_IBEAM : IDC_CROSS));
             return TRUE;
             
         case WM_MOUSEMOVE: {
-            if (!state.capturing) {
+            if (!g_state.capturing) {
                 break;
             }
             POINT pt;
             GetCursorPos(&pt);
             
-            if (state.mouseDown) {
-                if (!state.dragging && (std::abs(pt.x - state.dragStart.x) > 3 || std::abs(pt.y - state.dragStart.y) > 3)) {
-                    state.dragging = true;
+            if (g_state.mouseDown) {
+                if (!g_state.dragging && (std::abs(pt.x - g_state.dragStart.x) > 3 || std::abs(pt.y - g_state.dragStart.y) > 3)) {
+                    g_state.dragging = true;
                 }
-                if (state.dragging) {
+                if (g_state.dragging) {
                     sc_rect dragRect = { 
-                        std::min(state.dragStart.x, pt.x), 
-                        std::min(state.dragStart.y, pt.y), 
-                        std::abs(pt.x - state.dragStart.x), 
-                        std::abs(pt.y - state.dragStart.y) 
+                        std::min(g_state.dragStart.x, pt.x), 
+                        std::min(g_state.dragStart.y, pt.y), 
+                        std::abs(pt.x - g_state.dragStart.x), 
+                        std::abs(pt.y - g_state.dragStart.y) 
                     };
                     sc_rect snapped;
-                    if (state.snapDrag && _ocr_snap_to_text(dragRect, snapped)) {
-                        state.currentRect = snapped;
+                    if (g_state.snapDrag && _ocr_snap_to_text(dragRect, snapped)) {
+                        g_state.currentRect = snapped;
                     } else {
-                        state.currentRect = dragRect;
+                        g_state.currentRect = dragRect;
                     }
                 }
             } else {
                 sc_rect textRect;
-                if (state.options.extract_text && _ocr_text_at_point(pt, textRect)) {
-                    state.hoveredHwnd = nullptr;
-                    state.currentRect = textRect;
+                if (g_state.options.extract_text && _ocr_text_at_point(pt, textRect)) {
+                    g_state.hoveredHwnd = nullptr;
+                    g_state.currentRect = textRect;
                 } else {
                     UpdateHoverRect(pt);
                 }
@@ -564,52 +644,52 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         }
         case WM_LBUTTONDOWN: {
-            if (!state.capturing) {
+            if (!g_state.capturing) {
                 break;
             }
             POINT pt;
             GetCursorPos(&pt);
-            state.mouseDown = true;
-            state.dragStart = pt;
+            g_state.mouseDown = true;
+            g_state.dragStart = pt;
             sc_rect textRect;
-            state.snapDrag = state.options.extract_text && _ocr_text_at_point(pt, textRect);
+            g_state.snapDrag = g_state.options.extract_text && _ocr_text_at_point(pt, textRect);
             SetCapture(hwnd);
             return 0;
         }
         case WM_LBUTTONUP:
-            if (!state.capturing) {
+            if (!g_state.capturing) {
                 break;
             }
-            if (state.mouseDown) {
-                state.finalRect = state.currentRect;
-                state.finalHwnd = state.hoveredHwnd;
-                state.wasDragging = state.dragging;
+            if (g_state.mouseDown) {
+                g_state.finalRect = g_state.currentRect;
+                g_state.finalHwnd = g_state.hoveredHwnd;
+                g_state.wasDragging = g_state.dragging;
                 ReleaseCapture();
                 ShowWindow(hwnd, SW_HIDE);
-                state.captureReady = true;
-                state.mouseDown = false;
-                state.dragging = false;
+                g_state.captureReady = true;
+                g_state.mouseDown = false;
+                g_state.dragging = false;
             }
             return 0;
             
         case WM_KEYDOWN:
             if (wParam == VK_ESCAPE) {
-                if (state.mouseDown) {
+                if (g_state.mouseDown) {
                     ReleaseCapture();
-                    state.mouseDown = false;
-                    state.dragging = false;
+                    g_state.mouseDown = false;
+                    g_state.dragging = false;
                     POINT pt;
                     GetCursorPos(&pt);
                     UpdateHoverRect(pt);
                     InvalidateRect(hwnd, nullptr, FALSE);
                 } else {
-                    state.capturing = false;
+                    g_state.capturing = false;
                     ShowWindow(hwnd, SW_HIDE);
                 }
             }
             return 0;
             
-case WM_PAINT: {
+        case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
             RECT cr;
@@ -619,8 +699,8 @@ case WM_PAINT: {
             HBITMAP memBitmap = CreateCompatibleBitmap(hdc, cr.right, cr.bottom);
             HBITMAP hOldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
             
-            if (state.frozenDC) {
-                BitBlt(memDC, 0, 0, cr.right, cr.bottom, state.frozenDC, 0, 0, SRCCOPY);
+            if (g_state.frozenDC) {
+                BitBlt(memDC, 0, 0, cr.right, cr.bottom, g_state.frozenDC, 0, 0, SRCCOPY);
             }
 
             int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -629,10 +709,10 @@ case WM_PAINT: {
             int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
             
             RECT r = { 
-                state.currentRect.x - vx, 
-                state.currentRect.y - vy, 
-                state.currentRect.x - vx + state.currentRect.width, 
-                state.currentRect.y - vy + state.currentRect.height 
+                g_state.currentRect.x - vx, 
+                g_state.currentRect.y - vy, 
+                g_state.currentRect.x - vx + g_state.currentRect.width, 
+                g_state.currentRect.y - vy + g_state.currentRect.height 
             };
 
             HDC hAlphaDC = CreateCompatibleDC(memDC);
@@ -658,11 +738,11 @@ case WM_PAINT: {
             SelectObject(memDC, hOldPen);
             DeleteObject(hPen);
 
-            if (state.currentRect.width > 0 && state.currentRect.height > 0) {
+            if (g_state.currentRect.width > 0 && g_state.currentRect.height > 0) {
                 HFONT hOldFont = (HFONT)SelectObject(memDC, GetStockObject(DEFAULT_GUI_FONT));
                 
                 char sizeText[64];
-                snprintf(sizeText, sizeof(sizeText), "%d x %d", state.currentRect.width, state.currentRect.height);
+                snprintf(sizeText, sizeof(sizeText), "%d x %d", g_state.currentRect.width, g_state.currentRect.height);
                 SIZE textSize;
                 GetTextExtentPoint32A(memDC, sizeText, (int)strlen(sizeText), &textSize);
                 
@@ -699,7 +779,7 @@ case WM_PAINT: {
                 destY = pt.y - vy - magSize - 20;
             }
             
-            StretchBlt(memDC, destX, destY, magSize, magSize, state.frozenDC, pt.x - srcSize / 2 - vx, pt.y - srcSize / 2 - vy, srcSize, srcSize, SRCCOPY);
+            StretchBlt(memDC, destX, destY, magSize, magSize, g_state.frozenDC, pt.x - srcSize / 2 - vx, pt.y - srcSize / 2 - vy, srcSize, srcSize, SRCCOPY);
 
             HPEN magPen = CreatePen(PS_SOLID, 1, RGB(255, 50, 50));
             HPEN oldMagPen = (HPEN)SelectObject(memDC, magPen);
@@ -731,6 +811,223 @@ case WM_PAINT: {
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
+enum SettingsTab {
+    TAB_GENERAL,
+    TAB_INPUT
+};
+
+LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    static Win32Toggle toggles[3];
+    static SettingsTab activeTab = TAB_GENERAL;
+    
+    static RECT tabGeneralRect = { 10, 20, 140, 50 };
+    static RECT tabInputRect   = { 10, 55, 140, 85 };
+    static bool hoverGeneral   = false;
+    static bool hoverInput     = false;
+
+    static HFONT hFont = nullptr;
+    static HFONT hBoldFont = nullptr;
+    static HBRUSH hBgBrush = nullptr;
+    static HBRUSH hSidebarBrush = nullptr;
+    static HBRUSH hRowNormalBrush = nullptr;
+    static HBRUSH hRowHoverBrush = nullptr;
+    static HBRUSH hPillOnBrush = nullptr;
+    static HBRUSH hPillOffBrush = nullptr;
+    static HBRUSH hThumbBrush = nullptr;
+
+    switch (msg) {
+        case WM_CREATE: {
+            toggles[0] = { { 160, 20, 0, 60 }, "Extract Text automatically via OCR", &g_state.options.extract_text, false };
+            toggles[1] = { { 160, 70, 0, 110 }, "Copy screenshot directly to Clipboard", &g_state.options.copy_to_clipboard, false };
+            toggles[2] = { { 160, 120, 0, 160 }, "Include mouse cursor in screenshots", &g_state.options.include_cursor, false };
+
+            BOOL dark = TRUE;
+            DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+            DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+            DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+
+            hFont = CreateFontA(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+            hBoldFont = CreateFontA(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+            
+            hBgBrush = CreateSolidBrush(RGB(28, 28, 28));
+            hSidebarBrush = CreateSolidBrush(RGB(32, 32, 32));
+            hRowNormalBrush = CreateSolidBrush(RGB(38, 38, 38));
+            hRowHoverBrush = CreateSolidBrush(RGB(45, 45, 45));
+            hPillOnBrush = CreateSolidBrush(RGB(0, 120, 215));
+            hPillOffBrush = CreateSolidBrush(RGB(100, 100, 100));
+            hThumbBrush = CreateSolidBrush(RGB(255, 255, 255));
+            return 0;
+        }
+
+        case WM_SIZE: {
+            int width = LOWORD(lParam);
+            for (int i = 0; i < 3; ++i) {
+                toggles[i].rect.right = width - 20; 
+            }
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        }
+
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            RECT cr;
+            GetClientRect(hwnd, &cr);
+
+            HDC memDC = CreateCompatibleDC(hdc);
+            HBITMAP memBmp = CreateCompatibleBitmap(hdc, cr.right, cr.bottom);
+            HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, memBmp);
+
+            FillRect(memDC, &cr, hBgBrush);
+
+            RECT sidebarRect = { 0, 0, 150, cr.bottom };
+            FillRect(memDC, &sidebarRect, hSidebarBrush);
+
+            SetBkMode(memDC, TRANSPARENT);
+
+            // Draw "General" Tab Button
+            bool drawGenHover = hoverGeneral || (activeTab == TAB_GENERAL);
+            HBRUSH hGenTabBrush = CreateSolidBrush(drawGenHover ? RGB(45, 45, 45) : RGB(32, 32, 32));
+            FillRect(memDC, &tabGeneralRect, hGenTabBrush);
+            DeleteObject(hGenTabBrush);
+            SelectObject(memDC, activeTab == TAB_GENERAL ? hBoldFont : hFont);
+            SetTextColor(memDC, activeTab == TAB_GENERAL ? RGB(255, 255, 255) : RGB(200, 200, 200));
+            TextOutA(memDC, tabGeneralRect.left + 15, tabGeneralRect.top + 7, "General", 7);
+
+            // Draw "Input" Tab Button
+            bool drawInputHover = hoverInput || (activeTab == TAB_INPUT);
+            HBRUSH hInputTabBrush = CreateSolidBrush(drawInputHover ? RGB(45, 45, 45) : RGB(32, 32, 32));
+            FillRect(memDC, &tabInputRect, hInputTabBrush);
+            DeleteObject(hInputTabBrush);
+            SelectObject(memDC, activeTab == TAB_INPUT ? hBoldFont : hFont);
+            SetTextColor(memDC, activeTab == TAB_INPUT ? RGB(255, 255, 255) : RGB(200, 200, 200));
+            TextOutA(memDC, tabInputRect.left + 15, tabInputRect.top + 7, "Input", 5);
+
+            // Draw Right Side Page Content based on selected layout page view
+            SelectObject(memDC, hFont);
+            SetTextColor(memDC, RGB(240, 240, 240));
+
+            if (activeTab == TAB_GENERAL) {
+                for (int i = 0; i < 3; ++i) {
+                    FillRect(memDC, &toggles[i].rect, toggles[i].isHovered ? hRowHoverBrush : hRowNormalBrush);
+                    TextOutA(memDC, toggles[i].rect.left + 15, toggles[i].rect.top + 10, toggles[i].text, (int)strlen(toggles[i].text));
+
+                    bool isOn = *toggles[i].targetValue;
+                    int pillLeft = toggles[i].rect.right - 55;
+                    int pillTop = toggles[i].rect.top + 9;
+                    RECT pillRect = { pillLeft, pillTop, pillLeft + 40, pillTop + 20 };
+
+                    FillRect(memDC, &pillRect, isOn ? hPillOnBrush : hPillOffBrush);
+
+                    RECT thumbRect = { 
+                        isOn ? pillLeft + 22 : pillLeft + 3, 
+                        pillTop + 3, 
+                        isOn ? pillLeft + 37 : pillLeft + 18, 
+                        pillTop + 17 
+                    };
+                    FillRect(memDC, &thumbRect, hThumbBrush);
+                }
+            } else if (activeTab == TAB_INPUT) {
+                TextOutA(memDC, 175, 30, "Keyboard hotkeys and input options can be placed here.", 53);
+            }
+
+            BitBlt(hdc, 0, 0, cr.right, cr.bottom, memDC, 0, 0, SRCCOPY);
+            SelectObject(memDC, oldBmp);
+            DeleteObject(memBmp);
+            DeleteDC(memDC);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+
+        case WM_MOUSEMOVE: {
+            POINT pt = { LOWORD(lParam), HIWORD(lParam) };
+            bool trackingChanged = false;
+
+            bool insideGen = PtInRect(&tabGeneralRect, pt);
+            if (insideGen != hoverGeneral) {
+                hoverGeneral = insideGen;
+                trackingChanged = true;
+            }
+
+            bool insideInput = PtInRect(&tabInputRect, pt);
+            if (insideInput != hoverInput) {
+                hoverInput = insideInput;
+                trackingChanged = true;
+            }
+
+            if (activeTab == TAB_GENERAL) {
+                for (int i = 0; i < 3; ++i) {
+                    bool currentlyInside = PtInRect(&toggles[i].rect, pt);
+                    if (currentlyInside != toggles[i].isHovered) {
+                        toggles[i].isHovered = currentlyInside;
+                        trackingChanged = true;
+                    }
+                }
+            }
+
+            if (trackingChanged) {
+                InvalidateRect(hwnd, nullptr, FALSE);
+                TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, HOVER_DEFAULT };
+                TrackMouseEvent(&tme);
+            }
+            return 0;
+        }
+
+        case WM_MOUSELEAVE: {
+            hoverGeneral = false;
+            hoverInput = false;
+            for (int i = 0; i < 3; ++i) toggles[i].isHovered = false;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_LBUTTONDOWN: {
+            POINT pt = { LOWORD(lParam), HIWORD(lParam) };
+
+            if (PtInRect(&tabGeneralRect, pt)) {
+                if (activeTab != TAB_GENERAL) {
+                    activeTab = TAB_GENERAL;
+                    InvalidateRect(hwnd, nullptr, TRUE);
+                }
+                return 0;
+            }
+
+            if (PtInRect(&tabInputRect, pt)) {
+                if (activeTab != TAB_INPUT) {
+                    activeTab = TAB_INPUT;
+                    InvalidateRect(hwnd, nullptr, TRUE);
+                }
+                return 0;
+            }
+
+            if (activeTab == TAB_GENERAL) {
+                for (int i = 0; i < 3; ++i) {
+                    if (PtInRect(&toggles[i].rect, pt)) {
+                        *toggles[i].targetValue = !(*toggles[i].targetValue);
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        break;
+                    }
+                }
+            }
+            return 0;
+        }
+
+        case WM_DESTROY: {
+            DeleteObject(hFont);
+            DeleteObject(hBoldFont);
+            DeleteObject(hBgBrush);
+            DeleteObject(hSidebarBrush);
+            DeleteObject(hRowNormalBrush);
+            DeleteObject(hRowHoverBrush);
+            DeleteObject(hPillOnBrush);
+            DeleteObject(hPillOffBrush);
+            DeleteObject(hThumbBrush);
+            return 0;
+        }
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
 LRESULT CALLBACK TrayUtilityWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_TRAYICON: {
@@ -753,7 +1050,26 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         case WM_COMMAND: {
             int wmId = LOWORD(wParam);
             if (wmId == TRAY_MENU_SETTINGS) {
-                OutputDebugStringA("Opening Settings UI Window...\n");
+                static bool classRegistered = false;
+                if (!classRegistered) {
+                    WNDCLASSW wcc = {};
+                    wcc.lpfnWndProc = SettingsWndProc;
+                    wcc.hInstance = GetModuleHandle(nullptr);
+                    wcc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+                    wcc.lpszClassName = L"ScCustomSettingsWindow";
+                    RegisterClassW(&wcc);
+                    classRegistered = true;
+                }
+
+                HWND hSettings = CreateWindowExW(
+                    0, L"ScCustomSettingsWindow", L"Screencap Options",
+                    WS_OVERLAPPEDWINDOW | WS_THICKFRAME,
+                    CW_USEDEFAULT, CW_USEDEFAULT, 550, 260,
+                    nullptr, nullptr, GetModuleHandle(nullptr), nullptr
+                );
+
+                ShowWindow(hSettings, SW_SHOW);
+                UpdateWindow(hSettings);
             } 
             else if (wmId == TRAY_MENU_EXIT) {
                 NOTIFYICONDATAA nid = {};
@@ -784,7 +1100,7 @@ BOOL CALLBACK FindWindowProc(HWND hwnd, LPARAM lParam) {
 }
 
 void UpdateHoverRect(POINT pt) {
-    FindWindowData data = { pt, nullptr, state.overlayHwnd };
+    FindWindowData data = { pt, nullptr, g_state.overlayHwnd };
     EnumWindows(FindWindowProc, reinterpret_cast<LPARAM>(&data));
     
     char className[256] = { 0 };
@@ -793,15 +1109,15 @@ void UpdateHoverRect(POINT pt) {
     }
 
     if (!data.result || strcmp(className, "Progman") == 0 || strcmp(className, "WorkerW") == 0) {
-        state.hoveredHwnd = nullptr;
+        g_state.hoveredHwnd = nullptr;
         if (const auto* m = _sc_monitor_at_point(pt)) {
-            state.currentRect = m->rect;
+            g_state.currentRect = m->rect;
         }
     } else {
-        state.hoveredHwnd = data.result;
+        g_state.hoveredHwnd = data.result;
         RECT r;
         GetRealWindowRect(data.result, &r);
-        state.currentRect = { r.left, r.top, r.right - r.left, r.bottom - r.top };
+        g_state.currentRect = { r.left, r.top, r.right - r.left, r.bottom - r.top };
     }
 }
 
@@ -861,11 +1177,11 @@ sc_internal void _ocr_run_async() {
     int sw = vw * scale;
     int sh = vh * scale;
     
-    HDC hScaledDC = CreateCompatibleDC(state.frozenDC);
-    HBITMAP hScaledBmp = CreateCompatibleBitmap(state.frozenDC, sw, sh);
+    HDC hScaledDC = CreateCompatibleDC(g_state.frozenDC);
+    HBITMAP hScaledBmp = CreateCompatibleBitmap(g_state.frozenDC, sw, sh);
     SelectObject(hScaledDC, hScaledBmp);
     SetStretchBltMode(hScaledDC, HALFTONE);
-    StretchBlt(hScaledDC, 0, 0, sw, sh, state.frozenDC, 0, 0, vw, vh, SRCCOPY);
+    StretchBlt(hScaledDC, 0, 0, sw, sh, g_state.frozenDC, 0, 0, vw, vh, SRCCOPY);
 
     BITMAPINFOHEADER bih = {};
     bih.biSize = sizeof(BITMAPINFOHEADER);
@@ -928,8 +1244,8 @@ sc_internal void _ocr_run_async() {
                     }
                 }
                 
-                std::lock_guard<std::mutex> lock(state.ocrMutex);
-                state.ocrLines = lines;
+                std::lock_guard<std::mutex> lock(g_state.ocrMutex);
+                g_state.ocrLines = lines;
             }
         } catch (std::exception& e) {
             fprintf(stderr, "OCR failed: %s\n", e.what());
@@ -938,11 +1254,11 @@ sc_internal void _ocr_run_async() {
 }
 
 sc_internal bool _ocr_snap_to_text(const sc_rect& drag, sc_rect& out) {
-    std::lock_guard<std::mutex> lock(state.ocrMutex);
+    std::lock_guard<std::mutex> lock(g_state.ocrMutex);
     bool found = false;
     int minx = 0, miny = 0, maxx = 0, maxy = 0;
     
-    for (const auto& line : state.ocrLines) {
+    for (const auto& line : g_state.ocrLines) {
         for (const auto& w : line.chars) {
             if (!_sc_rects_intersect(drag, w)) {
                 continue;
@@ -969,8 +1285,8 @@ sc_internal bool _ocr_snap_to_text(const sc_rect& drag, sc_rect& out) {
 }
 
 sc_internal bool _ocr_text_at_point(POINT pt, sc_rect& out) {
-    std::lock_guard<std::mutex> lock(state.ocrMutex);
-    for (const auto& line : state.ocrLines) {
+    std::lock_guard<std::mutex> lock(g_state.ocrMutex);
+    for (const auto& line : g_state.ocrLines) {
         if (pt.x >= line.rect.x && pt.x < line.rect.x + line.rect.width && 
             pt.y >= line.rect.y && pt.y < line.rect.y + line.rect.height) {
             out = line.rect;

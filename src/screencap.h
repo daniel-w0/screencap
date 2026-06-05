@@ -26,7 +26,8 @@ struct sc_monitor_info {
 enum class sc_capture_mode {
     interactive = 0,
     window_under_cursor = 1,
-    monitor_under_cursor = 2
+    monitor_under_cursor = 2,
+    ocr = 3
 };
 
 struct sc_capture_options {
@@ -36,9 +37,43 @@ struct sc_capture_options {
     sc_capture_mode mode;
 };
 
+enum sc_hotkey_id {
+    sc_hotkey_screenshot,
+    sc_hotkey_clipboard,
+    sc_hotkey_ocr,
+    sc_hotkey_active_window,
+    sc_hotkey_current_monitor,
+    sc_hotkey_fallback_screenshot, // Ctrl + Alt + C
+    _sc_hotkey_count
+};
+
+static const char* sc_hotkey_id_strings[sc_hotkey_id::_sc_hotkey_count] = {
+    "screenshot",
+    "clipboard",
+    "ocr",
+    "active_window",
+    "current_monitor",
+    "fallback_screenshot"
+};
+
+struct sc_hotkey {
+    sc_hotkey_id id;
+    uint32_t modifiers;
+    uint32_t key;
+    bool registered;
+};
+
+struct sc_app {
+    bool running;
+    std::array<sc_hotkey, sc_hotkey_id::_sc_hotkey_count> hotkeys;
+};
+
 #define sc_internal static
 
 void sc_initialize();
+bool sc_running();
+bool sc_update(sc_capture_options& active_options);
+
 // -1 to auto-detect desktop/window under cursor
 bool sc_capture_desktop(int8_t desktop, sc_capture_info& ci);
 // -1 to auto-detect window under cursor

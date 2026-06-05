@@ -12,12 +12,12 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-constexpr int HOTKEY_ID_SCREENSHOT = 1;
-constexpr int HOTKEY_ID_SCREENSHOT_CLIPBOARD = 2;
-constexpr int HOTKEY_ID_SCREENSHOT_OCR = 3;
-constexpr int HOTKEY_ID_SCREENSHOT_ACTIVE_WINDOW = 4;
-constexpr int HOTKEY_ID_SCREENSHOT_CURRENT_MONITOR = 5;
-constexpr int HOTKEY_ID_FALLBACK = 6; // Ctrl + Alt + C
+//constexpr int HOTKEY_ID_SCREENSHOT = 1;
+//constexpr int HOTKEY_ID_SCREENSHOT_CLIPBOARD = 2;
+//constexpr int HOTKEY_ID_SCREENSHOT_OCR = 3;
+//constexpr int HOTKEY_ID_SCREENSHOT_ACTIVE_WINDOW = 4;
+//constexpr int HOTKEY_ID_SCREENSHOT_CURRENT_MONITOR = 5;
+//constexpr int HOTKEY_ID_FALLBACK = 6; // Ctrl + Alt + C
 
 std::string get_date_string() {
     auto now = std::chrono::system_clock::now();
@@ -69,116 +69,31 @@ std::string get_save_path() {
 int entry(int argc, char** argv) {
     sc_initialize();
 
-#if defined(SC_PLATFORM_WINDOWS)
-    HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
-    DWORD prev_mode;
-    if (GetConsoleMode(hInput, &prev_mode)) {
-        SetConsoleMode(hInput, ENABLE_EXTENDED_FLAGS | (prev_mode & ~ENABLE_QUICK_EDIT_MODE));
-    }
-#endif
-
-    if (!RegisterHotKey(nullptr, HOTKEY_ID_SCREENSHOT, MOD_NOREPEAT, VK_SNAPSHOT)) {
-        fprintf(stderr, "Failed to register PrintScreen\n");
-        return 1;
-    }
-
-    if (!RegisterHotKey(nullptr, HOTKEY_ID_FALLBACK, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'C')) {
-        fprintf(stderr, "Failed to register fallback (Ctrl+Alt+C).\n");
-        return 1;
-    }
-
-    if (!RegisterHotKey(nullptr, HOTKEY_ID_SCREENSHOT_CLIPBOARD, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_SNAPSHOT)) {
-        fprintf(stderr, "Failed to register clipboard hotkey.\n");
-        return 1;
-    }
-
-    if (!RegisterHotKey(nullptr, HOTKEY_ID_SCREENSHOT_OCR, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_SNAPSHOT)) {
-        fprintf(stderr, "Failed to register OCR hotkey.\n");
-        return 1;
-    }
-
-    if (!RegisterHotKey(nullptr, HOTKEY_ID_SCREENSHOT_ACTIVE_WINDOW, MOD_ALT | MOD_NOREPEAT, VK_SNAPSHOT)) {
-        fprintf(stderr, "Failed to register active window hotkey.\n");
-        return 1;
-    }
-
-    if (!RegisterHotKey(nullptr, HOTKEY_ID_SCREENSHOT_CURRENT_MONITOR, MOD_CONTROL | MOD_NOREPEAT, VK_SNAPSHOT)) {
-        fprintf(stderr, "Failed to register current monitor hotkey.\n");
-        return 1;
-    }
-
-    sc_capture_options active_options = {0};
+    sc_capture_options active_options = { 0 };
     active_options.copy_to_clipboard = true;
-    MSG msg = { 0 };
 
-#if defined(SC_DEBUG)
-    _CrtMemState s1, s2, s3;
-    bool warmed_up = false;
-#endif
+    while (sc_running()) {
+        if (sc_update(active_options)) {
+            sc_capture_info ci = {};
+            if (sc_capture_update(ci)) {
+                if (active_options.extract_text) {
+                    fprintf(stdout, "Extracted text to clipboard\n");
+                } else {
+                    if (active_options.copy_to_clipboard) {
+                        fprintf(stdout, "Copied screenshot to clipboard\n");
+                    }
 
-    while (GetMessageA(&msg, nullptr, 0, 0) > 0) {
-#if defined(SC_DEBUG)
-        if (warmed_up) {
-            _CrtMemCheckpoint(&s1);
-        }
-#endif
-        
-        sc_capture_info ci = {};
-
-        if (msg.message == WM_HOTKEY) {
-            active_options.include_cursor = false;
-            active_options.extract_text = (msg.wParam == HOTKEY_ID_SCREENSHOT_OCR);
-
-            if (msg.wParam == HOTKEY_ID_SCREENSHOT_ACTIVE_WINDOW) {
-                active_options.mode = sc_capture_mode::window_under_cursor;
-            } else if (msg.wParam == HOTKEY_ID_SCREENSHOT_CURRENT_MONITOR) {
-                active_options.mode = sc_capture_mode::monitor_under_cursor;
-            } else {
-                active_options.mode = sc_capture_mode::interactive;
-            }
-
-            sc_begin_capture(active_options);
-        }
-
-        TranslateMessage(&msg);
-        DispatchMessageA(&msg);
-
-        if (sc_capture_update(ci)) {
-            if (active_options.extract_text) {
-                fprintf(stdout, "Extracted text to clipboard\n");
-            } else {
-                if (active_options.copy_to_clipboard) {
-                    fprintf(stdout, "Copied screenshot to clipboard\n");
+                    std::string savepath = get_save_path();
+                    if (sc_save_capture(savepath.c_str(), ci)) {
+                        fprintf(stdout, "Saved screenshot to %s\n", savepath.c_str());
+                    }
                 }
-
-                std::string savepath = get_save_path();
-                if (sc_save_capture(savepath.c_str(), ci)) {
-                    fprintf(stdout, "Saved screenshot to %s\n", savepath.c_str());
-                }
+                sc_cleanup(ci);
             }
-            sc_cleanup(ci);
-
-#if defined(SC_DEBUG)
-            if (warmed_up) {
-                _CrtMemCheckpoint(&s2);
-                if (_CrtMemDifference(&s3, &s1, &s2)) {
-                    OutputDebugStringA("\n--- MEMORY LEAK DETECTED !!! ---\n");
-                    _CrtMemDumpAllObjectsSince(&s1);
-                    OutputDebugStringA("-------------------------------------------------\n\n");
-                }
-            } else {
-                warmed_up = true;
-            }
-#endif
+        } else {
+            break;
         }
     }
-
-    UnregisterHotKey(nullptr, HOTKEY_ID_SCREENSHOT);
-    UnregisterHotKey(nullptr, HOTKEY_ID_FALLBACK);
-    UnregisterHotKey(nullptr, HOTKEY_ID_SCREENSHOT_CLIPBOARD);
-    UnregisterHotKey(nullptr, HOTKEY_ID_SCREENSHOT_OCR);
-    UnregisterHotKey(nullptr, HOTKEY_ID_SCREENSHOT_ACTIVE_WINDOW);
-    UnregisterHotKey(nullptr, HOTKEY_ID_SCREENSHOT_CURRENT_MONITOR);
 
     return 0;
 }
