@@ -345,6 +345,36 @@ void sc_begin_capture(sc_capture_options options) {
     BitBlt(g_frozenDC, 0, 0, vw, vh, hScreenDC, vx, vy, SRCCOPY);
     ReleaseDC(nullptr, hScreenDC);
 
+    if (options.mode == sc_capture_mode::window_under_cursor) {
+        POINT pt;
+        GetCursorPos(&pt);
+        HWND hwnd = WindowFromPoint(pt);
+        if (hwnd) {
+            hwnd = GetAncestor(hwnd, GA_ROOT);
+            RECT rect;
+            GetRealWindowRect(hwnd, &rect);
+            g_finalRect = { rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top };
+            g_finalHwnd = hwnd;
+            g_captureReady = true;
+        } else {
+            g_capturing = false;
+        }
+        return;
+    }  else if (options.mode == sc_capture_mode::monitor_under_cursor) {
+        POINT pt;
+        GetCursorPos(&pt);
+        for (const auto& m : g_monitors) {
+            if (pt.x >= m.rect.x && pt.x < m.rect.x + m.rect.width &&
+                pt.y >= m.rect.y && pt.y < m.rect.y + m.rect.height) {
+                g_finalRect = m.rect;
+                g_captureReady = true;
+                break;
+            }
+        }
+        if (!g_captureReady) g_capturing = false;
+        return;
+    }
+
     if (!g_overlayHwnd) {
         WNDCLASSA wc = { 0 };
         wc.lpfnWndProc = OverlayWndProc;
@@ -496,7 +526,10 @@ bool sc_capture_update(sc_capture_info& ci) {
                         if (!SetClipboardData(CF_DIB, hGlobalDIB)) GlobalFree(hGlobalDIB);
                     }
 
-                    _sc_swap_channels((uint32_t*)ci.data, ci.width * ci.height);
+                    if (!ci.channels_swapped) {
+                        _sc_swap_channels((uint32_t*)ci.data, ci.width * ci.height);
+                        ci.channels_swapped = true;
+                    }
                     
                     std::vector<unsigned char> pngData;
                     stbi_write_png_to_func([](void* context, void* data, int size) {
@@ -593,7 +626,6 @@ bool sc_capture_window(int pid, sc_capture_info& ci) {
         GetCursorPos(&pt);
         HWND hwnd = WindowFromPoint(pt);
         if (hwnd) {
-            // get bounds of the window under cursor
             RECT rect;
             GetRealWindowRect(hwnd, &rect);
             sc_rect captureRect = { rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top };
@@ -648,8 +680,11 @@ bool sc_capture_desktop(int8_t desktop, sc_capture_info& ci) {
     return true;
 }
 
-bool sc_save_capture(const char* filename, const sc_capture_info& ci) {
-    _sc_swap_channels((uint32_t*)ci.data, ci.width * ci.height);
+bool sc_save_capture(const char* filename, sc_capture_info& ci) {
+    if (!ci.channels_swapped) {
+        _sc_swap_channels((uint32_t*)ci.data, ci.width * ci.height);
+        ci.channels_swapped = true;
+    }
     stbi_write_png(filename, ci.width, ci.height, ci.channels, ci.data, ci.width * ci.channels);
     return true;
 }

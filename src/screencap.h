@@ -4,6 +4,7 @@
 
 struct sc_capture_info {
     unsigned char* data;
+    bool channels_swapped;
     uint8_t channels;
     size_t width;
     size_t height;
@@ -22,10 +23,17 @@ struct sc_monitor_info {
     sc_rect rect;
 };
 
+enum class sc_capture_mode {
+    interactive = 0,
+    window_under_cursor = 1,
+    monitor_under_cursor = 2
+};
+
 struct sc_capture_options {
     bool include_cursor;
     bool copy_to_clipboard;
     bool extract_text;
+    sc_capture_mode mode;
 };
 
 #define sc_internal static
@@ -36,7 +44,8 @@ bool sc_capture_desktop(int8_t desktop, sc_capture_info& ci);
 // -1 to auto-detect window under cursor
 bool sc_capture_window(int pid, sc_capture_info& ci);
 bool sc_capture_region(sc_rect rect, sc_capture_info& ci);
-bool sc_save_capture(const char* filename, const sc_capture_info& ci);
-
+bool sc_save_capture(const char* filename, sc_capture_info& ci);
 void sc_begin_capture(sc_capture_options options);
 bool sc_capture_update(sc_capture_info& ci);
+
+int sc_get_fastest_refresh_rate();
