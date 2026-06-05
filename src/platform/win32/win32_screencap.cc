@@ -588,6 +588,19 @@ bool sc_capture_region(sc_rect rect, sc_capture_info& ci) {
 }
 
 bool sc_capture_window(int pid, sc_capture_info& ci) {
+    if (pid == -1) {
+        POINT pt;
+        GetCursorPos(&pt);
+        HWND hwnd = WindowFromPoint(pt);
+        if (hwnd) {
+            // get bounds of the window under cursor
+            RECT rect;
+            GetRealWindowRect(hwnd, &rect);
+            sc_rect captureRect = { rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top };
+            return sc_capture_region(captureRect, ci);
+        }
+    }
+
     struct EnumWindowsData {
         int targetPid;
         sc_capture_info& ci;
@@ -610,7 +623,19 @@ bool sc_capture_window(int pid, sc_capture_info& ci) {
     }, reinterpret_cast<LPARAM>(&data));
 }
 
-bool sc_capture_desktop(uint8_t desktop, sc_capture_info& ci) {
+bool sc_capture_desktop(int8_t desktop, sc_capture_info& ci) {
+    if (desktop == -1) {
+        POINT pt;
+        GetCursorPos(&pt);
+        for (const auto& m : g_monitors) {
+            if (pt.x >= m.rect.x && pt.x < m.rect.x + m.rect.width &&
+                pt.y >= m.rect.y && pt.y < m.rect.y + m.rect.height) {
+                desktop = m.id;
+                break;
+            }
+        }
+    }
+
     if (desktop >= g_monitors.size()) {
         fprintf(stderr, "Invalid desktop ID\n");
         return false;
@@ -626,6 +651,5 @@ bool sc_capture_desktop(uint8_t desktop, sc_capture_info& ci) {
 bool sc_save_capture(const char* filename, const sc_capture_info& ci) {
     _sc_swap_channels((uint32_t*)ci.data, ci.width * ci.height);
     stbi_write_png(filename, ci.width, ci.height, ci.channels, ci.data, ci.width * ci.channels);
-    delete[] ci.data;
     return true;
 }

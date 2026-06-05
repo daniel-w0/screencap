@@ -31,7 +31,9 @@ struct sc_capture_options {
 #define sc_internal static
 
 void sc_initialize();
-bool sc_capture_desktop(uint8_t desktop, sc_capture_info& ci);
+// -1 to auto-detect desktop/window under cursor
+bool sc_capture_desktop(int8_t desktop, sc_capture_info& ci);
+// -1 to auto-detect window under cursor
 bool sc_capture_window(int pid, sc_capture_info& ci);
 bool sc_capture_region(sc_rect rect, sc_capture_info& ci);
 bool sc_save_capture(const char* filename, const sc_capture_info& ci);
