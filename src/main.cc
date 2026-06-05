@@ -111,7 +111,18 @@ int entry(int argc, char** argv) {
     active_options.copy_to_clipboard = true;
     MSG msg = { 0 };
 
+#if defined(SC_DEBUG)
+    _CrtMemState s1, s2, s3;
+    bool warmed_up = false;
+#endif
+
     while (GetMessageA(&msg, nullptr, 0, 0) > 0) {
+#if defined(SC_DEBUG)
+        if (warmed_up) {
+            _CrtMemCheckpoint(&s1);
+        }
+#endif
+        
         sc_capture_info ci = {};
 
         if (msg.message == WM_HOTKEY) {
@@ -135,7 +146,6 @@ int entry(int argc, char** argv) {
         if (sc_capture_update(ci)) {
             if (active_options.extract_text) {
                 fprintf(stdout, "Extracted text to clipboard\n");
-                delete[] ci.data;
             } else {
                 if (active_options.copy_to_clipboard) {
                     fprintf(stdout, "Copied screenshot to clipboard\n");
@@ -145,8 +155,21 @@ int entry(int argc, char** argv) {
                 if (sc_save_capture(savepath.c_str(), ci)) {
                     fprintf(stdout, "Saved screenshot to %s\n", savepath.c_str());
                 }
-                delete[] ci.data;
             }
+            sc_cleanup(ci);
+
+#if defined(SC_DEBUG)
+            if (warmed_up) {
+                _CrtMemCheckpoint(&s2);
+                if (_CrtMemDifference(&s3, &s1, &s2)) {
+                    OutputDebugStringA("\n--- MEMORY LEAK DETECTED !!! ---\n");
+                    _CrtMemDumpAllObjectsSince(&s1);
+                    OutputDebugStringA("-------------------------------------------------\n\n");
+                }
+            } else {
+                warmed_up = true;
+            }
+#endif
         }
     }
 
@@ -170,6 +193,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         freopen_s(&f, "CONOUT$", "w", stderr);
         freopen_s(&f, "CONIN$", "r", stdin);
     }
+#endif
+
+#if defined(SC_DEBUG)
+    _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
 #endif
 
     return entry(__argc, __argv);

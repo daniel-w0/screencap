@@ -150,6 +150,13 @@ void sc_initialize() {
     winrt::init_apartment();
     SetProcessDPIAware();
     _sc_get_monitors(state.monitors);
+
+    WNDCLASSA wc = {};
+    wc.lpfnWndProc = OverlayWndProc;
+    wc.hInstance = GetModuleHandle(nullptr);
+    wc.hCursor = LoadCursor(nullptr, IDC_CROSS);
+    wc.lpszClassName = "ScOverlayWindow";
+    RegisterClassA(&wc);
 }
 
 void sc_begin_capture(sc_capture_options options) {
@@ -213,14 +220,7 @@ void sc_begin_capture(sc_capture_options options) {
         _ocr_run_async();
     }
 
-    if (!state.overlayHwnd) {
-        WNDCLASSA wc = {};
-        wc.lpfnWndProc = OverlayWndProc;
-        wc.hInstance = GetModuleHandle(nullptr);
-        wc.hCursor = LoadCursor(nullptr, IDC_CROSS);
-        wc.lpszClassName = "ScOverlayWindow";
-        RegisterClassA(&wc);
-        
+    if (!state.overlayHwnd) {        
         state.overlayHwnd = CreateWindowExA(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW, 
             "ScOverlayWindow", "ScreenshotOverlay", 
@@ -364,6 +364,45 @@ bool sc_capture_update(sc_capture_info& ci) {
     DeleteObject(hBitmap);
     DeleteDC(hMemoryDC);
     return true;
+}
+
+void sc_cleanup(sc_capture_info& ci) {
+    if (ci.data) {
+        delete[] ci.data;
+        ci.data = nullptr;
+    }
+    ci.width = 0;
+    ci.height = 0;
+    ci.channels = 0;
+    ci.channels_swapped = false;
+
+    if (state.overlayHwnd) {
+        DestroyWindow(state.overlayHwnd);
+        state.overlayHwnd = nullptr;
+    }
+    if (state.frozenDC) {
+        DeleteDC(state.frozenDC);
+        state.frozenDC = nullptr;
+    }
+    if (state.frozenBitmap) {
+        DeleteObject(state.frozenBitmap);
+        state.frozenBitmap = nullptr;
+    }
+
+    state.capturing = false;
+    state.captureReady = false;
+    state.mouseDown = false;
+    state.dragging = false;
+    state.snapDrag = false;
+    state.wasDragging = false;
+
+    state.hoveredHwnd = nullptr;
+    state.finalHwnd = nullptr;
+
+    {
+        std::lock_guard<std::mutex> lock(state.ocrMutex);
+        state.ocrLines.clear();
+    }
 }
 
 bool sc_capture_region(sc_rect rect, sc_capture_info& ci) {
@@ -545,7 +584,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
             return 0;
             
-        case WM_PAINT: {
+case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
             RECT cr;
@@ -553,7 +592,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             
             HDC memDC = CreateCompatibleDC(hdc);
             HBITMAP memBitmap = CreateCompatibleBitmap(hdc, cr.right, cr.bottom);
-            SelectObject(memDC, memBitmap);
+            HBITMAP hOldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
             
             if (state.frozenDC) {
                 BitBlt(memDC, 0, 0, cr.right, cr.bottom, state.frozenDC, 0, 0, SRCCOPY);
@@ -573,24 +612,30 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             HDC hAlphaDC = CreateCompatibleDC(memDC);
             HBITMAP hAlphaBmp = CreateCompatibleBitmap(memDC, 1, 1);
-            SelectObject(hAlphaDC, hAlphaBmp);
+            HBITMAP hOldAlphaBmp = (HBITMAP)SelectObject(hAlphaDC, hAlphaBmp);
+            
             SetPixel(hAlphaDC, 0, 0, RGB(0, 120, 215));
             BLENDFUNCTION bf = { AC_SRC_OVER, 0, 64, 0 };
             GdiAlphaBlend(memDC, r.left, r.top, r.right - r.left, r.bottom - r.top, hAlphaDC, 0, 0, 1, 1, bf);
+            
+            SelectObject(hAlphaDC, hOldAlphaBmp);
             DeleteObject(hAlphaBmp);
             DeleteDC(hAlphaDC);
 
             HPEN hPen = CreatePen(PS_DOT, 1, RGB(255, 0, 0));
             HPEN hOldPen = (HPEN)SelectObject(memDC, hPen);
             HBRUSH hOldBrush = (HBRUSH)SelectObject(memDC, GetStockObject(NULL_BRUSH));
+            
             SetBkMode(memDC, TRANSPARENT);
             Rectangle(memDC, r.left, r.top, r.right, r.bottom);
+            
             SelectObject(memDC, hOldBrush);
             SelectObject(memDC, hOldPen);
             DeleteObject(hPen);
 
             if (state.currentRect.width > 0 && state.currentRect.height > 0) {
                 HFONT hOldFont = (HFONT)SelectObject(memDC, GetStockObject(DEFAULT_GUI_FONT));
+                
                 char sizeText[64];
                 snprintf(sizeText, sizeof(sizeText), "%d x %d", state.currentRect.width, state.currentRect.height);
                 SIZE textSize;
@@ -603,12 +648,14 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
                 
                 RECT textBg = { textX, textY, textX + textSize.cx + 6, textY + textSize.cy + 4 };
-                HBRUSH bgBrushText = CreateSolidBrush(RGB(0, 0, 0));
+                HBRUSH bgBrushText = (HBRUSH)GetStockObject(BLACK_BRUSH);
+                
                 FillRect(memDC, &textBg, bgBrushText);
                 DeleteObject(bgBrushText);
                 
                 SetTextColor(memDC, RGB(255, 255, 255));
                 TextOutA(memDC, textX + 3, textY + 2, sizeText, (int)strlen(sizeText));
+                
                 SelectObject(memDC, hOldFont);
             }
 
@@ -631,20 +678,25 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             HPEN magPen = CreatePen(PS_SOLID, 1, RGB(255, 50, 50));
             HPEN oldMagPen = (HPEN)SelectObject(memDC, magPen);
+            
             MoveToEx(memDC, destX + magSize / 2, destY, nullptr);
             LineTo(memDC, destX + magSize / 2, destY + magSize);
             MoveToEx(memDC, destX, destY + magSize / 2, nullptr);
             LineTo(memDC, destX + magSize, destY + magSize / 2);
             
-            HBRUSH oldBorderBrush = (HBRUSH)SelectObject(memDC, GetStockObject(NULL_BRUSH));
+            HBRUSH hOldMagBrush = (HBRUSH)SelectObject(memDC, GetStockObject(NULL_BRUSH));
             Rectangle(memDC, destX, destY, destX + magSize, destY + magSize);
-            SelectObject(memDC, oldBorderBrush);
+            
+            SelectObject(memDC, hOldMagBrush);
             SelectObject(memDC, oldMagPen);
             DeleteObject(magPen);
 
             BitBlt(hdc, 0, 0, cr.right, cr.bottom, memDC, 0, 0, SRCCOPY);
+            
+            SelectObject(memDC, hOldBitmap);
             DeleteObject(memBitmap);
             DeleteDC(memDC);
+            
             EndPaint(hwnd, &ps);
             return 0;
         }

@@ -47,5 +47,6 @@ bool sc_capture_region(sc_rect rect, sc_capture_info& ci);
 bool sc_save_capture(const char* filename, sc_capture_info& ci);
 void sc_begin_capture(sc_capture_options options);
 bool sc_capture_update(sc_capture_info& ci);
+void sc_cleanup(sc_capture_info& ci);
 
 int sc_get_fastest_refresh_rate();

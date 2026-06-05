@@ -1,6 +1,13 @@
 #pragma once
 
+
+#if defined(SC_PLATFORM_WINDOWS) && defined(SC_DEBUG)
+#  define _CRTDBG_MAP_ALLOC
+#  include <crtdbg.h>
+#endif
+
 #include <cstdlib>
+
 #include <cstdio>
 #include <cstdint>
 #include <cmath>
