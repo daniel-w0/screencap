@@ -26,16 +26,17 @@
 #endif
 
 static std::vector<sc_monitor_info> g_monitors;
+static sc_capture_options g_options = { 0 };
 
 static HWND g_overlayHwnd = nullptr;
 static bool g_capturing = false;
 static bool g_mouseDown = false;
 static bool g_dragging = false;
 static bool g_wasDragging = false;
-static POINT g_dragStart = {0};
-static sc_rect g_currentRect = {0};
+static POINT g_dragStart = { 0 };
+static sc_rect g_currentRect = { 0 };
 static bool g_captureReady = false;
-static sc_rect g_finalRect = {0};
+static sc_rect g_finalRect = { 0 };
 static HWND g_hoveredHwnd = nullptr;
 static HWND g_finalHwnd = nullptr;
 
@@ -57,7 +58,7 @@ void GetRealWindowRect(HWND hwnd, RECT* rect) {
 void _sc_swap_channels(uint32_t* pixels, int totalPixels) {
     for (int i = 0; i < totalPixels; ++i) {
         uint32_t p = pixels[i];
-        pixels[i] = (p & 0xFF00FF00) | ((p & 0x00FF0000) >> 16) | ((p & 0x000000FF) << 16);
+        pixels[i] = 0xFF000000 | (p & 0x0000FF00) | ((p & 0x00FF0000) >> 16) | ((p & 0x000000FF) << 16);
     }
 }
 
@@ -84,7 +85,7 @@ void _sc_get_monitors(std::vector<sc_monitor_info>& monitors) {
         }
 
         return TRUE;
-    }, reinterpret_cast<LPARAM>(&monitors));
+        }, reinterpret_cast<LPARAM>(&monitors));
 }
 
 BOOL CALLBACK FindWindowProc(HWND hwnd, LPARAM lParam) {
@@ -103,10 +104,10 @@ BOOL CALLBACK FindWindowProc(HWND hwnd, LPARAM lParam) {
 }
 
 void UpdateHoverRect(POINT pt) {
-    FindWindowData data = {pt, nullptr, g_overlayHwnd};
+    FindWindowData data = { pt, nullptr, g_overlayHwnd };
     EnumWindows(FindWindowProc, reinterpret_cast<LPARAM>(&data));
 
-    char className[256] = {0};
+    char className[256] = { 0 };
     if (data.result) {
         GetClassNameA(data.result, className, 256);
     }
@@ -124,125 +125,157 @@ void UpdateHoverRect(POINT pt) {
         g_hoveredHwnd = data.result;
         RECT r;
         GetRealWindowRect(data.result, &r);
-        g_currentRect = {r.left, r.top, r.right - r.left, r.bottom - r.top};
+        g_currentRect = { r.left, r.top, r.right - r.left, r.bottom - r.top };
     }
 }
 
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
-        case WM_SETCURSOR:
-            SetCursor(LoadCursor(nullptr, IDC_CROSS));
-            return TRUE;
-        case WM_MOUSEMOVE: {
-            if (!g_capturing) break;
-            POINT pt;
-            GetCursorPos(&pt);
-            if (g_mouseDown) {
-                if (!g_dragging) {
-                    if (std::abs(pt.x - g_dragStart.x) > 3 || std::abs(pt.y - g_dragStart.y) > 3) {
-                        g_dragging = true;
-                    }
+    case WM_SETCURSOR:
+        SetCursor(LoadCursor(nullptr, IDC_CROSS));
+        return TRUE;
+    case WM_MOUSEMOVE: {
+        if (!g_capturing) break;
+        POINT pt;
+        GetCursorPos(&pt);
+        if (g_mouseDown) {
+            if (!g_dragging) {
+                if (std::abs(pt.x - g_dragStart.x) > 3 || std::abs(pt.y - g_dragStart.y) > 3) {
+                    g_dragging = true;
                 }
-                if (g_dragging) {
-                    g_currentRect.x = std::min(g_dragStart.x, pt.x);
-                    g_currentRect.y = std::min(g_dragStart.y, pt.y);
-                    g_currentRect.width = std::abs(pt.x - g_dragStart.x);
-                    g_currentRect.height = std::abs(pt.y - g_dragStart.y);
-                }
-            } else {
-                UpdateHoverRect(pt);
             }
-            InvalidateRect(hwnd, nullptr, FALSE);
-            return 0;
+            if (g_dragging) {
+                g_currentRect.x = std::min(g_dragStart.x, pt.x);
+                g_currentRect.y = std::min(g_dragStart.y, pt.y);
+                g_currentRect.width = std::abs(pt.x - g_dragStart.x);
+                g_currentRect.height = std::abs(pt.y - g_dragStart.y);
+            }
+        } else {
+            UpdateHoverRect(pt);
         }
-        case WM_LBUTTONDOWN: {
-            if (!g_capturing) break;
-            POINT pt;
-            GetCursorPos(&pt);
-            g_mouseDown = true;
-            g_dragStart = pt;
-            SetCapture(hwnd);
-            return 0;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+    case WM_LBUTTONDOWN: {
+        if (!g_capturing) break;
+        POINT pt;
+        GetCursorPos(&pt);
+        g_mouseDown = true;
+        g_dragStart = pt;
+        SetCapture(hwnd);
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        if (!g_capturing) break;
+        if (g_mouseDown) {
+            g_finalRect = g_currentRect;
+            g_finalHwnd = g_hoveredHwnd;
+            g_wasDragging = g_dragging;
+            ReleaseCapture();
+            ShowWindow(hwnd, SW_HIDE);
+            g_captureReady = true;
+            g_mouseDown = false;
+            g_dragging = false;
         }
-        case WM_LBUTTONUP: {
-            if (!g_capturing) break;
+        return 0;
+    }
+    case WM_KEYDOWN: {
+        if (wParam == VK_ESCAPE) {
             if (g_mouseDown) {
-                g_finalRect = g_currentRect;
-                g_finalHwnd = g_hoveredHwnd;
-                g_wasDragging = g_dragging;
-                ReleaseCapture();
-                ShowWindow(hwnd, SW_HIDE);
-                g_captureReady = true;
                 g_mouseDown = false;
                 g_dragging = false;
+                ReleaseCapture();
+                POINT pt;
+                GetCursorPos(&pt);
+                UpdateHoverRect(pt);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            } else {
+                g_capturing = false;
+                ShowWindow(hwnd, SW_HIDE);
             }
-            return 0;
         }
-        case WM_KEYDOWN: {
-            if (wParam == VK_ESCAPE) {
-                if (g_mouseDown) {
-                    g_mouseDown = false;
-                    g_dragging = false;
-                    ReleaseCapture();
-                    POINT pt;
-                    GetCursorPos(&pt);
-                    UpdateHoverRect(pt);
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                } else {
-                    g_capturing = false;
-                    ShowWindow(hwnd, SW_HIDE);
-                }
-            }
-            return 0;
+        return 0;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT cr;
+        GetClientRect(hwnd, &cr);
+
+        HDC memDC = CreateCompatibleDC(hdc);
+        HBITMAP memBitmap = CreateCompatibleBitmap(hdc, cr.right, cr.bottom);
+        SelectObject(memDC, memBitmap);
+
+        if (g_frozenDC) {
+            BitBlt(memDC, 0, 0, cr.right, cr.bottom, g_frozenDC, 0, 0, SRCCOPY);
         }
-        case WM_PAINT: {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hwnd, &ps);
-            RECT cr;
-            GetClientRect(hwnd, &cr);
 
-            HDC memDC = CreateCompatibleDC(hdc);
-            HBITMAP memBitmap = CreateCompatibleBitmap(hdc, cr.right, cr.bottom);
-            SelectObject(memDC, memBitmap);
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
-            if (g_frozenDC) {
-                BitBlt(memDC, 0, 0, cr.right, cr.bottom, g_frozenDC, 0, 0, SRCCOPY);
-            }
+        RECT r = { g_currentRect.x - vx, g_currentRect.y - vy,
+                   g_currentRect.x - vx + g_currentRect.width,
+                   g_currentRect.y - vy + g_currentRect.height };
 
-            int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-            int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        HDC hAlphaDC = CreateCompatibleDC(memDC);
+        HBITMAP hAlphaBmp = CreateCompatibleBitmap(memDC, 1, 1);
+        SelectObject(hAlphaDC, hAlphaBmp);
+        SetPixel(hAlphaDC, 0, 0, RGB(0, 120, 215));
+        BLENDFUNCTION bf = { AC_SRC_OVER, 0, 64, 0 };
+        GdiAlphaBlend(memDC, r.left, r.top, r.right - r.left, r.bottom - r.top, hAlphaDC, 0, 0, 1, 1, bf);
+        DeleteObject(hAlphaBmp);
+        DeleteDC(hAlphaDC);
 
-            RECT r = { g_currentRect.x - vx, g_currentRect.y - vy,
-                       g_currentRect.x - vx + g_currentRect.width,
-                       g_currentRect.y - vy + g_currentRect.height };
+        HPEN hPen = CreatePen(PS_DOT, 1, RGB(255, 0, 0));
+        HPEN hOldPen = (HPEN)SelectObject(memDC, hPen);
+        HBRUSH hOldBrush = (HBRUSH)SelectObject(memDC, GetStockObject(NULL_BRUSH));
+        SetBkMode(memDC, TRANSPARENT);
+        Rectangle(memDC, r.left, r.top, r.right, r.bottom);
+        SelectObject(memDC, hOldBrush);
+        SelectObject(memDC, hOldPen);
+        DeleteObject(hPen);
 
-            HDC hAlphaDC = CreateCompatibleDC(memDC);
-            HBITMAP hAlphaBmp = CreateCompatibleBitmap(memDC, 1, 1);
-            SelectObject(hAlphaDC, hAlphaBmp);
-            SetPixel(hAlphaDC, 0, 0, RGB(0, 120, 215));
-            BLENDFUNCTION bf = { AC_SRC_OVER, 0, 64, 0 };
-            GdiAlphaBlend(memDC, r.left, r.top, r.right - r.left, r.bottom - r.top, hAlphaDC, 0, 0, 1, 1, bf);
-            DeleteObject(hAlphaBmp);
-            DeleteDC(hAlphaDC);
+        POINT pt;
+        GetCursorPos(&pt);
+        int magSize = 120;
+        int zoom = 4;
+        int srcSize = magSize / zoom;
+        int srcX = pt.x - srcSize / 2;
+        int srcY = pt.y - srcSize / 2;
+        int destX = pt.x - vx + 20;
+        int destY = pt.y - vy + 20;
 
-            HPEN hPen = CreatePen(PS_DOT, 1, RGB(255, 0, 0));
-            HPEN hOldPen = (HPEN)SelectObject(memDC, hPen);
-            HBRUSH hOldBrush = (HBRUSH)SelectObject(memDC, GetStockObject(NULL_BRUSH));
-            SetBkMode(memDC, TRANSPARENT);
-            Rectangle(memDC, r.left, r.top, r.right, r.bottom);
-            SelectObject(memDC, hOldBrush);
-            SelectObject(memDC, hOldPen);
-            DeleteObject(hPen);
+        if (destX + magSize > vw) destX = pt.x - vx - magSize - 20;
+        if (destY + magSize > vh) destY = pt.y - vy - magSize - 20;
 
-            BitBlt(hdc, 0, 0, cr.right, cr.bottom, memDC, 0, 0, SRCCOPY);
+        StretchBlt(memDC, destX, destY, magSize, magSize, g_frozenDC, srcX - vx, srcY - vy, srcSize, srcSize, SRCCOPY);
 
-            DeleteObject(memBitmap);
-            DeleteDC(memDC);
-            EndPaint(hwnd, &ps);
-            return 0;
-        }
-        case WM_ERASEBKGND:
-            return TRUE;
+        HPEN magPen = CreatePen(PS_SOLID, 1, RGB(255, 50, 50));
+        HPEN oldMagPen = (HPEN)SelectObject(memDC, magPen);
+        MoveToEx(memDC, destX + magSize / 2, destY, nullptr);
+        LineTo(memDC, destX + magSize / 2, destY + magSize);
+        MoveToEx(memDC, destX, destY + magSize / 2, nullptr);
+        LineTo(memDC, destX + magSize, destY + magSize / 2);
+
+        HBRUSH nullBrush = (HBRUSH)GetStockObject(NULL_BRUSH);
+        HBRUSH oldBorderBrush = (HBRUSH)SelectObject(memDC, nullBrush);
+        Rectangle(memDC, destX, destY, destX + magSize, destY + magSize);
+
+        SelectObject(memDC, oldBorderBrush);
+        SelectObject(memDC, oldMagPen);
+        DeleteObject(magPen);
+
+        BitBlt(hdc, 0, 0, cr.right, cr.bottom, memDC, 0, 0, SRCCOPY);
+
+        DeleteObject(memBitmap);
+        DeleteDC(memDC);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return TRUE;
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
@@ -252,9 +285,10 @@ void sc_initialize() {
     _sc_get_monitors(g_monitors);
 }
 
-void sc_begin_capture(sc_capture_options& options) {
+void sc_begin_capture(sc_capture_options options) {
     if (g_capturing) return;
     g_capturing = true;
+    g_options = options;
     g_mouseDown = false;
     g_dragging = false;
     g_wasDragging = false;
@@ -279,7 +313,7 @@ void sc_begin_capture(sc_capture_options& options) {
     ReleaseDC(nullptr, hScreenDC);
 
     if (!g_overlayHwnd) {
-        WNDCLASSA wc = {0};
+        WNDCLASSA wc = { 0 };
         wc.lpfnWndProc = OverlayWndProc;
         wc.hInstance = GetModuleHandle(nullptr);
         wc.hCursor = LoadCursor(nullptr, IDC_CROSS);
@@ -327,7 +361,7 @@ bool sc_capture_update(sc_capture_info& ci) {
             if (g_finalHwnd && !g_wasDragging && IsWindow(g_finalHwnd)) {
                 RECT rWin;
                 GetWindowRect(g_finalHwnd, &rWin);
-                
+
                 int winW = rWin.right - rWin.left;
                 int winH = rWin.bottom - rWin.top;
 
@@ -340,7 +374,7 @@ bool sc_capture_update(sc_capture_info& ci) {
                     GetRealWindowRect(g_finalHwnd, &rDwm);
                     int dx = rDwm.left - rWin.left;
                     int dy = rDwm.top - rWin.top;
-                    
+
                     BitBlt(hMemoryDC, 0, 0, ci.width, ci.height, hTempDC, dx, dy, SRCCOPY);
                     windowCaptured = true;
                 }
@@ -363,6 +397,44 @@ bool sc_capture_update(sc_capture_info& ci) {
 
             ci.data = new unsigned char[ci.width * ci.height * 4];
             GetDIBits(hMemoryDC, hBitmap, 0, ci.height, ci.data, (BITMAPINFO*)&bih, DIB_RGB_COLORS);
+
+            if (g_options.copy_to_clipboard) {
+                if (OpenClipboard(nullptr)) {
+                    EmptyClipboard();
+                    
+                    // CF_DIB for native apps
+                    size_t dibSize = sizeof(BITMAPINFOHEADER) + (ci.width * ci.height * 4);
+                    HGLOBAL hGlobalDIB = GlobalAlloc(GMEM_MOVEABLE, dibSize);
+                    if (hGlobalDIB) {
+                        void* pGlobal = GlobalLock(hGlobalDIB);
+                        memcpy(pGlobal, &bih, sizeof(BITMAPINFOHEADER));
+                        memcpy((char*)pGlobal + sizeof(BITMAPINFOHEADER), ci.data, ci.width * ci.height * 4);
+                        GlobalUnlock(hGlobalDIB);
+                        if (!SetClipboardData(CF_DIB, hGlobalDIB)) GlobalFree(hGlobalDIB);
+                    }
+
+                    _sc_swap_channels((uint32_t*)ci.data, ci.width * ci.height);
+                    
+                    // for modern apps like discord. cf_dib doesn't work here
+                    std::vector<unsigned char> pngData;
+                    stbi_write_png_to_func([](void* context, void* data, int size) {
+                        auto* vec = static_cast<std::vector<unsigned char>*>(context);
+                        auto* bytes = static_cast<unsigned char*>(data);
+                        vec->insert(vec->end(), bytes, bytes + size);
+                    }, &pngData, ci.width, ci.height, 4, ci.data, ci.width * 4);
+
+                    UINT formatPNG = RegisterClipboardFormatA("PNG");
+                    HGLOBAL hGlobalPNG = GlobalAlloc(GMEM_MOVEABLE, pngData.size());
+                    if (hGlobalPNG) {
+                        void* pGlobal = GlobalLock(hGlobalPNG);
+                        memcpy(pGlobal, pngData.data(), pngData.size());
+                        GlobalUnlock(hGlobalPNG);
+                        if (!SetClipboardData(formatPNG, hGlobalPNG)) GlobalFree(hGlobalPNG);
+                    }
+
+                    CloseClipboard();
+                }
+            }
 
             DeleteObject(hBitmap);
             DeleteDC(hMemoryDC);
@@ -453,7 +525,7 @@ bool sc_capture_window(int pid, sc_capture_info& ci) {
             return FALSE;
         }
         return TRUE;
-    }, reinterpret_cast<LPARAM>(&data));
+        }, reinterpret_cast<LPARAM>(&data));
 }
 
 bool sc_capture_desktop(uint8_t desktop, sc_capture_info& ci) {
