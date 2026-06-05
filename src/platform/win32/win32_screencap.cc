@@ -1,4 +1,5 @@
 #include "platform/platform_screencap.h"
+#include "screencap.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -26,42 +27,46 @@
 #include <winrt/Windows.Media.Ocr.h>
 #include <winrt/Windows.Storage.Streams.h>
 
+#pragma warning(push, 0)
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#pragma warning(pop)
 
 #ifndef PW_RENDERFULLCONTENT
 #define PW_RENDERFULLCONTENT 2
 #endif
 #include <iostream>
 
-static std::vector<sc_monitor_info> g_monitors;
-static sc_capture_options g_options = { 0 };
-
-static HWND g_overlayHwnd = nullptr;
-static bool g_capturing = false;
-static bool g_mouseDown = false;
-static bool g_dragging = false;
-static bool g_snapDrag = false;
-static bool g_wasDragging = false;
-static POINT g_dragStart = { 0 };
-static sc_rect g_currentRect = { 0 };
-static bool g_captureReady = false;
-static sc_rect g_finalRect = { 0 };
-static HWND g_hoveredHwnd = nullptr;
-static HWND g_finalHwnd = nullptr;
-
-static HDC g_frozenDC = nullptr;
-static HBITMAP g_frozenBitmap = nullptr;
-
 struct sc_ocr_line {
     sc_rect rect;
     std::vector<sc_rect> chars;
 };
 
-static std::vector<sc_ocr_line> g_ocrLines;
-static std::mutex g_ocrMutex;
+struct {
+    std::vector<sc_monitor_info> monitors;
+    sc_capture_options options = { 0 };
+
+    HWND overlayHwnd = nullptr;
+    bool capturing = false;
+    bool mouseDown = false;
+    bool dragging = false;
+    bool snapDrag = false;
+    bool wasDragging = false;
+    POINT dragStart = { 0 };
+    sc_rect currentRect = { 0 };
+    bool captureReady = false;
+    sc_rect finalRect = { 0 };
+    HWND hoveredHwnd = nullptr;
+    HWND finalHwnd = nullptr;
+
+    HDC frozenDC = nullptr;
+    HBITMAP frozenBitmap = nullptr;
+
+    std::vector<sc_ocr_line> ocrLines;
+    std::mutex ocrMutex;
+} state;
 
 struct FindWindowData {
     POINT pt;
@@ -126,12 +131,12 @@ void _sc_run_ocr_async() {
     int sw = vw * scale;
     int sh = vh * scale;
 
-    HDC hScaledDC = CreateCompatibleDC(g_frozenDC);
-    HBITMAP hScaledBmp = CreateCompatibleBitmap(g_frozenDC, sw, sh);
+    HDC hScaledDC = CreateCompatibleDC(state.frozenDC);
+    HBITMAP hScaledBmp = CreateCompatibleBitmap(state.frozenDC, sw, sh);
     SelectObject(hScaledDC, hScaledBmp);
     SetStretchBltMode(hScaledDC, HALFTONE);
     SetBrushOrgEx(hScaledDC, 0, 0, nullptr);
-    StretchBlt(hScaledDC, 0, 0, sw, sh, g_frozenDC, 0, 0, vw, vh, SRCCOPY);
+    StretchBlt(hScaledDC, 0, 0, sw, sh, state.frozenDC, 0, 0, vw, vh, SRCCOPY);
 
     BITMAPINFOHEADER bih = {};
     bih.biSize = sizeof(BITMAPINFOHEADER);
@@ -200,8 +205,8 @@ void _sc_run_ocr_async() {
                     }
                 }
 
-                std::lock_guard<std::mutex> lock(g_ocrMutex);
-                g_ocrLines = lines;
+                std::lock_guard<std::mutex> lock(state.ocrMutex);
+                state.ocrLines = lines;
             }
         } catch (...) {}
     }).detach();
@@ -213,10 +218,10 @@ bool _sc_rects_intersect(const sc_rect& a, const sc_rect& b) {
 }
 
 bool _sc_snap_to_text(const sc_rect& drag, sc_rect& out) {
-    std::lock_guard<std::mutex> lock(g_ocrMutex);
+    std::lock_guard<std::mutex> lock(state.ocrMutex);
     bool found = false;
     int minx = 0, miny = 0, maxx = 0, maxy = 0;
-    for (const auto& line : g_ocrLines) {
+    for (const auto& line : state.ocrLines) {
         for (const auto& w : line.chars) {
             if (!_sc_rects_intersect(drag, w)) continue;
             if (!found) {
@@ -236,8 +241,8 @@ bool _sc_snap_to_text(const sc_rect& drag, sc_rect& out) {
 }
 
 bool _sc_text_at_point(POINT pt, sc_rect& out) {
-    std::lock_guard<std::mutex> lock(g_ocrMutex);
-    for (const auto& line : g_ocrLines) {
+    std::lock_guard<std::mutex> lock(state.ocrMutex);
+    for (const auto& line : state.ocrLines) {
         if (pt.x >= line.rect.x && pt.x < line.rect.x + line.rect.width &&
             pt.y >= line.rect.y && pt.y < line.rect.y + line.rect.height) {
             out = line.rect;
@@ -317,7 +322,7 @@ BOOL CALLBACK FindWindowProc(HWND hwnd, LPARAM lParam) {
 }
 
 void UpdateHoverRect(POINT pt) {
-    FindWindowData data = { pt, nullptr, g_overlayHwnd };
+    FindWindowData data = { pt, nullptr, state.overlayHwnd };
     EnumWindows(FindWindowProc, reinterpret_cast<LPARAM>(&data));
 
     char className[256] = { 0 };
@@ -326,57 +331,57 @@ void UpdateHoverRect(POINT pt) {
     }
 
     if (!data.result || strcmp(className, "Progman") == 0 || strcmp(className, "WorkerW") == 0) {
-        g_hoveredHwnd = nullptr;
-        for (const auto& m : g_monitors) {
+        state.hoveredHwnd = nullptr;
+        for (const auto& m : state.monitors) {
             if (pt.x >= m.rect.x && pt.x < m.rect.x + m.rect.width &&
                 pt.y >= m.rect.y && pt.y < m.rect.y + m.rect.height) {
-                g_currentRect = m.rect;
+                state.currentRect = m.rect;
                 break;
             }
         }
     } else {
-        g_hoveredHwnd = data.result;
+        state.hoveredHwnd = data.result;
         RECT r;
         GetRealWindowRect(data.result, &r);
-        g_currentRect = { r.left, r.top, r.right - r.left, r.bottom - r.top };
+        state.currentRect = { r.left, r.top, r.right - r.left, r.bottom - r.top };
     }
 }
 
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_SETCURSOR:
-            SetCursor(LoadCursor(nullptr, g_options.extract_text ? IDC_IBEAM : IDC_CROSS));
+            SetCursor(LoadCursor(nullptr, state.options.extract_text ? IDC_IBEAM : IDC_CROSS));
             return TRUE;
         case WM_MOUSEMOVE: {
-            if (!g_capturing) break;
+            if (!state.capturing) break;
             POINT pt;
             GetCursorPos(&pt);
 
-            if (g_mouseDown) {
-                if (!g_dragging) {
-                    if (std::abs(pt.x - g_dragStart.x) > 3 || std::abs(pt.y - g_dragStart.y) > 3) {
-                        g_dragging = true;
+            if (state.mouseDown) {
+                if (!state.dragging) {
+                    if (std::abs(pt.x - state.dragStart.x) > 3 || std::abs(pt.y - state.dragStart.y) > 3) {
+                        state.dragging = true;
                     }
                 }
-                if (g_dragging) {
+                if (state.dragging) {
                     sc_rect dragRect;
-                    dragRect.x = std::min(g_dragStart.x, pt.x);
-                    dragRect.y = std::min(g_dragStart.y, pt.y);
-                    dragRect.width = std::abs(pt.x - g_dragStart.x);
-                    dragRect.height = std::abs(pt.y - g_dragStart.y);
+                    dragRect.x = std::min(state.dragStart.x, pt.x);
+                    dragRect.y = std::min(state.dragStart.y, pt.y);
+                    dragRect.width = std::abs(pt.x - state.dragStart.x);
+                    dragRect.height = std::abs(pt.y - state.dragStart.y);
 
                     sc_rect snapped;
-                    if (g_snapDrag && _sc_snap_to_text(dragRect, snapped)) {
-                        g_currentRect = snapped;
+                    if (state.snapDrag && _sc_snap_to_text(dragRect, snapped)) {
+                        state.currentRect = snapped;
                     } else {
-                        g_currentRect = dragRect;
+                        state.currentRect = dragRect;
                     }
                 }
             } else {
                 sc_rect textRect;
-                if (g_options.extract_text && _sc_text_at_point(pt, textRect)) {
-                    g_hoveredHwnd = nullptr;
-                    g_currentRect = textRect;
+                if (state.options.extract_text && _sc_text_at_point(pt, textRect)) {
+                    state.hoveredHwnd = nullptr;
+                    state.currentRect = textRect;
                 } else {
                     UpdateHoverRect(pt);
                 }
@@ -385,42 +390,42 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         }
         case WM_LBUTTONDOWN: {
-            if (!g_capturing) break;
+            if (!state.capturing) break;
             POINT pt;
             GetCursorPos(&pt);
-            g_mouseDown = true;
-            g_dragStart = pt;
+            state.mouseDown = true;
+            state.dragStart = pt;
             sc_rect textRect;
-            g_snapDrag = g_options.extract_text && _sc_text_at_point(pt, textRect);
+            state.snapDrag = state.options.extract_text && _sc_text_at_point(pt, textRect);
             SetCapture(hwnd);
             return 0;
         }
         case WM_LBUTTONUP: {
-            if (!g_capturing) break;
-            if (g_mouseDown) {
-                g_finalRect = g_currentRect;
-                g_finalHwnd = g_hoveredHwnd;
-                g_wasDragging = g_dragging;
+            if (!state.capturing) break;
+            if (state.mouseDown) {
+                state.finalRect = state.currentRect;
+                state.finalHwnd = state.hoveredHwnd;
+                state.wasDragging = state.dragging;
                 ReleaseCapture();
                 ShowWindow(hwnd, SW_HIDE);
-                g_captureReady = true;
-                g_mouseDown = false;
-                g_dragging = false;
+                state.captureReady = true;
+                state.mouseDown = false;
+                state.dragging = false;
             }
             return 0;
         }
         case WM_KEYDOWN: {
             if (wParam == VK_ESCAPE) {
-                if (g_mouseDown) {
-                    g_mouseDown = false;
-                    g_dragging = false;
+                if (state.mouseDown) {
+                    state.mouseDown = false;
+                    state.dragging = false;
                     ReleaseCapture();
                     POINT pt;
                     GetCursorPos(&pt);
                     UpdateHoverRect(pt);
                     InvalidateRect(hwnd, nullptr, FALSE);
                 } else {
-                    g_capturing = false;
+                    state.capturing = false;
                     ShowWindow(hwnd, SW_HIDE);
                 }
             }
@@ -436,8 +441,8 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             HBITMAP memBitmap = CreateCompatibleBitmap(hdc, cr.right, cr.bottom);
             SelectObject(memDC, memBitmap);
 
-            if (g_frozenDC) {
-                BitBlt(memDC, 0, 0, cr.right, cr.bottom, g_frozenDC, 0, 0, SRCCOPY);
+            if (state.frozenDC) {
+                BitBlt(memDC, 0, 0, cr.right, cr.bottom, state.frozenDC, 0, 0, SRCCOPY);
             }
 
             int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -445,9 +450,9 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
             int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
-            RECT r = { g_currentRect.x - vx, g_currentRect.y - vy,
-                       g_currentRect.x - vx + g_currentRect.width,
-                       g_currentRect.y - vy + g_currentRect.height };
+            RECT r = { state.currentRect.x - vx, state.currentRect.y - vy,
+                       state.currentRect.x - vx + state.currentRect.width,
+                       state.currentRect.y - vy + state.currentRect.height };
 
             HDC hAlphaDC = CreateCompatibleDC(memDC);
             HBITMAP hAlphaBmp = CreateCompatibleBitmap(memDC, 1, 1);
@@ -467,11 +472,11 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             SelectObject(memDC, hOldPen);
             DeleteObject(hPen);
 
-            if (g_currentRect.width > 0 && g_currentRect.height > 0) {
+            if (state.currentRect.width > 0 && state.currentRect.height > 0) {
                 HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
                 HFONT hOldFont = (HFONT)SelectObject(memDC, hFont);
                 char sizeText[64];
-                snprintf(sizeText, sizeof(sizeText), "%d x %d", g_currentRect.width, g_currentRect.height);
+                snprintf(sizeText, sizeof(sizeText), "%d x %d", state.currentRect.width, state.currentRect.height);
                 
                 SIZE textSize;
                 GetTextExtentPoint32A(memDC, sizeText, (int)strlen(sizeText), &textSize);
@@ -504,7 +509,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (destX + magSize > vw) destX = pt.x - vx - magSize - 20;
             if (destY + magSize > vh) destY = pt.y - vy - magSize - 20;
 
-            StretchBlt(memDC, destX, destY, magSize, magSize, g_frozenDC, srcX - vx, srcY - vy, srcSize, srcSize, SRCCOPY);
+            StretchBlt(memDC, destX, destY, magSize, magSize, state.frozenDC, srcX - vx, srcY - vy, srcSize, srcSize, SRCCOPY);
 
             HPEN magPen = CreatePen(PS_SOLID, 1, RGB(255, 50, 50));
             HPEN oldMagPen = (HPEN)SelectObject(memDC, magPen);
@@ -537,20 +542,20 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 void sc_initialize() {
     winrt::init_apartment();
     SetProcessDPIAware();
-    _sc_get_monitors(g_monitors);
+    _sc_get_monitors(state.monitors);
 }
 
 void sc_begin_capture(sc_capture_options options) {
-    if (g_capturing) return;
-    g_capturing = true;
-    g_options = options;
-    g_mouseDown = false;
-    g_dragging = false;
-    g_wasDragging = false;
-    g_snapDrag = false;
-    g_captureReady = false;
-    g_hoveredHwnd = nullptr;
-    g_finalHwnd = nullptr;
+    if (state.capturing) return;
+    state.capturing = true;
+    state.options = options;
+    state.mouseDown = false;
+    state.dragging = false;
+    state.wasDragging = false;
+    state.snapDrag = false;
+    state.captureReady = false;
+    state.hoveredHwnd = nullptr;
+    state.finalHwnd = nullptr;
 
     int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
     int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
@@ -558,14 +563,14 @@ void sc_begin_capture(sc_capture_options options) {
     int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
     HDC hScreenDC = GetDC(nullptr);
-    if (g_frozenDC) {
-        DeleteDC(g_frozenDC);
-        DeleteObject(g_frozenBitmap);
+    if (state.frozenDC) {
+        DeleteDC(state.frozenDC);
+        DeleteObject(state.frozenBitmap);
     }
-    g_frozenDC = CreateCompatibleDC(hScreenDC);
-    g_frozenBitmap = CreateCompatibleBitmap(hScreenDC, vw, vh);
-    SelectObject(g_frozenDC, g_frozenBitmap);
-    BitBlt(g_frozenDC, 0, 0, vw, vh, hScreenDC, vx, vy, SRCCOPY);
+    state.frozenDC = CreateCompatibleDC(hScreenDC);
+    state.frozenBitmap = CreateCompatibleBitmap(hScreenDC, vw, vh);
+    SelectObject(state.frozenDC, state.frozenBitmap);
+    BitBlt(state.frozenDC, 0, 0, vw, vh, hScreenDC, vx, vy, SRCCOPY);
     ReleaseDC(nullptr, hScreenDC);
 
     if (options.mode == sc_capture_mode::window_under_cursor) {
@@ -576,37 +581,37 @@ void sc_begin_capture(sc_capture_options options) {
             hwnd = GetAncestor(hwnd, GA_ROOT);
             RECT rect;
             GetRealWindowRect(hwnd, &rect);
-            g_finalRect = { rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top };
-            g_finalHwnd = hwnd;
-            g_captureReady = true;
+            state.finalRect = { rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top };
+            state.finalHwnd = hwnd;
+            state.captureReady = true;
         } else {
-            g_capturing = false;
+            state.capturing = false;
         }
         return;
     }  else if (options.mode == sc_capture_mode::monitor_under_cursor) {
         POINT pt;
         GetCursorPos(&pt);
-        for (const auto& m : g_monitors) {
+        for (const auto& m : state.monitors) {
             if (pt.x >= m.rect.x && pt.x < m.rect.x + m.rect.width &&
                 pt.y >= m.rect.y && pt.y < m.rect.y + m.rect.height) {
-                g_finalRect = m.rect;
-                g_captureReady = true;
+                state.finalRect = m.rect;
+                state.captureReady = true;
                 break;
             }
         }
-        if (!g_captureReady) g_capturing = false;
+        if (!state.captureReady) state.capturing = false;
         return;
     }
 
     {
-        std::lock_guard<std::mutex> lock(g_ocrMutex);
-        g_ocrLines.clear();
+        std::lock_guard<std::mutex> lock(state.ocrMutex);
+        state.ocrLines.clear();
     }
     if (options.extract_text) {
         _sc_run_ocr_async();
     }
 
-    if (!g_overlayHwnd) {
+    if (!state.overlayHwnd) {
         WNDCLASSA wc = { 0 };
         wc.lpfnWndProc = OverlayWndProc;
         wc.hInstance = GetModuleHandle(nullptr);
@@ -614,42 +619,43 @@ void sc_begin_capture(sc_capture_options options) {
         wc.lpszClassName = "ScOverlayWindow";
         RegisterClassA(&wc);
 
-        g_overlayHwnd = CreateWindowExA(
+        state.overlayHwnd = CreateWindowExA(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             "ScOverlayWindow", "ScreenshotOverlay",
             WS_POPUP,
             vx, vy, vw, vh,
             nullptr, nullptr, GetModuleHandle(nullptr), nullptr
         );
-    } else {
-        SetWindowPos(g_overlayHwnd, HWND_TOPMOST, vx, vy, vw, vh, SWP_NOACTIVATE);
+    }
+    else {
+        SetWindowPos(state.overlayHwnd, HWND_TOPMOST, vx, vy, vw, vh, SWP_NOACTIVATE);
     }
 
     POINT pt;
     GetCursorPos(&pt);
     UpdateHoverRect(pt);
 
-    ShowWindow(g_overlayHwnd, SW_SHOW);
-    SetForegroundWindow(g_overlayHwnd);
-    SetFocus(g_overlayHwnd);
+    ShowWindow(state.overlayHwnd, SW_SHOW);
+    SetForegroundWindow(state.overlayHwnd);
+    SetFocus(state.overlayHwnd);
 }
 
 bool sc_capture_update(sc_capture_info& ci) {
-    if (g_captureReady) {
-        g_captureReady = false;
-        g_capturing = false;
+    if (state.captureReady) {
+        state.captureReady = false;
+        state.capturing = false;
 
-        if (g_finalRect.width > 0 && g_finalRect.height > 0 && g_frozenDC) {
+        if (state.finalRect.width > 0 && state.finalRect.height > 0 && state.frozenDC) {
             int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
             int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
 
-            int captureWidth = g_finalRect.width;
-            int captureHeight = g_finalRect.height;
+            int captureWidth = state.finalRect.width;
+            int captureHeight = state.finalRect.height;
 
             ci.width = captureWidth;
             ci.height = captureHeight;
 
-            if (g_options.extract_text) {
+            if (state.options.extract_text) {
                 ci.width = captureWidth * 2;
                 ci.height = captureHeight * 2;
                 while (ci.width < 40 || ci.height < 40) {
@@ -660,30 +666,30 @@ bool sc_capture_update(sc_capture_info& ci) {
 
             ci.channels = 4;
 
-            HDC hMemoryDC = CreateCompatibleDC(g_frozenDC);
-            HBITMAP hBitmap = CreateCompatibleBitmap(g_frozenDC, ci.width, ci.height);
+            HDC hMemoryDC = CreateCompatibleDC(state.frozenDC);
+            HBITMAP hBitmap = CreateCompatibleBitmap(state.frozenDC, ci.width, ci.height);
             SelectObject(hMemoryDC, hBitmap);
             SetStretchBltMode(hMemoryDC, HALFTONE);
             SetBrushOrgEx(hMemoryDC, 0, 0, nullptr);
 
             bool windowCaptured = false;
-            if (g_finalHwnd && !g_wasDragging && IsWindow(g_finalHwnd)) {
+            if (state.finalHwnd && !state.wasDragging && IsWindow(state.finalHwnd)) {
                 RECT rWin;
-                GetWindowRect(g_finalHwnd, &rWin);
-                
+                GetWindowRect(state.finalHwnd, &rWin);
+
                 int winW = rWin.right - rWin.left;
                 int winH = rWin.bottom - rWin.top;
 
-                HDC hTempDC = CreateCompatibleDC(g_frozenDC);
-                HBITMAP hTempBmp = CreateCompatibleBitmap(g_frozenDC, winW, winH);
+                HDC hTempDC = CreateCompatibleDC(state.frozenDC);
+                HBITMAP hTempBmp = CreateCompatibleBitmap(state.frozenDC, winW, winH);
                 SelectObject(hTempDC, hTempBmp);
 
-                if (PrintWindow(g_finalHwnd, hTempDC, PW_RENDERFULLCONTENT)) {
+                if (PrintWindow(state.finalHwnd, hTempDC, PW_RENDERFULLCONTENT)) {
                     RECT rDwm;
-                    GetRealWindowRect(g_finalHwnd, &rDwm);
+                    GetRealWindowRect(state.finalHwnd, &rDwm);
                     int dx = rDwm.left - rWin.left;
                     int dy = rDwm.top - rWin.top;
-                    
+
                     StretchBlt(hMemoryDC, 0, 0, ci.width, ci.height, hTempDC, dx, dy, captureWidth, captureHeight, SRCCOPY);
                     windowCaptured = true;
                 }
@@ -693,7 +699,7 @@ bool sc_capture_update(sc_capture_info& ci) {
             }
 
             if (!windowCaptured) {
-                StretchBlt(hMemoryDC, 0, 0, ci.width, ci.height, g_frozenDC, g_finalRect.x - vx, g_finalRect.y - vy, captureWidth, captureHeight, SRCCOPY);
+                StretchBlt(hMemoryDC, 0, 0, ci.width, ci.height, state.frozenDC, state.finalRect.x - vx, state.finalRect.y - vy, captureWidth, captureHeight, SRCCOPY);
             }
 
             BITMAPINFOHEADER bih = {};
@@ -707,7 +713,7 @@ bool sc_capture_update(sc_capture_info& ci) {
             ci.data = new unsigned char[ci.width * ci.height * 4];
             GetDIBits(hMemoryDC, hBitmap, 0, ci.height, ci.data, (BITMAPINFO*)&bih, DIB_RGB_COLORS);
 
-            if (g_options.extract_text) {
+            if (state.options.extract_text) {
                 try {
                     int pad = 24;
                     int pw = (int)ci.width + pad * 2;
@@ -758,7 +764,7 @@ bool sc_capture_update(sc_capture_info& ci) {
                 } catch (...) {
                     fprintf(stderr, "OCR Failed\n");
                 }
-            } else if (g_options.copy_to_clipboard) {
+            } else if (state.options.copy_to_clipboard) {
                 if (OpenClipboard(nullptr)) {
                     EmptyClipboard();
                     
@@ -905,7 +911,7 @@ bool sc_capture_desktop(int8_t desktop, sc_capture_info& ci) {
     if (desktop == -1) {
         POINT pt;
         GetCursorPos(&pt);
-        for (const auto& m : g_monitors) {
+        for (const auto& m : state.monitors) {
             if (pt.x >= m.rect.x && pt.x < m.rect.x + m.rect.width &&
                 pt.y >= m.rect.y && pt.y < m.rect.y + m.rect.height) {
                 desktop = m.id;
@@ -914,12 +920,12 @@ bool sc_capture_desktop(int8_t desktop, sc_capture_info& ci) {
         }
     }
 
-    if (desktop >= g_monitors.size()) {
+    if (desktop >= state.monitors.size()) {
         fprintf(stderr, "Invalid desktop ID\n");
         return false;
     }
 
-    if (!sc_capture_region(g_monitors[desktop].rect, ci)) {
+    if (!sc_capture_region(state.monitors[desktop].rect, ci)) {
         fprintf(stderr, "read_screen_pixels_into failed\n");
         return false;
     }

@@ -23,7 +23,7 @@ workspace "screencap"
     architecture "x86_64"
 
   filter "system:windows"
-    defines { "SC_PLATFORM_WINDOWS" }
+    defines { "SC_PLATFORM_WINDOWS", "_CRT_SECURE_NO_WARNINGS" }
 
   filter {}
 

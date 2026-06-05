@@ -6,8 +6,8 @@ struct sc_capture_info {
     unsigned char* data;
     bool channels_swapped;
     uint8_t channels;
-    size_t width;
-    size_t height;
+    int width;
+    int height;
 };
 
 struct sc_rect {
