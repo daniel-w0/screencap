@@ -77,15 +77,17 @@ struct sc_app {
 void sc_initialize();
 bool sc_running();
 bool sc_update(sc_capture_options& active_options);
+sc_app& sc_get_app();
 
-// -1 to auto-detect desktop/window under cursor
-bool sc_capture_desktop(int8_t desktop, sc_capture_info& ci);
-// -1 to auto-detect window under cursor
-bool sc_capture_window(int pid, sc_capture_info& ci);
-bool sc_capture_region(sc_rect rect, sc_capture_info& ci);
 bool sc_save_capture(sc_capture_info& ci);
 void sc_begin_capture(sc_capture_options options);
 bool sc_capture_update(sc_capture_info& ci);
 void sc_cleanup(sc_capture_info& ci);
+void sc_shutdown();
 
-int sc_get_fastest_refresh_rate();
+void _sc_init_impl();
+void _sc_shutdown_impl();
+void _sc_cleanup_impl(sc_capture_info& ci);
+void _sc_swap_channels(uint32_t* pixels, int totalPixels);
+
+std::string _sc_plat_get_default_save_path();

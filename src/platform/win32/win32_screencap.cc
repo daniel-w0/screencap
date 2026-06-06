@@ -81,40 +81,10 @@ struct FindWindowData {
     HWND result;
     HWND overlayHwnd;
 };
-
-static sc_app g_app;
 #pragma endregion
 
 #pragma region Utils
-sc_internal std::string _get_date_string() {
-    auto now = std::chrono::system_clock::now();
-    std::time_t now_time_t = std::chrono::system_clock::to_time_t(now);
-    std::tm now_tm;
-#if defined(_WIN32) || defined(_WIN64)
-    localtime_s(&now_tm, &now_time_t);
-#else
-    localtime_r(&now_time_t, &now_tm);
-#endif
-    char buffer[20];
-    std::strftime(buffer, sizeof(buffer), "%Y-%m-%d", &now_tm);
-    return std::string(buffer);
-}
-
-sc_internal std::string _get_filename_timestamp() {
-    auto now = std::chrono::system_clock::now();
-    std::time_t now_time_t = std::chrono::system_clock::to_time_t(now);
-    std::tm now_tm;
-#if defined(_WIN32) || defined(_WIN64)
-    localtime_s(&now_tm, &now_time_t);
-#else
-    localtime_r(&now_time_t, &now_tm);
-#endif
-    char buffer[20];
-    std::strftime(buffer, sizeof(buffer), "%d-%m-%Y_%H-%M-%S", &now_tm);
-    return std::string(buffer);
-}
-
-sc_internal std::string _get_default_save_path() {
+std::string _sc_plat_get_default_save_path() {
     static fs::path pictures = fs::path(getenv("USERPROFILE")) / "Pictures";
     if (!fs::exists(pictures)) {
         pictures = fs::current_path();
@@ -131,27 +101,6 @@ sc_internal std::string _get_default_save_path() {
     }
 
     return base_savepath.string();
-}
-
-sc_internal fs::path _get_save_path() {
-    fs::path save_path(fs::path((g_app.save_path.empty() ? _get_default_save_path() : g_app.save_path)) / _get_date_string());
-    if (!fs::exists(save_path)) {
-        std::error_code ec;
-        if (!fs::create_directories(save_path, ec)) {
-            return _get_default_save_path();
-        }
-    }
-    return save_path.string();
-    //fs::path date_savepath = base_savepath / _get_date_string();
-
-    //if (!fs::exists(date_savepath)) {
-    //    std::error_code ec;
-    //    if (!fs::create_directories(date_savepath, ec)) {
-    //        return (pictures / (_get_filename_timestamp() + ".png")).string();
-    //    }
-    //}
-
-    //return (date_savepath / (_get_filename_timestamp() + ".png")).string();
 }
 
 sc_internal bool _sc_rects_intersect(const sc_rect& a, const sc_rect& b) {
@@ -171,14 +120,6 @@ sc_internal void GetRealWindowRect(HWND hwnd, RECT* rect) {
         GetWindowRect(hwnd, rect);
     }
 }
-
-sc_internal void _sc_swap_channels(uint32_t* pixels, int totalPixels) {
-    for (int i = 0; i < totalPixels; ++i) {
-        uint32_t p = pixels[i];
-        pixels[i] = 0xFF000000 | (p & 0x0000FF00) | ((p & 0x00FF0000) >> 16) | ((p & 0x000000FF) << 16);
-    }
-}
-
 
 sc_internal const sc_monitor_info* _sc_monitor_at_point(POINT pt) {
     for (const auto& m : g_state.monitors) {
@@ -262,37 +203,21 @@ sc_internal bool _sc_write_to_clipboard(UINT format, const void* data, size_t si
     return true;
 }
 
-bool _sc_init_app() {
-    g_app = {};
-    g_app.running = true;
-    g_app.opt_copy_to_clipboard = true;
-    g_app.save_path = _get_default_save_path();
+void _sc_init_impl() {
+    { // Register hotkeys
+        for (auto& hk : sc_get_app().hotkeys) {
+            hk.registered = RegisterHotKey(nullptr, hk.id, hk.modifiers | MOD_NOREPEAT, hk.key);
+            if (!hk.registered) {
+                fprintf(stderr, "Failed to register hotkey: %s\n", sc_hotkey_id_strings[hk.id]);
+            }
+        }
 
-    g_app.hotkeys[sc_hotkey_screenshot] = { sc_hotkey_id::sc_hotkey_screenshot, 0, VK_SNAPSHOT };
-    g_app.hotkeys[sc_hotkey_clipboard] = { sc_hotkey_id::sc_hotkey_clipboard, MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT };
-    g_app.hotkeys[sc_hotkey_ocr] = { sc_hotkey_id::sc_hotkey_ocr, MOD_CONTROL | MOD_ALT, VK_SNAPSHOT };
-    g_app.hotkeys[sc_hotkey_active_window] = { sc_hotkey_id::sc_hotkey_active_window, MOD_ALT, VK_SNAPSHOT };
-    g_app.hotkeys[sc_hotkey_current_monitor] = { sc_hotkey_id::sc_hotkey_current_monitor, MOD_CONTROL, VK_SNAPSHOT };
-    g_app.hotkeys[sc_hotkey_fallback_screenshot] = { sc_hotkey_id::sc_hotkey_fallback_screenshot, MOD_CONTROL | MOD_ALT, 'C' };
-
-    for (auto& hk : g_app.hotkeys) {
-        hk.registered = RegisterHotKey(nullptr, hk.id, hk.modifiers | MOD_NOREPEAT, hk.key);
-        if (!hk.registered) {
-            fprintf(stderr, "Failed to register hotkey: %s\n", sc_hotkey_id_strings[hk.id]);
+        HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
+        DWORD prev_mode;
+        if (GetConsoleMode(hInput, &prev_mode)) {
+            SetConsoleMode(hInput, ENABLE_EXTENDED_FLAGS | (prev_mode & ~ENABLE_QUICK_EDIT_MODE));
         }
     }
-
-    HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
-    DWORD prev_mode;
-    if (GetConsoleMode(hInput, &prev_mode)) {
-        SetConsoleMode(hInput, ENABLE_EXTENDED_FLAGS | (prev_mode & ~ENABLE_QUICK_EDIT_MODE));
-    }
-
-    return true;
-}
-
-void sc_initialize() {
-    _sc_init_app();
 
     winrt::init_apartment();
     SetProcessDPIAware();
@@ -324,13 +249,8 @@ void sc_initialize() {
     }
 }
 
-bool sc_running() {
-    return g_app.running;
-}
-
-void _sc_shutdown() {
-    g_app.running = false;
-    for (const auto& hk : g_app.hotkeys) {
+void _sc_shutdown_impl() {
+    for (const auto& hk : sc_get_app().hotkeys) {
         if (hk.registered) {
             UnregisterHotKey(nullptr, hk.id);
         }
@@ -341,7 +261,7 @@ bool sc_update(sc_capture_options& active_options) {
     MSG msg = {};
     if (GetMessageA(&msg, nullptr, 0, 0) > 0) {
         if (msg.message == WM_DESTROY || (msg.message == WM_COMMAND && msg.wParam == TRAY_MENU_EXIT)) {
-            _sc_shutdown();
+            sc_shutdown();
             return false;
         } if (msg.message == WM_HOTKEY) {
             active_options.extract_text = (msg.wParam == sc_hotkey_ocr);
@@ -545,7 +465,7 @@ bool sc_capture_update(sc_capture_info& ci) {
         } catch (std::exception& e) {
             fprintf(stderr, "OCR failed: %s\n", e.what());
         }
-    } else if (g_app.opt_copy_to_clipboard && OpenClipboard(nullptr)) {
+    } else if (sc_get_app().opt_copy_to_clipboard && OpenClipboard(nullptr)) {
         EmptyClipboard();
         _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), ci.data, ci.width * ci.height * 4);
 
@@ -570,16 +490,7 @@ bool sc_capture_update(sc_capture_info& ci) {
     return true;
 }
 
-void sc_cleanup(sc_capture_info& ci) {
-    if (ci.data) {
-        delete[] ci.data;
-        ci.data = nullptr;
-    }
-    ci.width = 0;
-    ci.height = 0;
-    ci.channels = 0;
-    ci.channels_swapped = false;
-
+void _sc_cleanup_impl(sc_capture_info& ci) {
     if (g_state.overlayHwnd) {
         DestroyWindow(g_state.overlayHwnd);
         g_state.overlayHwnd = nullptr;
@@ -607,111 +518,6 @@ void sc_cleanup(sc_capture_info& ci) {
         std::lock_guard<std::mutex> lock(g_state.ocrMutex);
         g_state.ocrLines.clear();
     }
-}
-
-bool sc_capture_region(sc_rect rect, sc_capture_info& ci) {
-    HDC hScreenDC = GetDC(nullptr);
-    HDC hMemoryDC = CreateCompatibleDC(hScreenDC);
-    if (!hMemoryDC) {
-        ReleaseDC(nullptr, hScreenDC);
-        return false;
-    }
-    
-    ci.width = rect.width;
-    ci.height = rect.height;
-    ci.channels = 4;
-
-    HBITMAP hBitmap = CreateCompatibleBitmap(hScreenDC, ci.width, ci.height);
-    SelectObject(hMemoryDC, hBitmap);
-    BitBlt(hMemoryDC, 0, 0, ci.width, ci.height, hScreenDC, rect.x, rect.y, SRCCOPY);
-
-    BITMAPINFOHEADER bih = {};
-    bih.biSize = sizeof(BITMAPINFOHEADER);
-    bih.biWidth = (int)ci.width;
-    bih.biHeight = -static_cast<int>(ci.height);
-    bih.biPlanes = 1;
-    bih.biBitCount = 32;
-    bih.biCompression = BI_RGB;
-
-    ci.data = new unsigned char[ci.width * ci.height * 4];
-    GetDIBits(hMemoryDC, hBitmap, 0, ci.height, ci.data, (BITMAPINFO*)&bih, DIB_RGB_COLORS);
-
-    DeleteObject(hBitmap);
-    DeleteDC(hMemoryDC);
-    ReleaseDC(nullptr, hScreenDC);
-    return true;
-}
-
-bool sc_capture_window(int pid, sc_capture_info& ci) {
-    if (pid == -1) {
-        POINT pt;
-        GetCursorPos(&pt);
-        if (HWND hwnd = WindowFromPoint(pt)) {
-            RECT rect;
-            GetRealWindowRect(hwnd, &rect);
-            sc_rect cRect = { rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top };
-            return sc_capture_region(cRect, ci);
-        }
-    }
-    
-    struct EnumData { 
-        int pid; 
-        sc_capture_info& ci; 
-    } data = { pid, ci };
-    
-    return EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
-        auto* d = reinterpret_cast<EnumData*>(lp);
-        DWORD wPid;
-        GetWindowThreadProcessId(hwnd, &wPid);
-        
-        if (wPid == static_cast<DWORD>(d->pid)) {
-            RECT r;
-            GetRealWindowRect(hwnd, &r);
-            sc_rect cRect = { r.left, r.top, r.right - r.left, r.bottom - r.top };
-            return !sc_capture_region(cRect, d->ci);
-        }
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&data));
-}
-
-bool sc_capture_desktop(int8_t desktop, sc_capture_info& ci) {
-    if (desktop == -1) {
-        POINT pt;
-        GetCursorPos(&pt);
-        if (const auto* m = _sc_monitor_at_point(pt)) {
-            desktop = m->id;
-        }
-    }
-    if (desktop >= g_state.monitors.size()) {
-        return false;
-    }
-    return sc_capture_region(g_state.monitors[desktop].rect, ci);
-}
-
-bool sc_save_capture(sc_capture_info& ci) {
-    if (!ci.data || ci.width <= 0 || ci.height <= 0 || ci.channels <= 0) {
-        fprintf(stderr, "Invalid capture info\n");
-        return false;
-    }
-
-    if (g_app.save_path[0] == '\0') {
-        fprintf(stderr, "No save path configured\n");
-        return false;
-    }
-
-    if (!ci.channels_swapped) {
-        _sc_swap_channels((uint32_t*)ci.data, ci.width * ci.height);
-        ci.channels_swapped = true;
-    }
-
-    fs::path saveFile = _get_save_path() / (_get_filename_timestamp() + ".png");
-
-    if (!stbi_write_png(saveFile.string().c_str(), ci.width, ci.height, ci.channels, ci.data, ci.width * ci.channels)) {
-        fprintf(stderr, "Failed to save capture to %s\n", saveFile.string().c_str());
-        return false;
-    }
-    printf("Saved capture (%dx%d) to %s\n", ci.width, ci.height, saveFile.string().c_str());
-    return true;
 }
 #pragma endregion
 
@@ -947,7 +753,7 @@ void OpenFolderPickerDialog(HWND hwnd, HWND hEditPath) {
                     PWSTR pszPath = nullptr;
                     if (SUCCEEDED(pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszPath))) {
                         SetWindowTextW(hEdit, pszPath);
-                        g_app.save_path = winrt::to_string(pszPath);
+                        sc_get_app().save_path = winrt::to_string(pszPath);
                         CoTaskMemFree(pszPath);
                     }
                     pItem->Release();
@@ -1008,7 +814,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
     switch (msg) {
         case WM_CREATE: {
-            toggles[0] = { { 160, 110, 0, 150 }, "Copy screenshot directly to Clipboard", &g_app.opt_copy_to_clipboard, false };
+            toggles[0] = { { 160, 110, 0, 150 }, "Copy screenshot directly to Clipboard", &sc_get_app().opt_copy_to_clipboard, false };
 
             BOOL dark = TRUE;
             DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
@@ -1031,7 +837,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             hEditPath = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, 160, 45, 260, 24, hwnd, (HMENU)3001, GetModuleHandle(nullptr), nullptr);
             SendMessageW(hEditPath, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-            std::wstring widePath = winrt::to_hstring(g_app.save_path).c_str();
+            std::wstring widePath = winrt::to_hstring(sc_get_app().save_path).c_str();
             SetWindowTextW(hEditPath, widePath.c_str());
 
             hBtnBrowse = CreateWindowExW(0, L"BUTTON", L"Browse...", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 430, 45, 80, 24, hwnd, (HMENU)3002, GetModuleHandle(nullptr), nullptr);
@@ -1120,7 +926,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 int len = GetWindowTextLengthW(hEditPath);
                 std::vector<wchar_t> buf(len + 1);
                 GetWindowTextW(hEditPath, buf.data(), len + 1);
-                g_app.save_path = winrt::to_string(buf.data());
+                sc_get_app().save_path = winrt::to_string(buf.data());
             }
             
             if (LOWORD(wParam) == 3002) {
@@ -1195,8 +1001,8 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 ShowWindow(hBtnBrowse, SW_HIDE);
 
                 int startY = 20;
-                for (size_t i = 0; i < g_app.hotkeys.size(); ++i) {
-                    const auto& hk = g_app.hotkeys[i];
+                for (size_t i = 0; i < sc_get_app().hotkeys.size(); ++i) {
+                    const auto& hk = sc_get_app().hotkeys[i];
                     RECT rowRect = { 160, startY + (int)i * 35, cr.right - 20, startY + (int)i * 35 + 30 };
                     
                     FillRect(memDC, &rowRect, hRowNormalBrush);
