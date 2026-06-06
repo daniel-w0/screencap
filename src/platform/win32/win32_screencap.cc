@@ -641,15 +641,16 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             HBITMAP hAlphaBmp = CreateCompatibleBitmap(memDC, 1, 1);
             HBITMAP hOldAlphaBmp = (HBITMAP)SelectObject(hAlphaDC, hAlphaBmp);
             
-            SetPixel(hAlphaDC, 0, 0, RGB(0, 120, 215));
-            BLENDFUNCTION bf = { AC_SRC_OVER, 0, 64, 0 };
+            SetPixel(hAlphaDC, 0, 0, RGB(155, 155, 215));
+            BLENDFUNCTION bf = { AC_SRC_OVER, 0, 32, 0 };
             GdiAlphaBlend(memDC, r.left, r.top, r.right - r.left, r.bottom - r.top, hAlphaDC, 0, 0, 1, 1, bf);
             
             SelectObject(hAlphaDC, hOldAlphaBmp);
             DeleteObject(hAlphaBmp);
             DeleteDC(hAlphaDC);
 
-            HPEN hPen = CreatePen(PS_DOT, 1, RGB(255, 0, 0));
+            // Dotted rectangle
+            HPEN hPen = CreatePen(PS_DOT, 1, RGB(156, 215, 228));
             HPEN hOldPen = (HPEN)SelectObject(memDC, hPen);
             HBRUSH hOldBrush = (HBRUSH)SelectObject(memDC, GetStockObject(NULL_BRUSH));
             
@@ -660,6 +661,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             SelectObject(memDC, hOldPen);
             DeleteObject(hPen);
 
+            // Size text
             if (g_state.currentRect.width > 0 && g_state.currentRect.height > 0) {
                 HFONT hOldFont = (HFONT)SelectObject(memDC, GetStockObject(DEFAULT_GUI_FONT));
                 
@@ -686,6 +688,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 SelectObject(memDC, hOldFont);
             }
 
+            // Magnifier
             POINT pt;
             GetCursorPos(&pt);
             int magSize = 120;
@@ -703,7 +706,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             
             StretchBlt(memDC, destX, destY, magSize, magSize, g_state.frozenDC, pt.x - srcSize / 2 - vx, pt.y - srcSize / 2 - vy, srcSize, srcSize, SRCCOPY);
 
-            HPEN magPen = CreatePen(PS_SOLID, 1, RGB(255, 50, 50));
+            HPEN magPen = CreatePen(PS_SOLID, 1, RGB(156, 215, 228));
             HPEN oldMagPen = (HPEN)SelectObject(memDC, magPen);
             
             MoveToEx(memDC, destX + magSize / 2, destY, nullptr);

@@ -31,7 +31,6 @@ enum class sc_capture_mode {
 };
 
 struct sc_capture_options {
-    //bool copy_to_clipboard;
     bool extract_text;
     sc_capture_mode mode;
 };
