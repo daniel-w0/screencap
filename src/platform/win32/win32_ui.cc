@@ -523,8 +523,29 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             return 0;
         }
 
-        case WM_DRAWITEM: {
+case WM_DRAWITEM: {
             LPDRAWITEMSTRUCT pDIS = (LPDRAWITEMSTRUCT)lParam;
+
+            if (pDIS->CtlType == ODT_MENU) {
+                bool isSelected = (pDIS->itemState & ODS_SELECTED);
+                HBRUSH bgBrush = isSelected ? ui.theme.row_hover : ui.theme.row;
+                FillRect(pDIS->hDC, &pDIS->rcItem, bgBrush);
+
+                if (pDIS->itemData) {
+                    SetBkMode(pDIS->hDC, TRANSPARENT);
+                    SetTextColor(pDIS->hDC, RGB(240, 240, 240));
+                    HFONT oldFont = (HFONT)SelectObject(pDIS->hDC, ui.theme.font);
+
+                    const char* text = (const char*)pDIS->itemData;
+                    RECT textRect = pDIS->rcItem;
+                    textRect.left += 10;
+
+                    DrawTextA(pDIS->hDC, text, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                    SelectObject(pDIS->hDC, oldFont);
+                }
+                return TRUE;
+            }
+
             if (pDIS->CtlID == 3002) {
                 bool isPressed = (pDIS->itemState & ODS_SELECTED);
                 bool isFocused = (pDIS->itemState & ODS_FOCUS);
@@ -744,8 +765,15 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                     sc_widget& w = ui.widgets[hit];
                     
                     HMENU hMenu = CreatePopupMenu();
-                    AppendMenuA(hMenu, MF_STRING, 1, "Copy to Clipboard");
-                    AppendMenuA(hMenu, MF_STRING, 2, "Open Containing Folder");
+
+                    MENUINFO mi = { sizeof(MENUINFO) };
+                    mi.fMask = MIM_BACKGROUND | MIM_STYLE;
+                    mi.dwStyle = MNS_NOCHECK;
+                    mi.hbrBack = ui.theme.bg;
+                    SetMenuInfo(hMenu, &mi);
+
+                    AppendMenuA(hMenu, MF_OWNERDRAW, 1, "Copy to Clipboard");
+                    AppendMenuA(hMenu, MF_OWNERDRAW, 2, "Open Containing Folder");
 
                     POINT screenPt = pt;
                     ClientToScreen(hwnd, &screenPt);
@@ -802,6 +830,16 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 }
             }
             return 0;
+        }
+
+        case WM_MEASUREITEM: {
+            LPMEASUREITEMSTRUCT pMIS = (LPMEASUREITEMSTRUCT)lParam;
+            if (pMIS->CtlType == ODT_MENU) {
+                pMIS->itemWidth = 150;
+                pMIS->itemHeight = 24;
+                return TRUE;
+            }
+            break;
         }
 
         case WM_DESTROY: {
