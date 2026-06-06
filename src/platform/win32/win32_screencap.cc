@@ -30,7 +30,7 @@ struct sc_ocr_line {
 
 struct Win32Toggle {
     RECT rect;
-    const char* text;
+    const wchar_t* text;
     bool* targetValue;
     bool isHovered;
 };
@@ -85,6 +85,17 @@ struct FindWindowData {
 #pragma endregion
 
 #pragma region Utils
+bool _sc_get_system_language_impl(std::string& out_lang) {
+    wchar_t localeName[LOCALE_NAME_MAX_LENGTH] = { 0 };
+    if (GetUserDefaultLocaleName(localeName, LOCALE_NAME_MAX_LENGTH) > 0) {
+        char localeNameA[LOCALE_NAME_MAX_LENGTH] = { 0 };
+        WideCharToMultiByte(CP_UTF8, 0, localeName, -1, localeNameA, LOCALE_NAME_MAX_LENGTH, nullptr, nullptr);
+        out_lang = localeNameA;
+        return true;
+    }
+    return false;
+}
+
 std::string _sc_plat_get_default_save_path() {
     static fs::path pictures = fs::path(getenv("USERPROFILE")) / "Pictures";
     if (!fs::exists(pictures)) {
@@ -822,7 +833,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
     switch (msg) {
         case WM_CREATE: {
-            toggles[0] = { { 160, 110, 0, 150 }, "Copy screenshot directly to Clipboard", &sc_get_app().opt_copy_to_clipboard, false };
+            toggles[0] = { { 160, 110, 0, 150 }, sc_get_localized_string("Copy screenshot to Clipboard").c_str(), &sc_get_app().opt_copy_to_clipboard, false };
 
             BOOL dark = TRUE;
             DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
@@ -966,7 +977,9 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             DeleteObject(hGenTabBrush);
             SelectObject(memDC, activeTab == TAB_GENERAL ? hBoldFont : hFont);
             SetTextColor(memDC, activeTab == TAB_GENERAL ? RGB(255, 255, 255) : RGB(200, 200, 200));
-            TextOutA(memDC, tabGeneralRect.left + 15, tabGeneralRect.top + 7, "General", 7);
+
+            std::wstring& generalText = sc_get_localized_string("General");
+            TextOutW(memDC, tabGeneralRect.left + 15, tabGeneralRect.top + 7, generalText.c_str(), (int)generalText.length());
 
             bool drawInputHover = hoverInput || (activeTab == TAB_INPUT);
             HBRUSH hInputTabBrush = CreateSolidBrush(drawInputHover ? RGB(45, 45, 45) : RGB(32, 32, 32));
@@ -974,7 +987,9 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             DeleteObject(hInputTabBrush);
             SelectObject(memDC, activeTab == TAB_INPUT ? hBoldFont : hFont);
             SetTextColor(memDC, activeTab == TAB_INPUT ? RGB(255, 255, 255) : RGB(200, 200, 200));
-            TextOutA(memDC, tabInputRect.left + 15, tabInputRect.top + 7, "Input", 5);
+
+            std::wstring& inputText = sc_get_localized_string("Input");
+            TextOutW(memDC, tabInputRect.left + 15, tabInputRect.top + 7, inputText.c_str(), (int)inputText.length());
 
             SelectObject(memDC, hFont);
             SetTextColor(memDC, RGB(240, 240, 240));
@@ -983,11 +998,12 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 ShowWindow(hEditPath, SW_SHOW);
                 ShowWindow(hBtnBrowse, SW_SHOW);
 
-                TextOutA(memDC, pathLabelRect.left, pathLabelRect.top, "Screenshot Destination Folder Path:", 35);
+                std::wstring& pathLabel = sc_get_localized_string("Screenshot Destination");
+                TextOutW(memDC, pathLabelRect.left, pathLabelRect.top, pathLabel.c_str(), (int)pathLabel.length());
 
                 for (int i = 0; i < toggles.size(); ++i) {
                     FillRect(memDC, &toggles[i].rect, toggles[i].isHovered ? hRowHoverBrush : hRowNormalBrush);
-                    TextOutA(memDC, toggles[i].rect.left + 15, toggles[i].rect.top + 10, toggles[i].text, (int)strlen(toggles[i].text));
+                    TextOutW(memDC, toggles[i].rect.left + 15, toggles[i].rect.top + 10, toggles[i].text, (int)wcslen(toggles[i].text));
 
                     bool isOn = *toggles[i].targetValue;
                     int pillLeft = toggles[i].rect.right - 55;

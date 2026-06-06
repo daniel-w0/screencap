@@ -1,7 +1,10 @@
 #include "pch.h"
 #include "screencap.h"
+#include "locales_data.h"
+#include "simpleini.h"
 
 static sc_app g_app;
+static std::unordered_map<std::string, std::wstring> language_map;
 
 void _sc_swap_channels(uint32_t* pixels, int totalPixels) {
     for (int i = 0; i < totalPixels; ++i) {
@@ -53,7 +56,68 @@ sc_app& sc_get_app() {
     return g_app;
 }
 
+sc_internal std::wstring _sc_utf8_to_wstring(const std::string& str) {
+#if defined(_WIN32) || defined(_WIN64)
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), NULL, 0);
+    std::wstring wstr(size_needed, 0);
+    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), &wstr[0], size_needed);
+    return wstr;
+#else
+// don't think I need to do this on MacOS
+#error "UTF-8 to wstring conversion not implemented for this platform"
+#endif
+}
+
+sc_internal void _init_languages() {
+    language_map.clear();
+
+    CSimpleIniA ini;
+    ini.SetUnicode();
+
+    SI_Error rc = ini.LoadData((const char*)locales_ini, locales_ini_len);
+    if (rc < 0) {
+        fprintf(stderr, "Failed to load embedded locales.ini\n");
+        return;
+    }
+
+    std::string language;
+    if (!_sc_get_system_language_impl(language)) {
+        fprintf(stderr, "Failed to get system language, defaulting to en\n");
+        language = "en";
+    } else {
+        // strip region (en-GB -> en)
+        size_t separator_pos = language.find('-');
+        if (separator_pos != std::string::npos) {
+            language = language.substr(0, separator_pos);
+        }
+    }
+
+    auto language_section = ini.GetSection(language.c_str());
+    if (!language_section) {
+        fprintf(stderr, "No language section found for '%s', defaulting to en\n", language.c_str());
+        language_section = ini.GetSection("en");
+        if (!language_section) {
+            fprintf(stderr, "No default language section found for 'en'\n");
+            return;
+        }
+    }
+
+    for (auto& [key, value] : *language_section) {
+        std::string key_str(key.pItem);
+        language_map[key.pItem] = _sc_utf8_to_wstring(value);
+    }
+}
+
+std::wstring& sc_get_localized_string(const std::string& key) {
+    if (language_map.find(key) == language_map.end()) {
+        language_map[key] = _sc_utf8_to_wstring(key);
+    }
+    return language_map[key];
+}
+
 void sc_initialize() {
+    _init_languages();
+
     g_app = {};
     g_app.running = true;
     g_app.opt_copy_to_clipboard = true;

@@ -1,3 +1,5 @@
+require('premake.embed')
+
 workspace "screencap"
   configurations { "Debug", "Release" }
   platforms { "x64" }
@@ -35,6 +37,8 @@ workspace "screencap"
 
     pchheader "pch.h"
     pchsource "src/pch.cc"
+
+    embed_file("res/locales.ini", "src/locales_data.h", "locales_ini")
 
     filter "files:**.rc"
       buildaction "ResourceCompile"

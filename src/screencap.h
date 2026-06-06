@@ -78,6 +78,8 @@ bool sc_running();
 bool sc_update(sc_capture_options& active_options);
 sc_app& sc_get_app();
 
+std::wstring& sc_get_localized_string(const std::string& key);
+
 bool sc_save_capture(sc_capture_info& ci);
 void sc_begin_capture(sc_capture_options options);
 bool sc_capture_update(sc_capture_info& ci);
@@ -88,5 +90,6 @@ void _sc_init_impl();
 void _sc_shutdown_impl();
 void _sc_cleanup_impl(sc_capture_info& ci);
 void _sc_swap_channels(uint32_t* pixels, int totalPixels);
+bool _sc_get_system_language_impl(std::string& out_lang);
 
 std::string _sc_plat_get_default_save_path();
