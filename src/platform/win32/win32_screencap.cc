@@ -191,6 +191,7 @@ sc_internal bool _sc_write_to_clipboard(UINT format, const void* data, size_t si
 bool _sc_init_app() {
     g_app = {};
     g_app.running = true;
+    g_app.opt_copy_to_clipboard = true;
 
     g_app.hotkeys[sc_hotkey_screenshot] = { sc_hotkey_id::sc_hotkey_screenshot, 0, VK_SNAPSHOT };
     g_app.hotkeys[sc_hotkey_clipboard] = { sc_hotkey_id::sc_hotkey_clipboard, MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT };
@@ -470,7 +471,7 @@ bool sc_capture_update(sc_capture_info& ci) {
         } catch (std::exception& e) {
             fprintf(stderr, "OCR failed: %s\n", e.what());
         }
-    } else if (g_state.options.copy_to_clipboard && OpenClipboard(nullptr)) {
+    } else if (g_app.opt_copy_to_clipboard && OpenClipboard(nullptr)) {
         EmptyClipboard();
         _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), ci.data, ci.width * ci.height * 4);
 
@@ -841,7 +842,8 @@ enum SettingsTab {
 };
 
 LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    static Win32Toggle toggles[3];
+    //static Win32Toggle toggles[1];
+    static std::array<Win32Toggle, 1> toggles;
     static SettingsTab activeTab = TAB_GENERAL;
     
     static RECT tabGeneralRect = { 10, 20, 140, 50 };
@@ -863,9 +865,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
     switch (msg) {
         case WM_CREATE: {
-            toggles[0] = { { 160, 20, 0, 60 }, "Extract Text automatically via OCR", &g_state.options.extract_text, false };
-            toggles[1] = { { 160, 70, 0, 110 }, "Copy screenshot directly to Clipboard", &g_state.options.copy_to_clipboard, false };
-            toggles[2] = { { 160, 120, 0, 160 }, "Include mouse cursor in screenshots", &g_state.options.include_cursor, false };
+            toggles[0] = { { 160, 20, 0, 60 }, "Copy screenshot directly to Clipboard", &g_app.opt_copy_to_clipboard, false };
 
             BOOL dark = TRUE;
             DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
@@ -889,7 +889,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         case WM_SIZE: {
             int width = LOWORD(lParam);
-            for (int i = 0; i < 3; ++i) {
+            for (int i = 0; i < toggles.size(); ++i) {
                 toggles[i].rect.right = width - 20; 
             }
             InvalidateRect(hwnd, nullptr, TRUE);
@@ -933,7 +933,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             SetTextColor(memDC, RGB(240, 240, 240));
 
             if (activeTab == TAB_GENERAL) {
-                for (int i = 0; i < 3; ++i) {
+                for (int i = 0; i < toggles.size(); ++i) {
                     FillRect(memDC, &toggles[i].rect, toggles[i].isHovered ? hRowHoverBrush : hRowNormalBrush);
                     TextOutA(memDC, toggles[i].rect.left + 15, toggles[i].rect.top + 10, toggles[i].text, (int)strlen(toggles[i].text));
 
@@ -1001,7 +1001,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             }
 
             if (activeTab == TAB_GENERAL) {
-                for (int i = 0; i < 3; ++i) {
+                for (int i = 0; i < toggles.size(); ++i) {
                     bool currentlyInside = PtInRect(&toggles[i].rect, pt);
                     if (currentlyInside != toggles[i].isHovered) {
                         toggles[i].isHovered = currentlyInside;
@@ -1021,7 +1021,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         case WM_MOUSELEAVE: {
             hoverGeneral = false;
             hoverInput = false;
-            for (int i = 0; i < 3; ++i) toggles[i].isHovered = false;
+            for (int i = 0; i < toggles.size(); ++i) toggles[i].isHovered = false;
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -1046,7 +1046,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             }
 
             if (activeTab == TAB_GENERAL) {
-                for (int i = 0; i < 3; ++i) {
+                for (int i = 0; i < toggles.size(); ++i) {
                     if (PtInRect(&toggles[i].rect, pt)) {
                         *toggles[i].targetValue = !(*toggles[i].targetValue);
                         InvalidateRect(hwnd, nullptr, FALSE);

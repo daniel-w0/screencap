@@ -32,7 +32,7 @@ enum class sc_capture_mode {
 
 struct sc_capture_options {
     bool include_cursor;
-    bool copy_to_clipboard;
+    //bool copy_to_clipboard;
     bool extract_text;
     sc_capture_mode mode;
 };
@@ -64,6 +64,8 @@ struct sc_hotkey {
 };
 
 struct sc_app {
+    bool opt_copy_to_clipboard;
+
     bool running;
     std::array<sc_hotkey, sc_hotkey_id::_sc_hotkey_count> hotkeys;
 };

@@ -70,7 +70,6 @@ int entry(int argc, char** argv) {
     sc_initialize();
 
     sc_capture_options active_options = { 0 };
-    active_options.copy_to_clipboard = true;
 
     while (sc_running()) {
         if (sc_update(active_options)) {
@@ -79,10 +78,6 @@ int entry(int argc, char** argv) {
                 if (active_options.extract_text) {
                     fprintf(stdout, "Extracted text to clipboard\n");
                 } else {
-                    if (active_options.copy_to_clipboard) {
-                        fprintf(stdout, "Copied screenshot to clipboard\n");
-                    }
-
                     std::string savepath = get_save_path();
                     if (sc_save_capture(savepath.c_str(), ci)) {
                         fprintf(stdout, "Saved screenshot to %s\n", savepath.c_str());
