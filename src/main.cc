@@ -12,13 +12,6 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-//constexpr int HOTKEY_ID_SCREENSHOT = 1;
-//constexpr int HOTKEY_ID_SCREENSHOT_CLIPBOARD = 2;
-//constexpr int HOTKEY_ID_SCREENSHOT_OCR = 3;
-//constexpr int HOTKEY_ID_SCREENSHOT_ACTIVE_WINDOW = 4;
-//constexpr int HOTKEY_ID_SCREENSHOT_CURRENT_MONITOR = 5;
-//constexpr int HOTKEY_ID_FALLBACK = 6; // Ctrl + Alt + C
-
 int entry(int argc, char** argv) {
     sc_initialize();
 
