@@ -22,6 +22,8 @@
 #include <chrono>
 #include <filesystem>
 
+namespace fs = std::filesystem;
+
 #if defined(SC_PLATFORM_WINDOWS)
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX

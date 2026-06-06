@@ -19,53 +19,6 @@
 //constexpr int HOTKEY_ID_SCREENSHOT_CURRENT_MONITOR = 5;
 //constexpr int HOTKEY_ID_FALLBACK = 6; // Ctrl + Alt + C
 
-std::string get_date_string() {
-    auto now = std::chrono::system_clock::now();
-    std::time_t now_time_t = std::chrono::system_clock::to_time_t(now);
-    std::tm now_tm;
-#if defined(_WIN32) || defined(_WIN64)
-    localtime_s(&now_tm, &now_time_t);
-#else
-    localtime_r(&now_time_t, &now_tm);
-#endif
-    char buffer[20];
-    std::strftime(buffer, sizeof(buffer), "%Y-%m-%d", &now_tm);
-    return std::string(buffer);
-}
-
-std::string get_filename_timestamp() {
-    auto now = std::chrono::system_clock::now();
-    std::time_t now_time_t = std::chrono::system_clock::to_time_t(now);
-    std::tm now_tm;
-#if defined(_WIN32) || defined(_WIN64)
-    localtime_s(&now_tm, &now_time_t);
-#else
-    localtime_r(&now_time_t, &now_tm);
-#endif
-    char buffer[20];
-    std::strftime(buffer, sizeof(buffer), "%d-%m-%Y_%H-%M-%S", &now_tm);
-    return std::string(buffer);
-}
-
-std::string get_save_path() {
-    static std::filesystem::path pictures = std::filesystem::path(getenv("USERPROFILE")) / "Pictures";
-    if (!std::filesystem::exists(pictures)) {
-        pictures = std::filesystem::current_path();
-    }
-    
-    std::filesystem::path base_savepath = pictures / "Screencap";
-    std::filesystem::path date_savepath = base_savepath / get_date_string();
-
-    if (!std::filesystem::exists(date_savepath)) {
-        std::error_code ec;
-        if (!std::filesystem::create_directories(date_savepath, ec)) {
-            return (pictures / (get_filename_timestamp() + ".png")).string();
-        }
-    }
-
-    return (date_savepath / (get_filename_timestamp() + ".png")).string();
-}
-
 int entry(int argc, char** argv) {
     sc_initialize();
 
@@ -78,10 +31,7 @@ int entry(int argc, char** argv) {
                 if (active_options.extract_text) {
                     fprintf(stdout, "Extracted text to clipboard\n");
                 } else {
-                    std::string savepath = get_save_path();
-                    if (sc_save_capture(savepath.c_str(), ci)) {
-                        fprintf(stdout, "Saved screenshot to %s\n", savepath.c_str());
-                    }
+                    sc_save_capture(ci);
                 }
                 sc_cleanup(ci);
             }

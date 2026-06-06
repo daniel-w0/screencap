@@ -31,7 +31,6 @@ enum class sc_capture_mode {
 };
 
 struct sc_capture_options {
-    bool include_cursor;
     //bool copy_to_clipboard;
     bool extract_text;
     sc_capture_mode mode;
@@ -64,10 +63,13 @@ struct sc_hotkey {
 };
 
 struct sc_app {
+    // options
     bool opt_copy_to_clipboard;
-
-    bool running;
     std::array<sc_hotkey, sc_hotkey_id::_sc_hotkey_count> hotkeys;
+    std::string save_path;
+
+    // state
+    bool running;
 };
 
 #define sc_internal static
@@ -81,7 +83,7 @@ bool sc_capture_desktop(int8_t desktop, sc_capture_info& ci);
 // -1 to auto-detect window under cursor
 bool sc_capture_window(int pid, sc_capture_info& ci);
 bool sc_capture_region(sc_rect rect, sc_capture_info& ci);
-bool sc_save_capture(const char* filename, sc_capture_info& ci);
+bool sc_save_capture(sc_capture_info& ci);
 void sc_begin_capture(sc_capture_options options);
 bool sc_capture_update(sc_capture_info& ci);
 void sc_cleanup(sc_capture_info& ci);
