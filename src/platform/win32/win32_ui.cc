@@ -6,7 +6,9 @@
 #include <shobjidl.h>
 #include <commctrl.h>
 #include <uxtheme.h>
-#include <commctrl.h>
+#include <shellapi.h>
+#include <unordered_map>
+#include "stb_image.h"
 
 static bool g_class_registered = false;
 
@@ -137,16 +139,18 @@ struct sc_ui_theme {
 enum sc_widget_kind {
     SC_W_LABEL,
     SC_W_TOGGLE,
-    SC_W_HOTKEY_ROW
+    SC_W_HOTKEY_ROW,
+    SC_W_GALLERY_ITEM
 };
 
 struct sc_widget {
     sc_widget_kind kind;
     RECT rect;
-    const char* loc_key = nullptr;
+    const std::wstring label;
     bool* value = nullptr;
     const char* opt_name = nullptr;
     int hotkey = -1;
+    std::string full_path;
 };
 
 struct sc_settings_ui {
@@ -157,6 +161,9 @@ struct sc_settings_ui {
     int hovered_widget = -1;
     HWND edit_path = nullptr;
     HWND btn_browse = nullptr;
+    int scroll_y = 0;
+    int max_scroll_y = 0;
+    std::unordered_map<std::string, HBITMAP> image_cache;
 };
 
 struct sc_tab {
@@ -188,32 +195,35 @@ static void theme_destroy(sc_ui_theme& t) {
     t = sc_ui_theme{};
 }
 
-static sc_widget make_label(RECT rect, const char* loc_key) {
-    return { SC_W_LABEL, rect, loc_key };
+static sc_widget make_label(RECT rect, std::wstring label) {
+    return { SC_W_LABEL, rect, label };
 }
-static sc_widget make_toggle(RECT rect, const char* loc_key, bool* value, const char* name) {
-    return { SC_W_TOGGLE, rect, loc_key, value, name };
+static sc_widget make_toggle(RECT rect, std::wstring label, bool* value, const char* name) {
+    return { SC_W_TOGGLE, rect, label, value, name };
 }
 static sc_widget make_hotkey(RECT rect, int index) {
     sc_widget w = { SC_W_HOTKEY_ROW, rect };
     w.hotkey = index;
     return w;
 }
+static sc_widget make_gallery_item(RECT rect, std::wstring filename, std::string full_path) {
+    sc_widget w = { SC_W_GALLERY_ITEM, rect, filename };
+    w.full_path = full_path;
+    return w;
+}
 
 static void draw_label(HDC dc, const sc_ui_theme& t, const sc_widget& w) {
-    std::wstring& s = sc_get_localized_string(w.loc_key);
     SelectObject(dc, t.font);
     SetTextColor(dc, RGB(240, 240, 240));
-    TextOutW(dc, w.rect.left, w.rect.top, s.c_str(), (int)s.length());
+    TextOutW(dc, w.rect.left, w.rect.top, w.label.c_str(), (int)w.label.length());
 }
 
 static void draw_toggle(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool hovered) {
     FillRect(dc, &w.rect, hovered ? t.row_hover : t.row);
 
-    std::wstring& label = sc_get_localized_string(w.loc_key);
     SelectObject(dc, t.font);
     SetTextColor(dc, RGB(240, 240, 240));
-    TextOutW(dc, w.rect.left + 15, w.rect.top + 10, label.c_str(), (int)label.length());
+    TextOutW(dc, w.rect.left + 15, w.rect.top + 10, w.label.c_str(), (int)w.label.length());
 
     bool isOn = *w.value;
     int pillLeft = w.rect.right - 55;
@@ -250,11 +260,127 @@ static void draw_hotkey(HDC dc, const sc_ui_theme& t, const sc_widget& w) {
     TextOutA(dc, w.rect.right - textWidth - 15, w.rect.top + 6, bindStr.c_str(), (int)bindStr.length());
 }
 
+static void draw_gallery_item(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool hovered) {
+    FillRect(dc, &w.rect, hovered ? t.row_hover : t.row);
+
+    HPEN borderPen = CreatePen(PS_SOLID, 1, hovered ? RGB(0, 120, 215) : RGB(55, 55, 55));
+    HPEN oldPen = (HPEN)SelectObject(dc, borderPen);
+    HBRUSH oldBrush = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Rectangle(dc, w.rect.left, w.rect.top, w.rect.right, w.rect.bottom);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(borderPen);
+
+    SelectObject(dc, t.font);
+    SetTextColor(dc, RGB(220, 220, 220));
+    SetBkMode(dc, TRANSPARENT);
+
+    HBITMAP hBmp = nullptr;
+    auto it = g_ui.image_cache.find(w.full_path);
+    if (it != g_ui.image_cache.end()) {
+        hBmp = it->second;
+    } else {
+        int img_w, img_h, channels;
+        unsigned char* data = stbi_load(w.full_path.c_str(), &img_w, &img_h, &channels, 4);
+        if (data) {
+            int target_w = img_w;
+            int target_h = img_h;
+            int max_dim = 640;
+            if (img_w > max_dim || img_h > max_dim) {
+                float scale = (float)max_dim / std::max(img_w, img_h);
+                target_w = (int)(img_w * scale);
+                target_h = (int)(img_h * scale);
+            }
+            if (target_w < 1) target_w = 1;
+            if (target_h < 1) target_h = 1;
+
+            BITMAPINFO bmi = {};
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = target_w;
+            bmi.bmiHeader.biHeight = -target_h;
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
+
+            void* bits;
+            HDC hdc = GetDC(NULL);
+            hBmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+            ReleaseDC(NULL, hdc);
+
+            if (hBmp && bits) {
+                unsigned char* dest = (unsigned char*)bits;
+                for (int y = 0; y < target_h; ++y) {
+                    for (int x = 0; x < target_w; ++x) {
+                        int src_x = x * img_w / target_w;
+                        int src_y = y * img_h / target_h;
+                        int src_idx = (src_y * img_w + src_x) * 4;
+                        int dst_idx = (y * target_w + x) * 4;
+                        dest[dst_idx + 0] = data[src_idx + 2];
+                        dest[dst_idx + 1] = data[src_idx + 1];
+                        dest[dst_idx + 2] = data[src_idx + 0];
+                        dest[dst_idx + 3] = data[src_idx + 3];
+                    }
+                }
+            }
+            stbi_image_free(data);
+        }
+        g_ui.image_cache[w.full_path] = hBmp;
+    }
+
+    if (hBmp) {
+        HDC memDC = CreateCompatibleDC(dc);
+        HGDIOBJ oldBmp = SelectObject(memDC, hBmp);
+
+        BITMAP bmp;
+        GetObject(hBmp, sizeof(BITMAP), &bmp);
+
+        RECT imgRect = w.rect;
+        imgRect.bottom -= 30;
+        imgRect.left += 2;
+        imgRect.right -= 2;
+        imgRect.top += 2;
+
+        float srcAspect = (float)bmp.bmWidth / (float)bmp.bmHeight;
+        float dstAspect = (float)(imgRect.right - imgRect.left) / (float)(imgRect.bottom - imgRect.top);
+
+        int drawW = imgRect.right - imgRect.left;
+        int drawH = imgRect.bottom - imgRect.top;
+        int drawX = imgRect.left;
+        int drawY = imgRect.top;
+
+        if (srcAspect > dstAspect) {
+            drawH = (int)(drawW / srcAspect);
+            drawY += ((imgRect.bottom - imgRect.top) - drawH) / 2;
+        } else {
+            drawW = (int)(drawH * srcAspect);
+            drawX += ((imgRect.right - imgRect.left) - drawW) / 2;
+        }
+
+        int oldMode = SetStretchBltMode(dc, HALFTONE);
+        StretchBlt(dc, drawX, drawY, drawW, drawH, memDC, 0, 0, bmp.bmWidth, bmp.bmHeight, SRCCOPY);
+        SetStretchBltMode(dc, oldMode);
+
+        SelectObject(memDC, oldBmp);
+        DeleteDC(memDC);
+    } else {
+        RECT iconRect = w.rect;
+        iconRect.bottom -= 30;
+        DrawTextW(dc, L"PNG", -1, &iconRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    RECT textRect = w.rect;
+    textRect.top = textRect.bottom - 30;
+    textRect.left += 5;
+    textRect.right -= 5;
+    DrawTextW(dc, w.label.c_str(), -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+}
+
 static void draw_widget(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool hovered) {
     switch (w.kind) {
-        case SC_W_LABEL:      draw_label(dc, t, w);           break;
-        case SC_W_TOGGLE:     draw_toggle(dc, t, w, hovered); break;
-        case SC_W_HOTKEY_ROW: draw_hotkey(dc, t, w);          break;
+        case SC_W_LABEL:       draw_label(dc, t, w);       break;
+        case SC_W_TOGGLE:      draw_toggle(dc, t, w, hovered); break;
+        case SC_W_HOTKEY_ROW:  draw_hotkey(dc, t, w);      break;
+        case SC_W_GALLERY_ITEM: draw_gallery_item(dc, t, w, hovered); break;
     }
 }
 
@@ -272,12 +398,12 @@ static RECT sidebar_tab_rect(int i) {
 
 static void build_general_tab(sc_settings_ui& ui, RECT content) {
     ui.widgets.clear();
-    ui.widgets.push_back(make_label({ 160, 20, 500, 40 }, "Screenshot Destination"));
+    ui.widgets.push_back(make_label({ 160, 20, 500, 40 }, sc_get_localized_string("Screenshot Destination").c_str()));
 
     int y = 90;
-    ui.widgets.push_back(make_toggle({ 160, y, content.right - 20, y + 40 }, "Copy screenshot to Clipboard", &sc_get_app().opt_copy_to_clipboard, "copy_to_clipboard"));
-    y += 40;
-    ui.widgets.push_back(make_toggle({ 160, y, content.right - 20, y + 40 }, "Run on Startup", &sc_get_app().opt_on_startup_enabled, "run_on_startup"));
+    ui.widgets.push_back(make_toggle({ 160, y, content.right - 20, y + 40 }, sc_get_localized_string("Copy screenshot to Clipboard").c_str(), &sc_get_app().opt_copy_to_clipboard, "copy_to_clipboard"));
+    y += 45;
+    ui.widgets.push_back(make_toggle({ 160, y, content.right - 20, y + 40 }, sc_get_localized_string("Run on Startup").c_str(), &sc_get_app().opt_on_startup_enabled, "run_on_startup"));
 }
 
 static void activate_general_tab(sc_settings_ui& ui, bool active) {
@@ -296,11 +422,72 @@ static void build_input_tab(sc_settings_ui& ui, RECT content) {
     }
 }
 
+bool list_files_in_directory(const std::string& directory, std::vector<std::string>& out_files) {
+    std::string searchPath = directory + "\\*";
+    WIN32_FIND_DATAA findData;
+    HANDLE hFind = FindFirstFileA(searchPath.c_str(), &findData);
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    do {
+        if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            out_files.push_back(findData.cFileName);
+        }
+    } while (FindNextFileA(hFind, &findData) != 0);
+    FindClose(hFind);
+    return true;
+}
+
 static void activate_input_tab(sc_settings_ui&, bool) {}
+
+static void build_gallery_tab(sc_settings_ui& ui, RECT content) {
+    ui.widgets.clear();
+
+    std::string dir = sc_get_save_path().string();
+    std::vector<std::string> files;
+    if (!list_files_in_directory(dir, files)) {
+        ui.widgets.push_back(make_label({ 170, 20, 500, 40 }, L"No screenshots found."));
+        return;
+    }
+
+    const int item_w = 320;
+    const int item_h = 260;
+    const int gap = 20;
+    
+    int start_x = 170;
+    int start_y = 20 - ui.scroll_y;
+    int available_w = content.right - start_x - 10; 
+
+    int cols = std::max(1, (available_w + gap) / (item_w + gap));
+    int rows = ((int)files.size() + cols - 1) / cols;
+
+    int total_content_height = (rows * (item_h + gap)) + 20;
+    ui.max_scroll_y = std::max(0, total_content_height - (int)content.bottom);
+
+    for (size_t i = 0; i < files.size(); ++i) {
+        int col = i % cols;
+        int row = i / cols;
+
+        int x = start_x + col * (item_w + gap);
+        int y = start_y + row * (item_h + gap);
+
+        if (y + item_h > 0 && y < content.bottom) {
+            std::string full_path = dir + "\\" + files[i];
+            ui.widgets.push_back(make_gallery_item({ x, y, x + item_w, y + item_h }, _sc_utf8_to_wstring(files[i]), full_path));
+        }
+    }
+}
+
+static void activate_gallery_tab(sc_settings_ui& ui, bool active) {
+    if (active) {
+        ui.scroll_y = 0;
+    }
+}
 
 static sc_tab g_tabs[] = {
     { "General", build_general_tab, activate_general_tab },
-    { "Input",   build_input_tab,   activate_input_tab   }
+    { "Input",   build_input_tab,   activate_input_tab   },
+    { "Recents", build_gallery_tab, activate_gallery_tab }
 };
 
 static const int g_tab_count = (int)(sizeof(g_tabs) / sizeof(g_tabs[0]));
@@ -338,7 +525,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         case WM_DRAWITEM: {
             LPDRAWITEMSTRUCT pDIS = (LPDRAWITEMSTRUCT)lParam;
-            if (pDIS->CtlID == 3002) { // Browse button
+            if (pDIS->CtlID == 3002) {
                 bool isPressed = (pDIS->itemState & ODS_SELECTED);
                 bool isFocused = (pDIS->itemState & ODS_FOCUS);
 
@@ -406,6 +593,19 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 MoveWindow(ui.btn_browse, width - 120, 45, 100, 24, TRUE);
             }
             InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        }
+
+        case WM_MOUSEWHEEL: {
+            if (ui.active_tab == 2) {
+                int zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+                ui.scroll_y -= (zDelta / WHEEL_DELTA) * 40; 
+                
+                if (ui.scroll_y < 0) ui.scroll_y = 0;
+                if (ui.scroll_y > ui.max_scroll_y) ui.scroll_y = ui.max_scroll_y;
+                
+                InvalidateRect(hwnd, nullptr, TRUE);
+            }
             return 0;
         }
 
@@ -485,7 +685,8 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
             g_tabs[ui.active_tab].build(ui, cr);
             int hit = widget_at(ui.widgets, pt);
-            ui.hovered_widget = (hit >= 0 && ui.widgets[hit].kind == SC_W_TOGGLE) ? hit : -1;
+            
+            ui.hovered_widget = (hit >= 0 && (ui.widgets[hit].kind == SC_W_TOGGLE || ui.widgets[hit].kind == SC_W_GALLERY_ITEM)) ? hit : -1;
 
             if (ui.hovered_tab != prevTab || ui.hovered_widget != prevWidget) {
                 InvalidateRect(hwnd, nullptr, FALSE);
@@ -531,7 +732,84 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             return 0;
         }
 
+        case WM_RBUTTONUP: {
+            POINT pt = { LOWORD(lParam), HIWORD(lParam) };
+            RECT cr;
+            GetClientRect(hwnd, &cr);
+
+            if (ui.active_tab == 2) {
+                g_tabs[ui.active_tab].build(ui, cr);
+                int hit = widget_at(ui.widgets, pt);
+                if (hit >= 0 && ui.widgets[hit].kind == SC_W_GALLERY_ITEM) {
+                    sc_widget& w = ui.widgets[hit];
+                    
+                    HMENU hMenu = CreatePopupMenu();
+                    AppendMenuA(hMenu, MF_STRING, 1, "Copy to Clipboard");
+                    AppendMenuA(hMenu, MF_STRING, 2, "Open Containing Folder");
+
+                    POINT screenPt = pt;
+                    ClientToScreen(hwnd, &screenPt);
+                    int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, screenPt.x, screenPt.y, 0, hwnd, nullptr);
+                    DestroyMenu(hMenu);
+
+                    if (cmd == 1) {
+                        int cw, ch, cc;
+                        unsigned char* cdata = stbi_load(w.full_path.c_str(), &cw, &ch, &cc, 4);
+                        if (cdata) {
+                            if (OpenClipboard(hwnd)) {
+                                EmptyClipboard();
+                                
+                                BITMAPINFOHEADER bih = {};
+                                bih.biSize = sizeof(BITMAPINFOHEADER);
+                                bih.biWidth = cw;
+                                bih.biHeight = ch;
+                                bih.biPlanes = 1;
+                                bih.biBitCount = 32;
+                                bih.biCompression = BI_RGB;
+
+                                std::vector<unsigned char> dibData(cw * ch * 4);
+                                for (int y = 0; y < ch; ++y) {
+                                    for (int x = 0; x < cw; ++x) {
+                                        int src_idx = ((ch - 1 - y) * cw + x) * 4;
+                                        int dst_idx = (y * cw + x) * 4;
+                                        dibData[dst_idx + 0] = cdata[src_idx + 2];
+                                        dibData[dst_idx + 1] = cdata[src_idx + 1];
+                                        dibData[dst_idx + 2] = cdata[src_idx + 0];
+                                        dibData[dst_idx + 3] = cdata[src_idx + 3];
+                                    }
+                                }
+                                _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), dibData.data(), dibData.size());
+
+                                FILE* f = fopen(w.full_path.c_str(), "rb");
+                                if (f) {
+                                    fseek(f, 0, SEEK_END);
+                                    size_t fsize = ftell(f);
+                                    fseek(f, 0, SEEK_SET);
+                                    std::vector<unsigned char> fileData(fsize);
+                                    fread(fileData.data(), 1, fsize, f);
+                                    fclose(f);
+                                    _sc_write_to_clipboard(RegisterClipboardFormatA("PNG"), fileData.data(), fileData.size());
+                                }
+
+                                CloseClipboard();
+                            }
+                            stbi_image_free(cdata);
+                        }
+                    } else if (cmd == 2) {
+                        std::string arg = "/select,\"" + w.full_path + "\"";
+                        ShellExecuteA(nullptr, "open", "explorer.exe", arg.c_str(), nullptr, SW_SHOWNORMAL);
+                    }
+                }
+            }
+            return 0;
+        }
+
         case WM_DESTROY: {
+            for (auto& pair : ui.image_cache) {
+                if (pair.second) DeleteObject(pair.second);
+            }
+            ui.image_cache.clear();
+
             theme_destroy(ui.theme);
             return 0;
         }

@@ -87,10 +87,16 @@ bool sc_capture_update(sc_capture_info& ci);
 void sc_cleanup(sc_capture_info& ci);
 void sc_shutdown();
 
+std::string sc_get_date_string();
+fs::path sc_get_save_path();
+
+std::wstring _sc_utf8_to_wstring(const std::string& str);
+
 void _sc_init_impl();
 void _sc_shutdown_impl();
 void _sc_cleanup_impl(sc_capture_info& ci);
 void _sc_swap_channels(uint32_t* pixels, int totalPixels);
 bool _sc_get_system_language_impl(std::string& out_lang);
+bool _sc_write_to_clipboard(UINT format, const void* data, size_t size, const void* secondaryData = nullptr, size_t secondarySize = 0);
 
 std::string _sc_plat_get_default_save_path();

@@ -13,7 +13,7 @@ void _sc_swap_channels(uint32_t* pixels, int totalPixels) {
     }
 }
 
-sc_internal std::string _get_date_string() {
+std::string sc_get_date_string() {
     auto now = std::chrono::system_clock::now();
     std::time_t now_time_t = std::chrono::system_clock::to_time_t(now);
     std::tm now_tm;
@@ -41,8 +41,8 @@ sc_internal std::string _get_filename_timestamp() {
     return std::string(buffer);
 }
 
-sc_internal fs::path _get_save_path() {
-    fs::path save_path(fs::path((g_app.save_path.empty() ? _sc_plat_get_default_save_path() : g_app.save_path)) / _get_date_string());
+fs::path sc_get_save_path() {
+    fs::path save_path(fs::path((g_app.save_path.empty() ? _sc_plat_get_default_save_path() : g_app.save_path)) / sc_get_date_string());
     if (!fs::exists(save_path)) {
         std::error_code ec;
         if (!fs::create_directories(save_path, ec)) {
@@ -56,7 +56,7 @@ sc_app& sc_get_app() {
     return g_app;
 }
 
-sc_internal std::wstring _sc_utf8_to_wstring(const std::string& str) {
+std::wstring _sc_utf8_to_wstring(const std::string& str) {
 #if defined(_WIN32) || defined(_WIN64)
     int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), NULL, 0);
     std::wstring wstr(size_needed, 0);
@@ -93,7 +93,7 @@ sc_internal void _init_languages() {
     }
 
     // test
-    //language = "fr";
+    //language = "cs";
     ////
     auto language_section = ini.GetSection(language.c_str());
     if (!language_section) {
@@ -174,7 +174,7 @@ bool sc_save_capture(sc_capture_info& ci) {
         ci.channels_swapped = true;
     }
 
-    fs::path saveFile = _get_save_path() / (_get_filename_timestamp() + ".png");
+    fs::path saveFile = sc_get_save_path() / (_get_filename_timestamp() + ".png");
 
     if (!stbi_write_png(saveFile.string().c_str(), ci.width, ci.height, ci.channels, ci.data, ci.width * ci.channels)) {
         fprintf(stderr, "Failed to save capture to %s\n", saveFile.string().c_str());

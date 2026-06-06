@@ -163,7 +163,7 @@ sc_internal void _sc_get_monitors(std::vector<sc_monitor_info>& monitors) {
 #pragma endregion
 
 #pragma region Screencap
-sc_internal bool _sc_write_to_clipboard(UINT format, const void* data, size_t size, const void* secondaryData = nullptr, size_t secondarySize = 0) {
+bool _sc_write_to_clipboard(UINT format, const void* data, size_t size, const void* secondaryData, size_t secondarySize) {
     HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, size + secondarySize);
     if (!hMem) {
         return false;
