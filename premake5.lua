@@ -30,7 +30,7 @@ workspace "screencap"
 
   project "screencap"
     kind "WindowedApp"
-    files { "src/**.cc", "src/**.h", "ext/**.h" }
+    files { "src/**.cc", "src/**.h", "ext/**.h", "src/resources.rc" }
     includedirs { "src", "ext" }
 
     pchheader "pch.h"

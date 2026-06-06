@@ -9,6 +9,7 @@
 #pragma comment(lib, "UxTheme.lib")
 #pragma comment(lib, "Comctl32.lib")
 
+#define IDI_APP_ICON 101
 #define WM_TRAYICON (WM_USER + 1)
 constexpr int TRAY_MENU_SETTINGS = 1001;
 constexpr int TRAY_MENU_EXIT = 1002;
@@ -230,12 +231,15 @@ void _sc_init_impl() {
     wc.lpszClassName = "ScOverlayWindow";
     RegisterClassA(&wc);
 
-    WNDCLASSA wcUtility = {};
+    WNDCLASSEXA wcUtility = {};
+    wcUtility.cbSize = sizeof(WNDCLASSEXA);
     wcUtility.lpfnWndProc = TrayUtilityWndProc;
     wcUtility.hInstance = GetModuleHandle(nullptr);
     wcUtility.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wcUtility.hIcon = LoadIcon(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON));
+    wcUtility.hIconSm = LoadIcon(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON));
     wcUtility.lpszClassName = "ScTrayUtilityWindow";
-    RegisterClassA(&wcUtility);
+    RegisterClassExA(&wcUtility);
 
     g_state.backgroundHwnd = CreateWindowExA(
         0, "ScTrayUtilityWindow", nullptr, 0,
@@ -721,6 +725,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             SelectObject(memDC, oldMagPen);
             DeleteObject(magPen);
 
+            // Blit to screen
             BitBlt(hdc, 0, 0, cr.right, cr.bottom, memDC, 0, 0, SRCCOPY);
             
             SelectObject(memDC, hOldBitmap);
@@ -1149,12 +1154,15 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             if (wmId == TRAY_MENU_SETTINGS) {
                 static bool classRegistered = false;
                 if (!classRegistered) {
-                    WNDCLASSW wcc = {};
+                    WNDCLASSEXW wcc = {};
+                    wcc.cbSize = sizeof(WNDCLASSEXW);
                     wcc.lpfnWndProc = SettingsWndProc;
                     wcc.hInstance = GetModuleHandle(nullptr);
                     wcc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+                    wcc.hIcon = LoadIcon(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON));
+                    wcc.hIconSm = LoadIcon(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON));
                     wcc.lpszClassName = L"ScCustomSettingsWindow";
-                    RegisterClassW(&wcc);
+                    RegisterClassExW(&wcc);
                     classRegistered = true;
                 }
 
@@ -1226,7 +1234,7 @@ void RegisterTrayIcon(HWND hwnd) {
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
 
-    nid.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    nid.hIcon = LoadIcon(GetModuleHandle(nullptr), MAKEINTRESOURCE(IDI_APP_ICON));
     strcpy_s(nid.szTip, "Screencap Utility");
 
     Shell_NotifyIconA(NIM_ADD, &nid);
