@@ -1183,7 +1183,7 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 }
 
                 HWND hSettings = CreateWindowExW(
-                    0, L"ScCustomSettingsWindow", L"Screencap Options",
+                    0, L"ScCustomSettingsWindow", L"Screencap",
                     WS_OVERLAPPEDWINDOW | WS_THICKFRAME,
                     CW_USEDEFAULT, CW_USEDEFAULT, 550, 260,
                     nullptr, nullptr, GetModuleHandle(nullptr), nullptr
