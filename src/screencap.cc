@@ -92,6 +92,9 @@ sc_internal void _init_languages() {
         }
     }
 
+    // test
+    //language = "fr";
+    ////
     auto language_section = ini.GetSection(language.c_str());
     if (!language_section) {
         fprintf(stderr, "No language section found for '%s', defaulting to en\n", language.c_str());

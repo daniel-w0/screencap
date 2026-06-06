@@ -859,7 +859,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             std::wstring widePath = winrt::to_hstring(sc_get_app().save_path).c_str();
             SetWindowTextW(hEditPath, widePath.c_str());
 
-            hBtnBrowse = CreateWindowExW(0, L"BUTTON", L"Browse...", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 430, 45, 80, 24, hwnd, (HMENU)3002, GetModuleHandle(nullptr), nullptr);
+            hBtnBrowse = CreateWindowExW(0, L"BUTTON", sc_get_localized_string("Browse...").c_str(), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 430, 45, 100, 24, hwnd, (HMENU)3002, GetModuleHandle(nullptr), nullptr);
             SendMessageW(hBtnBrowse, WM_SETFONT, (WPARAM)hFont, TRUE);
 
             SetWindowTheme(hEditPath, L"Explorer", nullptr);
@@ -906,7 +906,8 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 SetTextColor(pDIS->hDC, RGB(240, 240, 240));
                 HFONT oldFont = (HFONT)SelectObject(pDIS->hDC, hFont);
 
-                DrawTextW(pDIS->hDC, L"Browse...", -1, &pDIS->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                std::wstring& browseText = sc_get_localized_string("Browse...");
+                DrawTextW(pDIS->hDC, browseText.c_str(), -1, &pDIS->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
                 SelectObject(pDIS->hDC, oldFont);
                 return TRUE;
@@ -933,8 +934,8 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 toggles[i].rect.right = width - 20; 
             }
             if (hEditPath && hBtnBrowse) {
-                MoveWindow(hEditPath, 160, 45, width - 260, 24, TRUE);
-                MoveWindow(hBtnBrowse, width - 90, 45, 70, 24, TRUE);
+                MoveWindow(hEditPath, 160, 45, width - 290, 24, TRUE);
+                MoveWindow(hBtnBrowse, width - 120, 45, 100, 24, TRUE);
             }
             InvalidateRect(hwnd, nullptr, TRUE);
             return 0;
@@ -1153,10 +1154,13 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 POINT pt;
                 GetCursorPos(&pt);
 
+                std::wstring& settingsText = sc_get_localized_string("Settings...");
+                std::wstring& exitText = sc_get_localized_string("Exit");
+
                 HMENU hMenu = CreatePopupMenu();
-                AppendMenuA(hMenu, MF_STRING, TRAY_MENU_SETTINGS, "Settings...");
-                AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
-                AppendMenuA(hMenu, MF_STRING, TRAY_MENU_EXIT, "Exit");
+                AppendMenuW(hMenu, MF_STRING, TRAY_MENU_SETTINGS, settingsText.c_str());
+                AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+                AppendMenuW(hMenu, MF_STRING, TRAY_MENU_EXIT, exitText.c_str());
 
                 SetForegroundWindow(hwnd);
                 TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, 0, hwnd, nullptr);
