@@ -29,6 +29,7 @@ struct sc_ocr_line {
 };
 
 struct Win32Toggle {
+    const char* name;
     RECT rect;
     const wchar_t* text;
     bool* targetValue;
@@ -94,6 +95,12 @@ bool _sc_get_system_language_impl(std::string& out_lang) {
         return true;
     }
     return false;
+}
+
+sc_internal void _sc_on_option_changed(Win32Toggle& toggle) {
+    if (toggle.name == "run_on_startup") {
+        printf("Toggled on_startup to %d\n", *toggle.targetValue);
+    }
 }
 
 std::string _sc_plat_get_default_save_path() {
@@ -807,7 +814,7 @@ LRESULT CALLBACK BrowseButtonSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LP
 }
 
 LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    static std::array<Win32Toggle, 1> toggles;
+    static std::array<Win32Toggle, 2> toggles;
     static SettingsTab activeTab = TAB_GENERAL;
     
     static RECT tabGeneralRect = { 10, 20, 140, 50 };
@@ -833,7 +840,8 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
     switch (msg) {
         case WM_CREATE: {
-            toggles[0] = { { 160, 110, 0, 150 }, sc_get_localized_string("Copy screenshot to Clipboard").c_str(), &sc_get_app().opt_copy_to_clipboard, false };
+            toggles[0] = { "copy_to_clipboard", { 160, 110, 0, 150 }, sc_get_localized_string("Copy screenshot to Clipboard").c_str(), &sc_get_app().opt_copy_to_clipboard, false};
+            toggles[1] = { "run_on_startup", { 160, 150, 500, 190 }, sc_get_localized_string("Run on Startup").c_str(), &sc_get_app().opt_on_startup_enabled, false};
 
             BOOL dark = TRUE;
             DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
@@ -1121,6 +1129,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 for (int i = 0; i < toggles.size(); ++i) {
                     if (PtInRect(&toggles[i].rect, pt)) {
                         *toggles[i].targetValue = !(*toggles[i].targetValue);
+                        _sc_on_option_changed(toggles[i]);
                         InvalidateRect(hwnd, nullptr, FALSE);
                         break;
                     }
