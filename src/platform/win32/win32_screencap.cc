@@ -2,6 +2,12 @@
 #include "platform/platform_screencap.h"
 #include "screencap.h"
 #include <dwmapi.h>
+#include <shobjidl.h>
+#include <commctrl.h>
+#include <uxtheme.h>
+#include <commctrl.h>
+#pragma comment(lib, "UxTheme.lib")
+#pragma comment(lib, "Comctl32.lib")
 
 #define WM_TRAYICON (WM_USER + 1)
 constexpr int TRAY_MENU_SETTINGS = 1001;
@@ -108,7 +114,7 @@ sc_internal std::string _get_filename_timestamp() {
     return std::string(buffer);
 }
 
-sc_internal std::string _get_save_path() {
+sc_internal std::string _get_default_save_path() {
     static fs::path pictures = fs::path(getenv("USERPROFILE")) / "Pictures";
     if (!fs::exists(pictures)) {
         pictures = fs::current_path();
@@ -125,6 +131,17 @@ sc_internal std::string _get_save_path() {
     }
 
     return base_savepath.string();
+}
+
+sc_internal fs::path _get_save_path() {
+    fs::path save_path(fs::path((g_app.save_path.empty() ? _get_default_save_path() : g_app.save_path)) / _get_date_string());
+    if (!fs::exists(save_path)) {
+        std::error_code ec;
+        if (!fs::create_directories(save_path, ec)) {
+            return _get_default_save_path();
+        }
+    }
+    return save_path.string();
     //fs::path date_savepath = base_savepath / _get_date_string();
 
     //if (!fs::exists(date_savepath)) {
@@ -249,7 +266,7 @@ bool _sc_init_app() {
     g_app = {};
     g_app.running = true;
     g_app.opt_copy_to_clipboard = true;
-    g_app.save_path = _get_save_path();
+    g_app.save_path = _get_default_save_path();
 
     g_app.hotkeys[sc_hotkey_screenshot] = { sc_hotkey_id::sc_hotkey_screenshot, 0, VK_SNAPSHOT };
     g_app.hotkeys[sc_hotkey_clipboard] = { sc_hotkey_id::sc_hotkey_clipboard, MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT };
@@ -687,7 +704,7 @@ bool sc_save_capture(sc_capture_info& ci) {
         ci.channels_swapped = true;
     }
 
-    fs::path saveFile = fs::path(g_app.save_path) / _get_date_string() / (_get_filename_timestamp() + ".png");
+    fs::path saveFile = _get_save_path() / (_get_filename_timestamp() + ".png");
 
     if (!stbi_write_png(saveFile.string().c_str(), ci.width, ci.height, ci.channels, ci.data, ci.width * ci.channels)) {
         fprintf(stderr, "Failed to save capture to %s\n", saveFile.string().c_str());
@@ -915,8 +932,56 @@ enum SettingsTab {
     TAB_INPUT
 };
 
+void OpenFolderPickerDialog(HWND hwnd, HWND hEditPath) {
+    std::thread([](HWND hwndParent, HWND hEdit) {
+        winrt::init_apartment();
+        IFileOpenDialog* pFolderDlg = nullptr;
+        if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFolderDlg)))) {
+            DWORD options;
+            pFolderDlg->GetOptions(&options);
+            pFolderDlg->SetOptions(options | FOS_PICKFOLDERS);
+
+            if (SUCCEEDED(pFolderDlg->Show(hwndParent))) {
+                IShellItem* pItem = nullptr;
+                if (SUCCEEDED(pFolderDlg->GetResult(&pItem))) {
+                    PWSTR pszPath = nullptr;
+                    if (SUCCEEDED(pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszPath))) {
+                        SetWindowTextW(hEdit, pszPath);
+                        g_app.save_path = winrt::to_string(pszPath);
+                        CoTaskMemFree(pszPath);
+                    }
+                    pItem->Release();
+                }
+            }
+            pFolderDlg->Release();
+        }
+    }, hwnd, hEditPath).detach();
+}
+
+LRESULT CALLBACK BrowseButtonSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+    static bool isHovered = false;
+
+    switch (msg) {
+        case WM_MOUSEMOVE: {
+            if (!isHovered) {
+                isHovered = true;
+                InvalidateRect(hwnd, nullptr, FALSE);
+
+                TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, HOVER_DEFAULT };
+                TrackMouseEvent(&tme);
+            }
+            break;
+        }
+        case WM_MOUSELEAVE: {
+            isHovered = false;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            break;
+        }
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
 LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    //static Win32Toggle toggles[1];
     static std::array<Win32Toggle, 1> toggles;
     static SettingsTab activeTab = TAB_GENERAL;
     
@@ -924,6 +989,10 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     static RECT tabInputRect   = { 10, 55, 140, 85 };
     static bool hoverGeneral   = false;
     static bool hoverInput     = false;
+
+    static HWND hEditPath = nullptr;
+    static HWND hBtnBrowse = nullptr;
+    static RECT pathLabelRect = { 160, 20, 500, 40 };
 
     static HFONT hFont = nullptr;
     static HFONT hBoldFont = nullptr;
@@ -939,7 +1008,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
     switch (msg) {
         case WM_CREATE: {
-            toggles[0] = { { 160, 20, 0, 60 }, "Copy screenshot directly to Clipboard", &g_app.opt_copy_to_clipboard, false };
+            toggles[0] = { { 160, 110, 0, 150 }, "Copy screenshot directly to Clipboard", &g_app.opt_copy_to_clipboard, false };
 
             BOOL dark = TRUE;
             DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
@@ -958,7 +1027,79 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             hThumbBrush = CreateSolidBrush(RGB(255, 255, 255));
             hGreenBrush = CreateSolidBrush(RGB(34, 139, 34));
             hRedBrush = CreateSolidBrush(RGB(178, 34, 34));
+
+            hEditPath = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, 160, 45, 260, 24, hwnd, (HMENU)3001, GetModuleHandle(nullptr), nullptr);
+            SendMessageW(hEditPath, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+            std::wstring widePath = winrt::to_hstring(g_app.save_path).c_str();
+            SetWindowTextW(hEditPath, widePath.c_str());
+
+            hBtnBrowse = CreateWindowExW(0, L"BUTTON", L"Browse...", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 430, 45, 80, 24, hwnd, (HMENU)3002, GetModuleHandle(nullptr), nullptr);
+            SendMessageW(hBtnBrowse, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+            SetWindowTheme(hEditPath, L"Explorer", nullptr);
+            
+            SetWindowSubclass(hBtnBrowse, BrowseButtonSubclassProc, 0, 0);
+
             return 0;
+        }
+
+        case WM_DRAWITEM: {
+            LPDRAWITEMSTRUCT pDIS = (LPDRAWITEMSTRUCT)lParam;
+            if (pDIS->CtlID == 3002) {
+                bool isPressed = (pDIS->itemState & ODS_SELECTED);
+                bool isFocused = (pDIS->itemState & ODS_FOCUS);
+                
+                POINT mousePt;
+                GetCursorPos(&mousePt);
+                ScreenToClient(hBtnBrowse, &mousePt);
+                bool isHovered = PtInRect(&pDIS->rcItem, mousePt);
+
+                HBRUSH btnBrush = nullptr;
+                if (isPressed) {
+                    btnBrush = CreateSolidBrush(RGB(55, 55, 55));
+                } else if (isHovered) {
+                    btnBrush = CreateSolidBrush(RGB(48, 48, 48));
+                } else {
+                    btnBrush = CreateSolidBrush(RGB(38, 38, 38));
+                }
+
+                FillRect(pDIS->hDC, &pDIS->rcItem, btnBrush);
+                DeleteObject(btnBrush);
+
+                HPEN borderPen = CreatePen(PS_SOLID, 1, (isFocused || isHovered) ? RGB(0, 120, 215) : RGB(55, 55, 55));
+                HPEN oldPen = (HPEN)SelectObject(pDIS->hDC, borderPen);
+                HBRUSH oldBrush = (HBRUSH)SelectObject(pDIS->hDC, GetStockObject(NULL_BRUSH));
+                
+                Rectangle(pDIS->hDC, pDIS->rcItem.left, pDIS->rcItem.top, pDIS->rcItem.right, pDIS->rcItem.bottom);
+                
+                SelectObject(pDIS->hDC, oldBrush);
+                SelectObject(pDIS->hDC, oldPen);
+                DeleteObject(borderPen);
+
+                SetBkMode(pDIS->hDC, TRANSPARENT);
+                SetTextColor(pDIS->hDC, RGB(240, 240, 240));
+                HFONT oldFont = (HFONT)SelectObject(pDIS->hDC, hFont);
+
+                DrawTextW(pDIS->hDC, L"Browse...", -1, &pDIS->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+                SelectObject(pDIS->hDC, oldFont);
+                return TRUE;
+            }
+            break;
+        }
+
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORSTATIC: {
+            HDC hdcStatic = (HDC)wParam;
+            HWND hwndChild = (HWND)lParam;
+            if (hwndChild == hEditPath) {
+                SetTextColor(hdcStatic, RGB(240, 240, 240));
+                SetBkColor(hdcStatic, RGB(45, 45, 45));
+                static HBRUSH hEditBg = CreateSolidBrush(RGB(45, 45, 45));
+                return (INT_PTR)hEditBg;
+            }
+            break;
         }
 
         case WM_SIZE: {
@@ -966,7 +1107,25 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             for (int i = 0; i < toggles.size(); ++i) {
                 toggles[i].rect.right = width - 20; 
             }
+            if (hEditPath && hBtnBrowse) {
+                MoveWindow(hEditPath, 160, 45, width - 260, 24, TRUE);
+                MoveWindow(hBtnBrowse, width - 90, 45, 70, 24, TRUE);
+            }
             InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        }
+
+        case WM_COMMAND: {
+            if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) == 3001) {
+                int len = GetWindowTextLengthW(hEditPath);
+                std::vector<wchar_t> buf(len + 1);
+                GetWindowTextW(hEditPath, buf.data(), len + 1);
+                g_app.save_path = winrt::to_string(buf.data());
+            }
+            
+            if (LOWORD(wParam) == 3002) {
+                OpenFolderPickerDialog(hwnd, hEditPath);
+            }
             return 0;
         }
 
@@ -1007,6 +1166,11 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             SetTextColor(memDC, RGB(240, 240, 240));
 
             if (activeTab == TAB_GENERAL) {
+                ShowWindow(hEditPath, SW_SHOW);
+                ShowWindow(hBtnBrowse, SW_SHOW);
+
+                TextOutA(memDC, pathLabelRect.left, pathLabelRect.top, "Screenshot Destination Folder Path:", 35);
+
                 for (int i = 0; i < toggles.size(); ++i) {
                     FillRect(memDC, &toggles[i].rect, toggles[i].isHovered ? hRowHoverBrush : hRowNormalBrush);
                     TextOutA(memDC, toggles[i].rect.left + 15, toggles[i].rect.top + 10, toggles[i].text, (int)strlen(toggles[i].text));
@@ -1027,6 +1191,9 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                     FillRect(memDC, &thumbRect, hThumbBrush);
                 }
             } else if (activeTab == TAB_INPUT) {
+                ShowWindow(hEditPath, SW_HIDE);
+                ShowWindow(hBtnBrowse, SW_HIDE);
+
                 int startY = 20;
                 for (size_t i = 0; i < g_app.hotkeys.size(); ++i) {
                     const auto& hk = g_app.hotkeys[i];
