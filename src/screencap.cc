@@ -70,6 +70,7 @@ std::wstring _sc_utf8_to_wstring(const std::string& str) {
 
 sc_internal void _init_languages() {
     language_map.clear();
+    g_app.available_languages = { "en" };
 
     CSimpleIniA ini;
     ini.SetUnicode();
@@ -78,6 +79,13 @@ sc_internal void _init_languages() {
     if (rc < 0) {
         fprintf(stderr, "Failed to load embedded locales.ini\n");
         return;
+    }
+
+    std::list<CSimpleIniA::Entry> sections;
+    ini.GetAllSections(sections);
+    for (auto& section : sections) {
+        g_app.available_languages.push_back(section.pItem);
+        printf("Found language section: %s\n", section.pItem);
     }
 
     std::string language;
@@ -92,23 +100,27 @@ sc_internal void _init_languages() {
         }
     }
 
+    g_app.language_code = language;
+
     // test
     //language = "sv";
     ////
     auto language_section = ini.GetSection(language.c_str());
     if (!language_section) {
-        fprintf(stderr, "No language section found for '%s', defaulting to en\n", language.c_str());
-        language_section = ini.GetSection("en");
-        if (!language_section) {
-            fprintf(stderr, "No default language section found for 'en'\n");
-            return;
+        if (language != "en") {
+            fprintf(stderr, "No language section found for '%s', defaulting to en\n", language.c_str());
+        }
+    } else {
+        for (auto& [key, value] : *language_section) {
+            std::string key_str(key.pItem);
+            language_map[key.pItem] = _sc_utf8_to_wstring(value);
         }
     }
+}
 
-    for (auto& [key, value] : *language_section) {
-        std::string key_str(key.pItem);
-        language_map[key.pItem] = _sc_utf8_to_wstring(value);
-    }
+void sc_set_language(const std::string& language_code) {
+    g_app.language_code = language_code;
+    _init_languages();
 }
 
 std::wstring& sc_get_localized_string(const std::string& key) {
@@ -119,8 +131,6 @@ std::wstring& sc_get_localized_string(const std::string& key) {
 }
 
 void sc_initialize() {
-    _init_languages();
-
     g_app = {};
     g_app.running = true;
     g_app.opt_copy_to_clipboard = true;
@@ -133,6 +143,7 @@ void sc_initialize() {
     g_app.hotkeys[sc_hotkey_current_monitor] = { sc_hotkey_id::sc_hotkey_current_monitor, MOD_CONTROL, VK_SNAPSHOT };
     g_app.hotkeys[sc_hotkey_fallback_screenshot] = { sc_hotkey_id::sc_hotkey_fallback_screenshot, MOD_CONTROL | MOD_ALT, 'C' };
 
+    _init_languages();
     _sc_init_impl();
 }
 

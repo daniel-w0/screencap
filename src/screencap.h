@@ -67,6 +67,8 @@ struct sc_app {
     bool opt_on_startup_enabled;
     std::array<sc_hotkey, sc_hotkey_id::_sc_hotkey_count> hotkeys;
     std::string save_path;
+    std::string language_code;
+    std::vector<std::string> available_languages;
 
     // state
     bool running;
@@ -81,6 +83,7 @@ sc_app& sc_get_app();
 
 std::wstring& sc_get_localized_string(const std::string& key);
 
+void sc_set_language(const std::string& lang_code);
 bool sc_save_capture(sc_capture_info& ci);
 void sc_settings_on_capture_saved(const std::string& path);
 void sc_begin_capture(sc_capture_options options);
