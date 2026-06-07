@@ -164,6 +164,11 @@ struct sc_settings_ui {
     int scroll_y = 0;
     int max_scroll_y = 0;
     std::unordered_map<std::string, HBITMAP> image_cache;
+
+    std::vector<std::string> gallery_files;
+    bool gallery_needs_refresh = true;
+    bool needs_layout = true;
+    RECT last_content_rect = { 0, 0, 0, 0 };
 };
 
 struct sc_tab {
@@ -410,6 +415,7 @@ static void activate_general_tab(sc_settings_ui& ui, bool active) {
     int cmd = active ? SW_SHOW : SW_HIDE;
     ShowWindow(ui.edit_path, cmd);
     ShowWindow(ui.btn_browse, cmd);
+    if (active) ui.needs_layout = true;
 }
 
 static void build_input_tab(sc_settings_ui& ui, RECT content) {
@@ -438,14 +444,22 @@ bool list_files_in_directory(const std::string& directory, std::vector<std::stri
     return true;
 }
 
-static void activate_input_tab(sc_settings_ui&, bool) {}
+static void activate_input_tab(sc_settings_ui& ui, bool active) {
+    if (active) ui.needs_layout = true;
+}
 
 static void build_gallery_tab(sc_settings_ui& ui, RECT content) {
     ui.widgets.clear();
 
     std::string dir = sc_get_save_path().string();
-    std::vector<std::string> files;
-    if (!list_files_in_directory(dir, files)) {
+
+    if (ui.gallery_needs_refresh) {
+        ui.gallery_files.clear();
+        list_files_in_directory(dir, ui.gallery_files);
+        ui.gallery_needs_refresh = false;
+    }
+
+    if (ui.gallery_files.empty()) {
         ui.widgets.push_back(make_label({ 170, 20, 500, 40 }, L"No screenshots found."));
         return;
     }
@@ -459,12 +473,12 @@ static void build_gallery_tab(sc_settings_ui& ui, RECT content) {
     int available_w = content.right - start_x - 10; 
 
     int cols = std::max(1, (available_w + gap) / (item_w + gap));
-    int rows = ((int)files.size() + cols - 1) / cols;
+    int rows = ((int)ui.gallery_files.size() + cols - 1) / cols;
 
     int total_content_height = (rows * (item_h + gap)) + 20;
     ui.max_scroll_y = std::max(0, total_content_height - (int)content.bottom);
 
-    for (size_t i = 0; i < files.size(); ++i) {
+    for (size_t i = 0; i < ui.gallery_files.size(); ++i) {
         int col = i % cols;
         int row = i / cols;
 
@@ -472,8 +486,8 @@ static void build_gallery_tab(sc_settings_ui& ui, RECT content) {
         int y = start_y + row * (item_h + gap);
 
         if (y + item_h > 0 && y < content.bottom) {
-            std::string full_path = dir + "\\" + files[i];
-            ui.widgets.push_back(make_gallery_item({ x, y, x + item_w, y + item_h }, _sc_utf8_to_wstring(files[i]), full_path));
+            std::string full_path = dir + "\\" + ui.gallery_files[i];
+            ui.widgets.push_back(make_gallery_item({ x, y, x + item_w, y + item_h }, _sc_utf8_to_wstring(ui.gallery_files[i]), full_path));
         }
     }
 }
@@ -481,6 +495,8 @@ static void build_gallery_tab(sc_settings_ui& ui, RECT content) {
 static void activate_gallery_tab(sc_settings_ui& ui, bool active) {
     if (active) {
         ui.scroll_y = 0;
+        ui.gallery_needs_refresh = true;
+        ui.needs_layout = true;
     }
 }
 
@@ -493,8 +509,23 @@ static sc_tab g_tabs[] = {
 static const int g_tab_count = (int)(sizeof(g_tabs) / sizeof(g_tabs[0]));
 #pragma endregion
 
+void sc_settings_on_capture_saved(const std::string& path) {
+    g_ui.gallery_needs_refresh = true;
+}
+
 LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     sc_settings_ui& ui = g_ui;
+
+    auto ensure_layout = [&]() {
+        RECT cr;
+        GetClientRect(hwnd, &cr);
+        if (ui.needs_layout || cr.right != ui.last_content_rect.right || cr.bottom != ui.last_content_rect.bottom) {
+            g_tabs[ui.active_tab].build(ui, cr);
+            ui.needs_layout = false;
+            ui.last_content_rect = cr;
+        }
+        return cr;
+    };
 
     switch (msg) {
         case WM_CREATE: {
@@ -523,7 +554,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             return 0;
         }
 
-case WM_DRAWITEM: {
+        case WM_DRAWITEM: {
             LPDRAWITEMSTRUCT pDIS = (LPDRAWITEMSTRUCT)lParam;
 
             if (pDIS->CtlType == ODT_MENU) {
@@ -613,6 +644,7 @@ case WM_DRAWITEM: {
                 MoveWindow(ui.edit_path, 160, 45, width - 290, 24, TRUE);
                 MoveWindow(ui.btn_browse, width - 120, 45, 100, 24, TRUE);
             }
+            ui.needs_layout = true;
             InvalidateRect(hwnd, nullptr, TRUE);
             return 0;
         }
@@ -625,6 +657,7 @@ case WM_DRAWITEM: {
                 if (ui.scroll_y < 0) ui.scroll_y = 0;
                 if (ui.scroll_y > ui.max_scroll_y) ui.scroll_y = ui.max_scroll_y;
                 
+                ui.needs_layout = true;
                 InvalidateRect(hwnd, nullptr, TRUE);
             }
             return 0;
@@ -647,8 +680,8 @@ case WM_DRAWITEM: {
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
-            RECT cr;
-            GetClientRect(hwnd, &cr);
+            
+            RECT cr = ensure_layout();
 
             HDC memDC = CreateCompatibleDC(hdc);
             HBITMAP memBmp = CreateCompatibleBitmap(hdc, cr.right, cr.bottom);
@@ -674,7 +707,6 @@ case WM_DRAWITEM: {
                 TextOutW(memDC, tabRect.left + 15, tabRect.top + 7, label.c_str(), (int)label.length());
             }
 
-            g_tabs[ui.active_tab].build(ui, cr);
             for (int i = 0; i < (int)ui.widgets.size(); ++i) {
                 draw_widget(memDC, ui.theme, ui.widgets[i], i == ui.hovered_widget);
             }
@@ -689,8 +721,8 @@ case WM_DRAWITEM: {
 
         case WM_MOUSEMOVE: {
             POINT pt = { LOWORD(lParam), HIWORD(lParam) };
-            RECT cr;
-            GetClientRect(hwnd, &cr);
+            
+            ensure_layout();
 
             int prevTab = ui.hovered_tab;
             int prevWidget = ui.hovered_widget;
@@ -704,7 +736,6 @@ case WM_DRAWITEM: {
                 }
             }
 
-            g_tabs[ui.active_tab].build(ui, cr);
             int hit = widget_at(ui.widgets, pt);
             
             ui.hovered_widget = (hit >= 0 && (ui.widgets[hit].kind == SC_W_TOGGLE || ui.widgets[hit].kind == SC_W_GALLERY_ITEM)) ? hit : -1;
@@ -726,8 +757,8 @@ case WM_DRAWITEM: {
 
         case WM_LBUTTONDOWN: {
             POINT pt = { LOWORD(lParam), HIWORD(lParam) };
-            RECT cr;
-            GetClientRect(hwnd, &cr);
+
+            ensure_layout();
 
             for (int i = 0; i < g_tab_count; ++i) {
                 RECT tabRect = sidebar_tab_rect(i);
@@ -742,7 +773,6 @@ case WM_DRAWITEM: {
                 }
             }
 
-            g_tabs[ui.active_tab].build(ui, cr);
             int hit = widget_at(ui.widgets, pt);
             if (hit >= 0 && ui.widgets[hit].kind == SC_W_TOGGLE) {
                 sc_widget& w = ui.widgets[hit];
@@ -755,11 +785,10 @@ case WM_DRAWITEM: {
 
         case WM_RBUTTONUP: {
             POINT pt = { LOWORD(lParam), HIWORD(lParam) };
-            RECT cr;
-            GetClientRect(hwnd, &cr);
+            
+            ensure_layout();
 
             if (ui.active_tab == 2) {
-                g_tabs[ui.active_tab].build(ui, cr);
                 int hit = widget_at(ui.widgets, pt);
                 if (hit >= 0 && ui.widgets[hit].kind == SC_W_GALLERY_ITEM) {
                     sc_widget& w = ui.widgets[hit];

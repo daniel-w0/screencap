@@ -93,7 +93,7 @@ sc_internal void _init_languages() {
     }
 
     // test
-    //language = "cs";
+    //language = "sv";
     ////
     auto language_section = ini.GetSection(language.c_str());
     if (!language_section) {
@@ -181,5 +181,6 @@ bool sc_save_capture(sc_capture_info& ci) {
         return false;
     }
     printf("Saved capture (%dx%d) to %s\n", ci.width, ci.height, saveFile.string().c_str());
+    sc_settings_on_capture_saved(saveFile.string());
     return true;
 }

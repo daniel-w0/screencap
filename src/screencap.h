@@ -82,6 +82,7 @@ sc_app& sc_get_app();
 std::wstring& sc_get_localized_string(const std::string& key);
 
 bool sc_save_capture(sc_capture_info& ci);
+void sc_settings_on_capture_saved(const std::string& path);
 void sc_begin_capture(sc_capture_options options);
 bool sc_capture_update(sc_capture_info& ci);
 void sc_cleanup(sc_capture_info& ci);
