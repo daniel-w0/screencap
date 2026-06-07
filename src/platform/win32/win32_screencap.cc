@@ -12,8 +12,12 @@
 #include "win32_ui.h"
 
 #define WM_TRAYICON (WM_USER + 1)
-constexpr int TRAY_MENU_SETTINGS = 1001;
-constexpr int TRAY_MENU_EXIT = 1002;
+
+enum {
+    TRAY_MENU_TAKE_SCREENSHOT = 1001,
+    TRAY_MENU_SETTINGS,
+    TRAY_MENU_EXIT
+};
 
 #pragma region OCR Decl
 using DataWriter = winrt::Windows::Storage::Streams::DataWriter;
@@ -765,8 +769,9 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 std::wstring& exitText = sc_get_localized_string("Exit");
 
                 HMENU hMenu = CreatePopupMenu();
-                AppendMenuW(hMenu, MF_STRING, TRAY_MENU_SETTINGS, settingsText.c_str());
+                AppendMenuW(hMenu, MF_STRING, TRAY_MENU_TAKE_SCREENSHOT, sc_get_localized_string("Take Screenshot").c_str());
                 AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+                AppendMenuW(hMenu, MF_STRING, TRAY_MENU_SETTINGS, settingsText.c_str());
                 AppendMenuW(hMenu, MF_STRING, TRAY_MENU_EXIT, exitText.c_str());
 
                 SetForegroundWindow(hwnd);
@@ -780,7 +785,12 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             int wmId = LOWORD(wParam);
             if (wmId == TRAY_MENU_SETTINGS) {
                 sc_open_settings_window();
-            }  else if (wmId == TRAY_MENU_EXIT) {
+            } else if (wmId == TRAY_MENU_TAKE_SCREENSHOT) {
+                sc_capture_options options = {};
+                options.extract_text = false;
+                options.mode = sc_capture_mode::interactive;
+                sc_begin_capture(options);
+            } else if (wmId == TRAY_MENU_EXIT) {
                 NOTIFYICONDATAA nid = {};
                 nid.cbSize = sizeof(NOTIFYICONDATAA);
                 nid.hWnd = hwnd;
