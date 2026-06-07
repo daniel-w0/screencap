@@ -486,7 +486,9 @@ bool list_files_in_directory(const std::string& directory, std::vector<std::stri
     }
     do {
         if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            out_files.push_back(findData.cFileName);
+            if (strstr(findData.cFileName, ".png") || strstr(findData.cFileName, ".jpg") || strstr(findData.cFileName, ".jpeg") || strstr(findData.cFileName, ".bmp") || strstr(findData.cFileName, ".gif")) {
+                out_files.push_back(findData.cFileName);
+            }
         }
     } while (FindNextFileA(hFind, &findData) != 0);
     FindClose(hFind);
