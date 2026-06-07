@@ -838,7 +838,10 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
             if (ui.expanded_dropdown != -1) {
                 const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
-                int visible_items = std::min((int)dw.options.size(), 6);
+                RECT cr; GetClientRect(hwnd, &cr);
+                int space_below = cr.bottom - dw.rect.bottom;
+                int max_visible_items = std::max(1, (space_below - 20) / 28);
+                int visible_items = std::min((int)dw.options.size(), max_visible_items);
                 RECT expRect = { dw.rect.right - 165, dw.rect.bottom - 6, dw.rect.right - 15, dw.rect.bottom - 6 + visible_items * 28 };
                 if (PtInRect(&expRect, pt)) {
                     int idx = (pt.y - expRect.top + ui.dropdown_scroll_y) / 28;
@@ -887,9 +890,12 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
             if (ui.expanded_dropdown != -1) {
                 const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
-                int visible_items = std::min((int)dw.options.size(), 6);
+                RECT cr; GetClientRect(hwnd, &cr);
+                int space_below = cr.bottom - dw.rect.bottom;
+                int max_visible_items = std::max(1, (space_below - 20) / 28);
+                int visible_items = std::min((int)dw.options.size(), max_visible_items);
                 RECT expRect = { dw.rect.right - 165, dw.rect.bottom - 6, dw.rect.right - 15, dw.rect.bottom - 6 + visible_items * 28 };
-                
+
                 if (PtInRect(&expRect, pt)) {
                     int idx = (pt.y - expRect.top + ui.dropdown_scroll_y) / 28;
                     if (idx >= 0 && idx < (int)dw.options.size()) {
