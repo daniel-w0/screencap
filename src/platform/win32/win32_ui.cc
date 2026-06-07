@@ -478,20 +478,23 @@ static void build_input_tab(sc_settings_ui& ui, RECT content) {
 }
 
 bool list_files_in_directory(const std::string& directory, std::vector<std::string>& out_files) {
-    std::string searchPath = directory + "\\*";
-    WIN32_FIND_DATAA findData;
-    HANDLE hFind = FindFirstFileA(searchPath.c_str(), &findData);
-    if (hFind == INVALID_HANDLE_VALUE) {
-        return false;
-    }
-    do {
-        if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            if (strstr(findData.cFileName, ".png") || strstr(findData.cFileName, ".jpg") || strstr(findData.cFileName, ".jpeg") || strstr(findData.cFileName, ".bmp") || strstr(findData.cFileName, ".gif")) {
-                out_files.push_back(findData.cFileName);
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(directory, ec)) {
+        if (ec) break;
+        if (entry.is_regular_file()) {
+            std::string filename = entry.path().filename().string();
+            if (strstr(filename.c_str(), ".png") || strstr(filename.c_str(), ".jpg") || strstr(filename.c_str(), ".jpeg") || strstr(filename.c_str(), ".bmp") || strstr(filename.c_str(), ".gif")) {
+                out_files.push_back(filename);
             }
         }
-    } while (FindNextFileA(hFind, &findData) != 0);
-    FindClose(hFind);
+    }
+
+    std::sort(out_files.begin(), out_files.end(), [&](const std::string& a, const std::string& b) {
+        auto a_time = fs::last_write_time(fs::path(directory) / a, ec);
+        auto b_time = fs::last_write_time(fs::path(directory) / b, ec);
+        return a_time > b_time;
+    });
+
     return true;
 }
 
