@@ -618,11 +618,11 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                     SetTextColor(pDIS->hDC, RGB(240, 240, 240));
                     HFONT oldFont = (HFONT)SelectObject(pDIS->hDC, ui.theme.font);
 
-                    const char* text = (const char*)pDIS->itemData;
+                    const wchar_t* text = (const wchar_t*)pDIS->itemData;
                     RECT textRect = pDIS->rcItem;
                     textRect.left += 10;
 
-                    DrawTextA(pDIS->hDC, text, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                    DrawTextW(pDIS->hDC, text, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
                     SelectObject(pDIS->hDC, oldFont);
                 }
                 return TRUE;
@@ -939,6 +939,8 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                         ui.dropdown_scroll_y = 0;
                         InvalidateRect(hwnd, nullptr, TRUE);
                     }
+                } else if (ui.widgets[hit].kind == SC_W_GALLERY_ITEM) {
+                    ShellExecuteA(nullptr, "open", ui.widgets[hit].full_path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 }
             }
             return 0;
@@ -961,8 +963,10 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                     mi.hbrBack = ui.theme.bg;
                     SetMenuInfo(hMenu, &mi);
 
-                    AppendMenuA(hMenu, MF_OWNERDRAW, 1, "Copy to Clipboard");
-                    AppendMenuA(hMenu, MF_OWNERDRAW, 2, "Open Containing Folder");
+                    AppendMenuW(hMenu, MF_OWNERDRAW, 1, sc_get_localized_string("Copy to Clipboard").c_str());
+                    AppendMenuW(hMenu, MF_OWNERDRAW, 2, sc_get_localized_string("Open Containing Folder").c_str());
+                    AppendMenuW(hMenu, MF_OWNERDRAW, 3, sc_get_localized_string("Open").c_str());
+                    AppendMenuW(hMenu, MF_OWNERDRAW, 4, sc_get_localized_string("Delete").c_str());
 
                     POINT screenPt = pt;
                     ClientToScreen(hwnd, &screenPt);
@@ -1015,6 +1019,17 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                     } else if (cmd == 2) {
                         std::string arg = "/select,\"" + w.full_path + "\"";
                         ShellExecuteA(nullptr, "open", "explorer.exe", arg.c_str(), nullptr, SW_SHOWNORMAL);
+                    } else if (cmd == 3) {
+                        ShellExecuteA(nullptr, "open", w.full_path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    } else if (cmd == 4) {
+                        if (MessageBoxW(hwnd, sc_get_localized_string("Are you sure you want to delete this screenshot?").c_str(), sc_get_localized_string("Confirm Delete").c_str(), MB_ICONWARNING | MB_YESNO) == IDYES) {
+                            DeleteFileA(w.full_path.c_str());
+                            ui.gallery_needs_refresh = true;
+                            if (ui.active_tab == 2) {
+                                ui.needs_layout = true;
+                                InvalidateRect(hwnd, nullptr, TRUE);
+                            }
+                        }
                     }
                 }
             }
@@ -1024,7 +1039,19 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         case WM_MEASUREITEM: {
             LPMEASUREITEMSTRUCT pMIS = (LPMEASUREITEMSTRUCT)lParam;
             if (pMIS->CtlType == ODT_MENU) {
-                pMIS->itemWidth = 150;
+                UINT textWidth = 0;
+                if (pMIS->itemData) {
+                    const wchar_t* text = (const wchar_t*)pMIS->itemData;
+                    HDC hdc = GetDC(hwnd);
+                    HFONT oldFont = (HFONT)SelectObject(hdc, ui.theme.font);
+                    SIZE sz;
+                    if (GetTextExtentPoint32W(hdc, text, (int)wcslen(text), &sz)) {
+                        textWidth = (UINT)sz.cx;
+                    }
+                    SelectObject(hdc, oldFont);
+                    ReleaseDC(hwnd, hdc);
+                }
+                pMIS->itemWidth = std::max<UINT>(150, textWidth + 30);
                 pMIS->itemHeight = 24;
                 return TRUE;
             }
