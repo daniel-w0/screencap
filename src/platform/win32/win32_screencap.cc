@@ -3,6 +3,7 @@
 #include "screencap.h"
 #include <dwmapi.h>
 #include <shobjidl.h>
+#include <shlobj.h>
 #include <commctrl.h>
 #include <uxtheme.h>
 #include <commctrl.h>
@@ -105,6 +106,39 @@ std::string _sc_plat_get_default_save_path() {
     }
 
     return base_savepath.string();
+}
+
+std::string _sc_plat_get_config_path() {
+    PWSTR appDataPath = nullptr;
+    std::string result;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appDataPath))) {
+        fs::path config_dir = fs::path(appDataPath) / "Screencap";
+        CoTaskMemFree(appDataPath);
+
+        std::error_code ec;
+        fs::create_directories(config_dir, ec);
+
+        result = (config_dir / "config.ini").string();
+    }
+    return result;
+}
+
+void _sc_set_run_on_startup_impl(bool enable) {
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE, &hKey) != ERROR_SUCCESS) {
+        return;
+    }
+
+    if (enable) {
+        wchar_t exePath[MAX_PATH];
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        std::wstring quoted = L"\"" + std::wstring(exePath) + L"\"";
+        RegSetValueExW(hKey, L"Screencap", 0, REG_SZ, (const BYTE*)quoted.c_str(), (DWORD)((quoted.size() + 1) * sizeof(wchar_t)));
+    } else {
+        RegDeleteValueA(hKey, "Screencap");
+    }
+
+    RegCloseKey(hKey);
 }
 
 sc_internal bool _sc_rects_intersect(const sc_rect& a, const sc_rect& b) {

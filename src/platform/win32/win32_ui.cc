@@ -32,6 +32,7 @@ void OpenFolderPickerDialog(HWND hwnd, HWND hEditPath) {
                     if (SUCCEEDED(pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszPath))) {
                         SetWindowTextW(hEdit, pszPath);
                         sc_get_app().save_path = winrt::to_string(pszPath);
+                        sc_save_config();
                         CoTaskMemFree(pszPath);
                     }
                     pItem->Release();
@@ -89,8 +90,9 @@ sc_internal std::string _sc_get_key_display_string(uint32_t modifiers, uint32_t 
 
 sc_internal void _sc_on_option_changed(const char* name, bool value) {
     if (strcmp(name, "run_on_startup") == 0) {
-        printf("Toggled on_startup to %d\n", value);
+        _sc_set_run_on_startup_impl(value);
     }
+    sc_save_config();
 }
 #pragma endregion
 
@@ -739,6 +741,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 std::vector<wchar_t> buf(len + 1);
                 GetWindowTextW(ui.edit_path, buf.data(), len + 1);
                 sc_get_app().save_path = winrt::to_string(buf.data());
+                sc_save_config();
             }
 
             if (LOWORD(wParam) == 3002) {

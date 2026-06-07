@@ -125,6 +125,40 @@ sc_internal void _init_languages() {
 void sc_set_language(const std::string& language_code) {
     g_app.language_code = language_code;
     _init_languages();
+    sc_save_config();
+}
+
+void sc_load_config() {
+    CSimpleIniA ini;
+    ini.SetUnicode();
+
+    std::string path = _sc_plat_get_config_path();
+    if (ini.LoadFile(path.c_str()) < 0) {
+        return;
+    }
+
+    g_app.opt_copy_to_clipboard = ini.GetBoolValue("options", "copy_to_clipboard", g_app.opt_copy_to_clipboard);
+    g_app.opt_on_startup_enabled = ini.GetBoolValue("options", "run_on_startup", g_app.opt_on_startup_enabled);
+
+    if (const char* save_path = ini.GetValue("options", "save_path")) {
+        g_app.save_path = save_path;
+    }
+    if (const char* language = ini.GetValue("options", "language")) {
+        g_app.language_code = language;
+    }
+}
+
+void sc_save_config() {
+    CSimpleIniA ini;
+    ini.SetUnicode();
+
+    ini.SetBoolValue("options", "copy_to_clipboard", g_app.opt_copy_to_clipboard);
+    ini.SetBoolValue("options", "run_on_startup", g_app.opt_on_startup_enabled);
+    ini.SetValue("options", "save_path", g_app.save_path.c_str());
+    ini.SetValue("options", "language", g_app.language_code.c_str());
+
+    std::string path = _sc_plat_get_config_path();
+    ini.SaveFile(path.c_str());
 }
 
 std::wstring& sc_get_localized_string(const std::string& key) {
@@ -146,6 +180,9 @@ void sc_initialize() {
     g_app.hotkeys[sc_hotkey_active_window] = { sc_hotkey_id::sc_hotkey_active_window, MOD_ALT, VK_SNAPSHOT };
     g_app.hotkeys[sc_hotkey_current_monitor] = { sc_hotkey_id::sc_hotkey_current_monitor, MOD_CONTROL, VK_SNAPSHOT };
     g_app.hotkeys[sc_hotkey_fallback_screenshot] = { sc_hotkey_id::sc_hotkey_fallback_screenshot, MOD_CONTROL | MOD_ALT, 'C' };
+
+    sc_load_config();
+    _sc_set_run_on_startup_impl(g_app.opt_on_startup_enabled);
 
     _init_languages();
     _sc_init_impl();

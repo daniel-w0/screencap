@@ -84,6 +84,8 @@ sc_app& sc_get_app();
 std::wstring& sc_get_localized_string(const std::string& key);
 
 void sc_set_language(const std::string& lang_code);
+void sc_load_config();
+void sc_save_config();
 bool sc_save_capture(sc_capture_info& ci);
 void sc_settings_on_capture_saved(const std::string& path);
 void sc_begin_capture(sc_capture_options options);
@@ -101,6 +103,8 @@ void _sc_shutdown_impl();
 void _sc_cleanup_impl(sc_capture_info& ci);
 void _sc_swap_channels(uint32_t* pixels, int totalPixels);
 bool _sc_get_system_language_impl(std::string& out_lang);
+void _sc_set_run_on_startup_impl(bool enable);
+std::string _sc_plat_get_config_path();
 bool _sc_write_to_clipboard(UINT format, const void* data, size_t size, const void* secondaryData = nullptr, size_t secondarySize = 0);
 
 std::string _sc_plat_get_default_save_path();
