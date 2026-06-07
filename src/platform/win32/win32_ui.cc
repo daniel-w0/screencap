@@ -11,6 +11,7 @@
 #include "stb_image.h"
 
 static bool g_class_registered = false;
+static HWND g_settings_window = nullptr;
 
 constexpr int MIN_WINDOW_WIDTH = 550;
 constexpr int MIN_WINDOW_HEIGHT = 278;
@@ -112,15 +113,20 @@ void sc_open_settings_window() {
         g_class_registered = true;
     }
 
-    HWND hSettings = CreateWindowExW(
-        0, L"ScCustomSettingsWindow", L"Screencap",
-        WS_OVERLAPPEDWINDOW | WS_THICKFRAME | WS_CLIPCHILDREN,
-        CW_USEDEFAULT, CW_USEDEFAULT, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT,
-        nullptr, nullptr, GetModuleHandle(nullptr), nullptr
-    );
+    if (!g_settings_window) {
+        g_settings_window = CreateWindowExW(
+            0, L"ScCustomSettingsWindow", L"Screencap",
+            WS_OVERLAPPEDWINDOW | WS_THICKFRAME | WS_CLIPCHILDREN,
+            CW_USEDEFAULT, CW_USEDEFAULT, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT,
+            nullptr, nullptr, GetModuleHandle(nullptr), nullptr
+        );
+    } else {
+        BringWindowToTop(g_settings_window);
+        SetForegroundWindow(g_settings_window);
+    }
 
-    ShowWindow(hSettings, SW_SHOW);
-    UpdateWindow(hSettings);
+    ShowWindow(g_settings_window, SW_SHOW);
+    UpdateWindow(g_settings_window);
 }
 
 #pragma region UI
@@ -1073,6 +1079,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             ui.image_cache.clear();
 
             theme_destroy(ui.theme);
+            g_settings_window = nullptr;
             return 0;
         }
     }
