@@ -112,7 +112,7 @@ void sc_open_settings_window() {
 
     HWND hSettings = CreateWindowExW(
         0, L"ScCustomSettingsWindow", L"Screencap",
-        WS_OVERLAPPEDWINDOW | WS_THICKFRAME,
+        WS_OVERLAPPEDWINDOW | WS_THICKFRAME | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT,
         nullptr, nullptr, GetModuleHandle(nullptr), nullptr
     );
@@ -140,17 +140,21 @@ enum sc_widget_kind {
     SC_W_LABEL,
     SC_W_TOGGLE,
     SC_W_HOTKEY_ROW,
-    SC_W_GALLERY_ITEM
+    SC_W_GALLERY_ITEM,
+    SC_W_DROPDOWN
 };
 
 struct sc_widget {
     sc_widget_kind kind;
     RECT rect;
-    const std::wstring label;
+    std::wstring label;
     bool* value = nullptr;
     const char* opt_name = nullptr;
     int hotkey = -1;
     std::string full_path;
+    
+    std::string string_val;
+    std::vector<std::string> options;
 };
 
 struct sc_settings_ui {
@@ -169,6 +173,10 @@ struct sc_settings_ui {
     bool gallery_needs_refresh = true;
     bool needs_layout = true;
     RECT last_content_rect = { 0, 0, 0, 0 };
+
+    int expanded_dropdown = -1;
+    int dropdown_hovered_index = -1;
+    int dropdown_scroll_y = 0;
 };
 
 struct sc_tab {
@@ -201,19 +209,25 @@ static void theme_destroy(sc_ui_theme& t) {
 }
 
 static sc_widget make_label(RECT rect, std::wstring label) {
-    return { SC_W_LABEL, rect, label };
+    return { .kind = SC_W_LABEL, .rect = rect, .label = label };
 }
 static sc_widget make_toggle(RECT rect, std::wstring label, bool* value, const char* name) {
-    return { SC_W_TOGGLE, rect, label, value, name };
+    return { .kind = SC_W_TOGGLE, .rect = rect, .label = label, .value = value, .opt_name = name };
 }
 static sc_widget make_hotkey(RECT rect, int index) {
-    sc_widget w = { SC_W_HOTKEY_ROW, rect };
-    w.hotkey = index;
-    return w;
+    return { .kind = SC_W_HOTKEY_ROW, .rect = rect, .hotkey = index };
 }
 static sc_widget make_gallery_item(RECT rect, std::wstring filename, std::string full_path) {
-    sc_widget w = { SC_W_GALLERY_ITEM, rect, filename };
-    w.full_path = full_path;
+    return sc_widget{ .kind = SC_W_GALLERY_ITEM, .rect = rect, .label = filename, .full_path = full_path };
+}
+static sc_widget make_dropdown(RECT rect, std::wstring label, std::string current_val, std::vector<std::string> options, const char* name) {
+    sc_widget w = {};
+    w.kind = SC_W_DROPDOWN;
+    w.rect = rect;
+    w.label = label;
+    w.string_val = current_val;
+    w.options = options;
+    w.opt_name = name;
     return w;
 }
 
@@ -243,6 +257,30 @@ static void draw_toggle(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool h
         pillTop + 17
     };
     FillRect(dc, &thumbRect, t.thumb);
+}
+
+static void draw_dropdown(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool hovered) {
+    FillRect(dc, &w.rect, hovered ? t.row_hover : t.row);
+
+    SelectObject(dc, t.font);
+    SetTextColor(dc, RGB(240, 240, 240));
+    TextOutW(dc, w.rect.left + 15, w.rect.top + 10, w.label.c_str(), (int)w.label.length());
+
+    RECT boxRect = { w.rect.right - 165, w.rect.top + 6, w.rect.right - 15, w.rect.bottom - 6 };
+    FillRect(dc, &boxRect, t.sidebar);
+    
+    HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(65, 65, 65));
+    HPEN oldPen = (HPEN)SelectObject(dc, borderPen);
+    HBRUSH oldBrush = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Rectangle(dc, boxRect.left, boxRect.top, boxRect.right, boxRect.bottom);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
+    DeleteObject(borderPen);
+
+    std::wstring valW = _sc_utf8_to_wstring(w.string_val);
+    TextOutW(dc, boxRect.left + 10, boxRect.top + 5, valW.c_str(), (int)valW.length());
+    
+    TextOutW(dc, boxRect.right - 20, boxRect.top + 5, L"\x25BC", 1);
 }
 
 static void draw_hotkey(HDC dc, const sc_ui_theme& t, const sc_widget& w) {
@@ -384,6 +422,7 @@ static void draw_widget(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool h
     switch (w.kind) {
         case SC_W_LABEL:       draw_label(dc, t, w);       break;
         case SC_W_TOGGLE:      draw_toggle(dc, t, w, hovered); break;
+        case SC_W_DROPDOWN:    draw_dropdown(dc, t, w, hovered); break;
         case SC_W_HOTKEY_ROW:  draw_hotkey(dc, t, w);      break;
         case SC_W_GALLERY_ITEM: draw_gallery_item(dc, t, w, hovered); break;
     }
@@ -406,6 +445,14 @@ static void build_general_tab(sc_settings_ui& ui, RECT content) {
     ui.widgets.push_back(make_label({ 160, 20, 500, 40 }, sc_get_localized_string("Screenshot Destination").c_str()));
 
     int y = 90;
+    
+    ui.widgets.push_back(make_dropdown({ 160, y, content.right - 20, y + 40 }, 
+        sc_get_localized_string("Language").c_str(), 
+        sc_get_app().language_code, 
+        sc_get_app().available_languages, 
+        "language"));
+    y += 45;
+        
     ui.widgets.push_back(make_toggle({ 160, y, content.right - 20, y + 40 }, sc_get_localized_string("Copy screenshot to Clipboard").c_str(), &sc_get_app().opt_copy_to_clipboard, "copy_to_clipboard"));
     y += 45;
     ui.widgets.push_back(make_toggle({ 160, y, content.right - 20, y + 40 }, sc_get_localized_string("Run on Startup").c_str(), &sc_get_app().opt_on_startup_enabled, "run_on_startup"));
@@ -511,6 +558,10 @@ static const int g_tab_count = (int)(sizeof(g_tabs) / sizeof(g_tabs[0]));
 
 void sc_settings_on_capture_saved(const std::string& path) {
     g_ui.gallery_needs_refresh = true;
+    if (g_ui.active_tab == 2) {
+        g_ui.needs_layout = true;
+        InvalidateRect(GetActiveWindow(), nullptr, FALSE);
+    }
 }
 
 LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -644,12 +695,31 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 MoveWindow(ui.edit_path, 160, 45, width - 290, 24, TRUE);
                 MoveWindow(ui.btn_browse, width - 120, 45, 100, 24, TRUE);
             }
+            ui.expanded_dropdown = -1;
             ui.needs_layout = true;
             InvalidateRect(hwnd, nullptr, TRUE);
             return 0;
         }
 
         case WM_MOUSEWHEEL: {
+            if (ui.expanded_dropdown != -1) {
+                const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
+                RECT cr; GetClientRect(hwnd, &cr);
+                int space_below = cr.bottom - dw.rect.bottom;
+                int max_visible_items = std::max(1, (space_below - 20) / 28);
+
+                int zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+                ui.dropdown_scroll_y -= (zDelta * 28) / WHEEL_DELTA;
+
+                int max_scroll = std::max(0, (int)dw.options.size() * 28 - max_visible_items * 28);
+
+                if (ui.dropdown_scroll_y < 0) ui.dropdown_scroll_y = 0;
+                if (ui.dropdown_scroll_y > max_scroll) ui.dropdown_scroll_y = max_scroll;
+
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+
             if (ui.active_tab == 2) {
                 int zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
                 ui.scroll_y -= (zDelta / WHEEL_DELTA) * 40; 
@@ -711,6 +781,49 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 draw_widget(memDC, ui.theme, ui.widgets[i], i == ui.hovered_widget);
             }
 
+            if (ui.expanded_dropdown >= 0 && ui.expanded_dropdown < (int)ui.widgets.size()) {
+                const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
+                int item_height = 28;
+
+                int space_below = cr.bottom - dw.rect.bottom;
+                int max_visible_items = std::max(1, (space_below - 20) / item_height);
+                int visible_items = std::min((int)dw.options.size(), max_visible_items);
+
+                RECT boxRect = { dw.rect.right - 165, dw.rect.bottom - 6, dw.rect.right - 15, dw.rect.bottom - 6 + visible_items * item_height };
+
+                FillRect(memDC, &boxRect, ui.theme.sidebar);
+
+                HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(100, 100, 100));
+                HPEN oldPen = (HPEN)SelectObject(memDC, borderPen);
+                HBRUSH oldBrush = (HBRUSH)SelectObject(memDC, GetStockObject(NULL_BRUSH));
+                Rectangle(memDC, boxRect.left, boxRect.top, boxRect.right, boxRect.bottom);
+                SelectObject(memDC, oldBrush);
+                SelectObject(memDC, oldPen);
+                DeleteObject(borderPen);
+
+                HRGN hRgn = CreateRectRgn(boxRect.left + 1, boxRect.top + 1, boxRect.right - 1, boxRect.bottom - 1);
+                SelectClipRgn(memDC, hRgn);
+
+                SelectObject(memDC, ui.theme.font);
+                for (size_t i = 0; i < dw.options.size(); ++i) {
+                    int item_top = boxRect.top + 1 + (int)i * item_height - ui.dropdown_scroll_y;
+                    int item_bottom = item_top + item_height;
+
+                    if (item_bottom > boxRect.top && item_top < boxRect.bottom) {
+                        RECT itemRect = { boxRect.left + 1, item_top, boxRect.right - 1, item_bottom };
+                        if (ui.dropdown_hovered_index == (int)i) {
+                            FillRect(memDC, &itemRect, ui.theme.row_hover);
+                        }
+                        SetTextColor(memDC, RGB(240, 240, 240));
+                        std::wstring optW = _sc_utf8_to_wstring(dw.options[i]);
+                        TextOutW(memDC, itemRect.left + 10, itemRect.top + 5, optW.c_str(), (int)optW.length());
+                    }
+                }
+
+                SelectClipRgn(memDC, nullptr);
+                DeleteObject(hRgn);
+            }
+
             BitBlt(hdc, 0, 0, cr.right, cr.bottom, memDC, 0, 0, SRCCOPY);
             SelectObject(memDC, oldBmp);
             DeleteObject(memBmp);
@@ -721,8 +834,21 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         case WM_MOUSEMOVE: {
             POINT pt = { LOWORD(lParam), HIWORD(lParam) };
-            
             ensure_layout();
+
+            if (ui.expanded_dropdown != -1) {
+                const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
+                int visible_items = std::min((int)dw.options.size(), 6);
+                RECT expRect = { dw.rect.right - 165, dw.rect.bottom - 6, dw.rect.right - 15, dw.rect.bottom - 6 + visible_items * 28 };
+                if (PtInRect(&expRect, pt)) {
+                    int idx = (pt.y - expRect.top + ui.dropdown_scroll_y) / 28;
+                    ui.dropdown_hovered_index = (idx >= 0 && idx < (int)dw.options.size()) ? idx : -1;
+                } else {
+                    ui.dropdown_hovered_index = -1;
+                }
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
 
             int prevTab = ui.hovered_tab;
             int prevWidget = ui.hovered_widget;
@@ -737,8 +863,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             }
 
             int hit = widget_at(ui.widgets, pt);
-            
-            ui.hovered_widget = (hit >= 0 && (ui.widgets[hit].kind == SC_W_TOGGLE || ui.widgets[hit].kind == SC_W_GALLERY_ITEM)) ? hit : -1;
+            ui.hovered_widget = (hit >= 0 && (ui.widgets[hit].kind == SC_W_TOGGLE || ui.widgets[hit].kind == SC_W_DROPDOWN || ui.widgets[hit].kind == SC_W_GALLERY_ITEM)) ? hit : -1;
 
             if (ui.hovered_tab != prevTab || ui.hovered_widget != prevWidget) {
                 InvalidateRect(hwnd, nullptr, FALSE);
@@ -751,14 +876,35 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         case WM_MOUSELEAVE: {
             ui.hovered_tab = -1;
             ui.hovered_widget = -1;
+            ui.dropdown_hovered_index = -1;
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
 
         case WM_LBUTTONDOWN: {
             POINT pt = { LOWORD(lParam), HIWORD(lParam) };
-
             ensure_layout();
+
+            if (ui.expanded_dropdown != -1) {
+                const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
+                int visible_items = std::min((int)dw.options.size(), 6);
+                RECT expRect = { dw.rect.right - 165, dw.rect.bottom - 6, dw.rect.right - 15, dw.rect.bottom - 6 + visible_items * 28 };
+                
+                if (PtInRect(&expRect, pt)) {
+                    int idx = (pt.y - expRect.top + ui.dropdown_scroll_y) / 28;
+                    if (idx >= 0 && idx < (int)dw.options.size()) {
+                        if (dw.opt_name && strcmp(dw.opt_name, "language") == 0) {
+                            sc_set_language(dw.options[idx]);
+                            ui.needs_layout = true; 
+                        }
+                    }
+                }
+                
+                ui.expanded_dropdown = -1;
+                ui.dropdown_hovered_index = -1;
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
 
             for (int i = 0; i < g_tab_count; ++i) {
                 RECT tabRect = sidebar_tab_rect(i);
@@ -774,21 +920,29 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             }
 
             int hit = widget_at(ui.widgets, pt);
-            if (hit >= 0 && ui.widgets[hit].kind == SC_W_TOGGLE) {
-                sc_widget& w = ui.widgets[hit];
-                *w.value = !(*w.value);
-                _sc_on_option_changed(w.opt_name, *w.value);
-                InvalidateRect(hwnd, nullptr, FALSE);
+            if (hit >= 0) {
+                if (ui.widgets[hit].kind == SC_W_TOGGLE) {
+                    sc_widget& w = ui.widgets[hit];
+                    *w.value = !(*w.value);
+                    _sc_on_option_changed(w.opt_name, *w.value);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                } else if (ui.widgets[hit].kind == SC_W_DROPDOWN) {
+                    RECT boxRect = { ui.widgets[hit].rect.right - 165, ui.widgets[hit].rect.top + 6, ui.widgets[hit].rect.right - 15, ui.widgets[hit].rect.bottom - 6 };
+                    if (PtInRect(&boxRect, pt)) {
+                        ui.expanded_dropdown = hit;
+                        ui.dropdown_scroll_y = 0;
+                        InvalidateRect(hwnd, nullptr, TRUE);
+                    }
+                }
             }
             return 0;
         }
 
         case WM_RBUTTONUP: {
             POINT pt = { LOWORD(lParam), HIWORD(lParam) };
-            
             ensure_layout();
 
-            if (ui.active_tab == 2) {
+            if (ui.active_tab == 2 && ui.expanded_dropdown == -1) {
                 int hit = widget_at(ui.widgets, pt);
                 if (hit >= 0 && ui.widgets[hit].kind == SC_W_GALLERY_ITEM) {
                     sc_widget& w = ui.widgets[hit];

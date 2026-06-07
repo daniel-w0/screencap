@@ -89,18 +89,22 @@ sc_internal void _init_languages() {
     }
 
     std::string language;
-    if (!_sc_get_system_language_impl(language)) {
-        fprintf(stderr, "Failed to get system language, defaulting to en\n");
-        language = "en";
-    } else {
-        // strip region (en-GB -> en)
-        size_t separator_pos = language.find('-');
-        if (separator_pos != std::string::npos) {
-            language = language.substr(0, separator_pos);
+    if (g_app.language_code.empty()) {
+        if (!_sc_get_system_language_impl(language)) {
+            fprintf(stderr, "Failed to get system language, defaulting to en\n");
+            language = "en";
+        } else {
+            // strip region (en-GB -> en)
+            size_t separator_pos = language.find('-');
+            if (separator_pos != std::string::npos) {
+                language = language.substr(0, separator_pos);
+            }
         }
-    }
 
-    g_app.language_code = language;
+        g_app.language_code = language;
+    } else {
+        language = g_app.language_code;
+    }
 
     // test
     //language = "sv";
