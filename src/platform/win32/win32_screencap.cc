@@ -7,9 +7,9 @@
 #include <commctrl.h>
 #include <uxtheme.h>
 #include <commctrl.h>
-#pragma comment(lib, "UxTheme.lib")
-#pragma comment(lib, "Comctl32.lib")
+#include <mmsystem.h>
 #include "win32_ui.h"
+#include "screenshot_sound.h"
 
 #define WM_TRAYICON (WM_USER + 1)
 
@@ -394,6 +394,12 @@ bool sc_capture_update(sc_capture_info& ci) {
         return false;
     }
 
+    // play as early as possible. this sound is to give feedback that the capture has been triggered, not when it's done/saved.
+    // there's still some delay, but it's good enough for now.
+    if (g_state.options.mode != sc_capture_mode::interactive && sc_get_app().opt_play_sound) {
+        PlaySoundA((LPCSTR)screenshot_sound, nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+    }
+
     int vx, vy, vw, vh;
     _sc_get_display_metrics(vx, vy, vw, vh);
     
@@ -508,6 +514,7 @@ bool sc_capture_update(sc_capture_info& ci) {
 
     DeleteObject(hBitmap);
     DeleteDC(hMemoryDC);
+
     return true;
 }
 

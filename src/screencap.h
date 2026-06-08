@@ -65,6 +65,7 @@ struct sc_app {
     // options
     bool opt_copy_to_clipboard;
     bool opt_on_startup_enabled;
+    bool opt_play_sound;
     std::array<sc_hotkey, sc_hotkey_id::_sc_hotkey_count> hotkeys;
     std::string save_path;
     std::string language_code;

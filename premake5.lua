@@ -26,7 +26,7 @@ workspace "screencap"
 
   filter "system:windows"
     defines { "SC_PLATFORM_WINDOWS", "_CRT_SECURE_NO_WARNINGS" }
-    links { "dwmapi", "windowsapp" }
+    links { "dwmapi", "winmm", "uxtheme", "comctl32", "windowsapp" }
 
   filter {}
 
@@ -39,6 +39,7 @@ workspace "screencap"
     pchsource "src/pch.cc"
 
     embed_file("res/locales.ini", "src/locales_data.h", "locales_ini")
+    embed_file("res/Shutter_07.wav", "src/screenshot_sound.h", "screenshot_sound")
 
     filter "files:**.rc"
       buildaction "ResourceCompile"

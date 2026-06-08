@@ -128,17 +128,27 @@ void sc_set_language(const std::string& language_code) {
     sc_save_config();
 }
 
-void sc_load_config() {
+void sc_load_or_create_config() {
     CSimpleIniA ini;
     ini.SetUnicode();
 
     std::string path = _sc_plat_get_config_path();
     if (ini.LoadFile(path.c_str()) < 0) {
+        printf("No config file found, creating default config at %s\n", path.c_str());
+
+        g_app.opt_copy_to_clipboard = true;
+        g_app.opt_on_startup_enabled = false;
+        g_app.opt_play_sound = true;
+        g_app.save_path = _sc_plat_get_default_save_path();
+        // don't need to set language here, it will be determined by system language in _init_languages()
+
+        sc_save_config();
         return;
     }
 
-    g_app.opt_copy_to_clipboard = ini.GetBoolValue("options", "copy_to_clipboard", g_app.opt_copy_to_clipboard);
-    g_app.opt_on_startup_enabled = ini.GetBoolValue("options", "run_on_startup", g_app.opt_on_startup_enabled);
+    g_app.opt_copy_to_clipboard = ini.GetBoolValue("options", "copy_to_clipboard", true);
+    g_app.opt_on_startup_enabled = ini.GetBoolValue("options", "run_on_startup", true);
+    g_app.opt_play_sound = ini.GetBoolValue("options", "play_sound", true);
 
     if (const char* save_path = ini.GetValue("options", "save_path")) {
         g_app.save_path = save_path;
@@ -154,6 +164,7 @@ void sc_save_config() {
 
     ini.SetBoolValue("options", "copy_to_clipboard", g_app.opt_copy_to_clipboard);
     ini.SetBoolValue("options", "run_on_startup", g_app.opt_on_startup_enabled);
+    ini.SetBoolValue("options", "play_sound", g_app.opt_play_sound);
     ini.SetValue("options", "save_path", g_app.save_path.c_str());
     ini.SetValue("options", "language", g_app.language_code.c_str());
 
@@ -171,8 +182,6 @@ std::wstring& sc_get_localized_string(const std::string& key) {
 void sc_initialize() {
     g_app = {};
     g_app.running = true;
-    g_app.opt_copy_to_clipboard = true;
-    g_app.save_path = _sc_plat_get_default_save_path();
 
     g_app.hotkeys[sc_hotkey_screenshot] = { sc_hotkey_id::sc_hotkey_screenshot, 0, VK_SNAPSHOT };
     g_app.hotkeys[sc_hotkey_clipboard] = { sc_hotkey_id::sc_hotkey_clipboard, MOD_CONTROL | MOD_SHIFT, VK_SNAPSHOT };
@@ -181,10 +190,10 @@ void sc_initialize() {
     g_app.hotkeys[sc_hotkey_current_monitor] = { sc_hotkey_id::sc_hotkey_current_monitor, MOD_CONTROL, VK_SNAPSHOT };
     g_app.hotkeys[sc_hotkey_fallback_screenshot] = { sc_hotkey_id::sc_hotkey_fallback_screenshot, MOD_CONTROL | MOD_ALT, 'C' };
 
-    sc_load_config();
+    _init_languages(); // has to before loading config so we can get the defaults and create the config if it doesn't exist
+    sc_load_or_create_config();
     _sc_set_run_on_startup_impl(g_app.opt_on_startup_enabled);
 
-    _init_languages();
     _sc_init_impl();
 }
 

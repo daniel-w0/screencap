@@ -14,7 +14,7 @@ static bool g_class_registered = false;
 static HWND g_settings_window = nullptr;
 
 constexpr int MIN_WINDOW_WIDTH = 550;
-constexpr int MIN_WINDOW_HEIGHT = 278;
+constexpr int MIN_WINDOW_HEIGHT = 328;
 
 #pragma region Utils
 void OpenFolderPickerDialog(HWND hwnd, HWND hEditPath) {
@@ -464,6 +464,8 @@ static void build_general_tab(sc_settings_ui& ui, RECT content) {
     ui.widgets.push_back(make_toggle({ 160, y, content.right - 20, y + 40 }, sc_get_localized_string("Copy screenshot to Clipboard").c_str(), &sc_get_app().opt_copy_to_clipboard, "copy_to_clipboard"));
     y += 45;
     ui.widgets.push_back(make_toggle({ 160, y, content.right - 20, y + 40 }, sc_get_localized_string("Run on Startup").c_str(), &sc_get_app().opt_on_startup_enabled, "run_on_startup"));
+    y += 45;
+    ui.widgets.push_back(make_toggle({ 160, y, content.right - 20, y + 40 }, sc_get_localized_string("Play sound on capture").c_str(), &sc_get_app().opt_play_sound, "play_sound"));
 }
 
 static void activate_general_tab(sc_settings_ui& ui, bool active) {
