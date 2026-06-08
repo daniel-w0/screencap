@@ -723,12 +723,16 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             int zoom = 4;
             int srcSize = magSize / zoom;
             
+            HMONITOR hMonitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO monInfo = { sizeof(MONITORINFO) };
+            GetMonitorInfo(hMonitor, &monInfo);
+
             int destX = pt.x - vx + 20;
-            if (destX + magSize > vw) {
+            if (pt.x + magSize > monInfo.rcMonitor.right) {
                 destX = pt.x - vx - magSize - 20;
             }
             int destY = pt.y - vy + 20;
-            if (destY + magSize > vh) {
+            if (pt.y + magSize > monInfo.rcMonitor.bottom) {
                 destY = pt.y - vy - magSize - 20;
             }
             
