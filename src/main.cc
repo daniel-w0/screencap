@@ -52,6 +52,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
 #endif
 
+    HANDLE mutex = CreateMutexA(nullptr, TRUE, "screencap_single_instance_mutex");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        return 0;
+    }
+
     return entry(__argc, __argv);
 }
 #endif
