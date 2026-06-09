@@ -52,7 +52,7 @@ void RegisterTrayIcon(HWND hwnd);
 #pragma region Structures
 struct {
     std::vector<sc_monitor_info> monitors;
-    sc_capture_options options  = { 0 };
+    sc_capture_mode captureMode = sc_capture_mode::none;
     HWND overlayHwnd            = nullptr;
     sc_rect currentRect         = { 0 };
     sc_rect finalRect           = { 0 };
@@ -66,6 +66,7 @@ struct {
     std::vector<sc_ocr_line> ocrLines;
     std::mutex               ocrMutex;
 
+    bool shouldSave   = false;
     bool capturing    = false;
     bool captureReady = false;
     bool mouseDown    = false;
@@ -278,24 +279,14 @@ void _sc_shutdown_impl() {
     }
 }
 
-bool sc_update(sc_capture_options& active_options) {
+bool sc_update() {
     MSG msg = {};
     if (GetMessageA(&msg, nullptr, 0, 0) > 0) {
         if (msg.message == WM_DESTROY || (msg.message == WM_COMMAND && msg.wParam == TRAY_MENU_EXIT)) {
             sc_shutdown();
             return false;
         } if (msg.message == WM_HOTKEY) {
-            active_options.extract_text = (msg.wParam == sc_hotkey_ocr);
-
-            if (msg.wParam == sc_hotkey_active_window) {
-                active_options.mode = sc_capture_mode::window_under_cursor;
-            } else if (msg.wParam == sc_hotkey_current_monitor) {
-                active_options.mode = sc_capture_mode::monitor_under_cursor;
-            } else {
-                active_options.mode = sc_capture_mode::interactive;
-            }
-
-            sc_begin_capture(active_options);
+            sc_begin_capture(static_cast<sc_hotkey_id>(msg.wParam));
         }
 
         TranslateMessage(&msg);
@@ -304,12 +295,14 @@ bool sc_update(sc_capture_options& active_options) {
     return true;
 }
 
-void sc_begin_capture(sc_capture_options options) {
+void sc_begin_capture(sc_hotkey_id hotkey) {
     if (g_state.capturing) {
         return;
     }
+
+
     g_state.capturing = true;
-    g_state.options = options;
+    g_state.shouldSave = hotkey != sc_hotkey_clipboard;
     g_state.mouseDown = false;
     g_state.dragging = false;
     g_state.wasDragging = false;
@@ -317,6 +310,16 @@ void sc_begin_capture(sc_capture_options options) {
     g_state.captureReady = false;
     g_state.hoveredHwnd = nullptr;
     g_state.finalHwnd = nullptr;
+
+    if (hotkey == sc_hotkey_active_window) {
+        g_state.captureMode = sc_capture_mode::window_under_cursor;
+    } else if (hotkey == sc_hotkey_current_monitor) {
+        g_state.captureMode = sc_capture_mode::monitor_under_cursor;
+    } else if (hotkey == sc_hotkey_ocr) {
+        g_state.captureMode = sc_capture_mode::ocr;
+    } else {
+        g_state.captureMode = sc_capture_mode::interactive;
+    }
 
     int vx, vy, vw, vh;
     _sc_get_display_metrics(vx, vy, vw, vh);
@@ -335,7 +338,7 @@ void sc_begin_capture(sc_capture_options options) {
     POINT pt;
     GetCursorPos(&pt);
     
-    if (options.mode == sc_capture_mode::window_under_cursor) {
+    if (g_state.captureMode == sc_capture_mode::window_under_cursor) {
         if (HWND hwnd = GetAncestor(WindowFromPoint(pt), GA_ROOT)) {
             RECT rect;
             GetRealWindowRect(hwnd, &rect);
@@ -346,7 +349,7 @@ void sc_begin_capture(sc_capture_options options) {
             g_state.capturing = false;
         }
         return;
-    } else if (options.mode == sc_capture_mode::monitor_under_cursor) {
+    } else if (g_state.captureMode == sc_capture_mode::monitor_under_cursor) {
         if (const auto* m = _sc_monitor_at_point(pt)) {
             g_state.finalRect = m->rect;
             g_state.captureReady = true;
@@ -356,12 +359,14 @@ void sc_begin_capture(sc_capture_options options) {
         return;
     }
 
+    // interactive mode...
+
     {
         std::lock_guard<std::mutex> lock(g_state.ocrMutex);
         g_state.ocrLines.clear();
     }
 
-    if (options.extract_text) {
+    if (g_state.captureMode == sc_capture_mode::ocr) {
         _ocr_run_async();
     }
 
@@ -396,7 +401,7 @@ bool sc_capture_update(sc_capture_info& ci) {
 
     // play as early as possible. this sound is to give feedback that the capture has been triggered, not when it's done/saved.
     // there's still some delay, but it's good enough for now.
-    if (g_state.options.mode != sc_capture_mode::interactive && sc_get_app().opt_play_sound) {
+    if (sc_get_app().opt_play_sound && g_state.captureMode != sc_capture_mode::interactive && g_state.captureMode != sc_capture_mode::ocr) {
         PlaySoundA((LPCSTR)screenshot_sound, nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
     }
 
@@ -408,7 +413,7 @@ bool sc_capture_update(sc_capture_info& ci) {
     ci.width = captureWidth;
     ci.height = captureHeight;
 
-    if (g_state.options.extract_text) {
+    if (g_state.captureMode == sc_capture_mode::ocr) {
         ci.width *= 2;
         ci.height *= 2;
         while (ci.width < 40 || ci.height < 40) {
@@ -417,6 +422,8 @@ bool sc_capture_update(sc_capture_info& ci) {
         }
     }
     ci.channels = 4;
+    ci.captureMode = g_state.captureMode;
+    ci.shouldSave = g_state.shouldSave;
 
     HDC hMemoryDC = CreateCompatibleDC(g_state.frozenDC);
     HBITMAP hBitmap = CreateCompatibleBitmap(g_state.frozenDC, ci.width, ci.height);
@@ -464,7 +471,7 @@ bool sc_capture_update(sc_capture_info& ci) {
     ci.data = new unsigned char[ci.width * ci.height * 4];
     GetDIBits(hMemoryDC, hBitmap, 0, ci.height, ci.data, (BITMAPINFO*)&bih, DIB_RGB_COLORS);
 
-    if (g_state.options.extract_text) {
+    if (g_state.captureMode == sc_capture_mode::ocr) {
         try {
             int pad = 24;
             int pw = (int)ci.width + pad * 2;
@@ -553,7 +560,7 @@ void _sc_cleanup_impl(sc_capture_info& ci) {
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_SETCURSOR:
-            SetCursor(LoadCursor(nullptr, g_state.options.extract_text ? IDC_IBEAM : IDC_CROSS));
+            SetCursor(LoadCursor(nullptr, g_state.captureMode == sc_capture_mode::ocr ? IDC_IBEAM : IDC_CROSS));
             return TRUE;
             
         case WM_MOUSEMOVE: {
@@ -583,7 +590,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
             } else {
                 sc_rect textRect;
-                if (g_state.options.extract_text && _ocr_text_at_point(pt, textRect)) {
+                if (g_state.captureMode == sc_capture_mode::ocr && _ocr_text_at_point(pt, textRect)) {
                     g_state.hoveredHwnd = nullptr;
                     g_state.currentRect = textRect;
                 } else {
@@ -602,7 +609,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g_state.mouseDown = true;
             g_state.dragStart = pt;
             sc_rect textRect;
-            g_state.snapDrag = g_state.options.extract_text && _ocr_text_at_point(pt, textRect);
+            g_state.snapDrag = g_state.captureMode == sc_capture_mode::ocr && _ocr_text_at_point(pt, textRect);
             SetCapture(hwnd);
             return 0;
         }
@@ -797,10 +804,7 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             if (wmId == TRAY_MENU_SETTINGS) {
                 sc_open_settings_window();
             } else if (wmId == TRAY_MENU_TAKE_SCREENSHOT) {
-                sc_capture_options options = {};
-                options.extract_text = false;
-                options.mode = sc_capture_mode::interactive;
-                sc_begin_capture(options);
+                sc_begin_capture(sc_hotkey_screenshot);
             } else if (wmId == TRAY_MENU_EXIT) {
                 NOTIFYICONDATAA nid = {};
                 nid.cbSize = sizeof(NOTIFYICONDATAA);

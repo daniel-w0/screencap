@@ -15,16 +15,18 @@
 int entry(int argc, char** argv) {
     sc_initialize();
 
-    sc_capture_options active_options = { 0 };
-
     while (sc_running()) {
-        if (sc_update(active_options)) {
+        if (sc_update()) {
             sc_capture_info ci = {};
             if (sc_capture_update(ci)) {
-                if (active_options.extract_text) {
+                if (ci.captureMode == sc_capture_mode::ocr) {
                     fprintf(stdout, "Extracted text to clipboard\n");
                 } else {
-                    sc_save_capture(ci);
+                    if (ci.shouldSave) {
+                        sc_save_capture(ci);
+                    } else {
+                        printf("Captured image copied to clipboard\n");
+                    }
                 }
                 sc_cleanup(ci);
             }

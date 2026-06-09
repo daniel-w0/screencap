@@ -2,12 +2,22 @@
 
 #include <cstdint>
 
+enum class sc_capture_mode {
+    none = -1,
+    interactive,
+    window_under_cursor,
+    monitor_under_cursor,
+    ocr
+};
+
 struct sc_capture_info {
     unsigned char* data;
     bool channels_swapped;
     uint8_t channels;
     int width;
     int height;
+    sc_capture_mode captureMode;
+    bool shouldSave;
 };
 
 struct sc_rect {
@@ -21,18 +31,6 @@ struct sc_monitor_info {
     uint8_t id;
     char name[256];
     sc_rect rect;
-};
-
-enum class sc_capture_mode {
-    interactive = 0,
-    window_under_cursor = 1,
-    monitor_under_cursor = 2,
-    ocr = 3
-};
-
-struct sc_capture_options {
-    bool extract_text;
-    sc_capture_mode mode;
 };
 
 enum sc_hotkey_id {
@@ -79,7 +77,7 @@ struct sc_app {
 
 void sc_initialize();
 bool sc_running();
-bool sc_update(sc_capture_options& active_options);
+bool sc_update();
 sc_app& sc_get_app();
 
 std::wstring& sc_get_localized_string(const std::string& key);
@@ -89,7 +87,7 @@ void sc_load_config();
 void sc_save_config();
 bool sc_save_capture(sc_capture_info& ci);
 void sc_settings_on_capture_saved(const std::string& path);
-void sc_begin_capture(sc_capture_options options);
+void sc_begin_capture(sc_hotkey_id hotkey);
 bool sc_capture_update(sc_capture_info& ci);
 void sc_cleanup(sc_capture_info& ci);
 void sc_shutdown();
