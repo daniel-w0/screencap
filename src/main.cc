@@ -19,14 +19,15 @@ int entry(int argc, char** argv) {
         if (sc_update()) {
             sc_capture_info ci = {};
             if (sc_capture_update(ci)) {
-                if (ci.captureMode == sc_capture_mode::ocr) {
-                    fprintf(stdout, "Extracted text to clipboard\n");
-                } else {
-                    if (ci.shouldSave) {
-                        sc_save_capture(ci);
-                    } else {
-                        printf("Captured image copied to clipboard\n");
-                    }
+                if (ci.shouldSave) {
+                    unsigned char* data = ci.data;
+                    ci.data = nullptr;
+                    sc_capture_info snap = ci;
+                    snap.data = data;
+                    std::thread([snap]() mutable {
+                        sc_save_capture(snap);
+                        delete[] snap.data;
+                    }).detach();
                 }
                 sc_cleanup(ci);
             }
