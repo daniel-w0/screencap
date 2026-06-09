@@ -10,6 +10,7 @@
 #include <mmsystem.h>
 #include "win32_ui.h"
 #include "screenshot_sound.h"
+#include "screenshot_sound_quick.h"
 
 #define WM_TRAYICON (WM_USER + 1)
 
@@ -433,8 +434,15 @@ bool sc_capture_update(sc_capture_info& ci) {
 
     // play as early as possible. this sound is to give feedback that the capture has been triggered, not when it's done/saved.
     // there's still some delay, but it's good enough for now.
-    if (sc_get_app().opt_play_sound && g_state.captureMode != sc_capture_mode::interactive && g_state.captureMode != sc_capture_mode::ocr) {
-        PlaySoundA((LPCSTR)screenshot_sound, nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+    if (sc_get_app().opt_play_sound && g_state.captureMode != sc_capture_mode::ocr) {
+        const char* sound = nullptr;
+        if (g_state.captureMode != sc_capture_mode::interactive) {
+            sound = (const char*)screenshot_sound;
+        } else {
+            sound = (const char*)screenshot_sound_quick;
+        }
+
+        PlaySoundA((LPCSTR)sound, nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
     }
 
     int vx, vy, vw, vh;

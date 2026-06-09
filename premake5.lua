@@ -40,6 +40,7 @@ workspace "screencap"
 
     embed_file("res/locales.ini", "src/locales_data.h", "locales_ini")
     embed_file("res/Shutter_07.wav", "src/screenshot_sound.h", "screenshot_sound")
+    embed_file("res/Shutter_09.wav", "src/screenshot_sound_quick.h", "screenshot_sound_quick")
 
     filter "files:**.rc"
       buildaction "ResourceCompile"
