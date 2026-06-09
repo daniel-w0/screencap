@@ -77,7 +77,7 @@ sc_internal void _init_languages() {
 
     SI_Error rc = ini.LoadData((const char*)locales_ini, locales_ini_len);
     if (rc < 0) {
-        fprintf(stderr, "Failed to load embedded locales.ini\n");
+        fprintf(stderr, "Failed to load embedded locales.ini: %d\n", rc);
         return;
     }
 
@@ -88,35 +88,20 @@ sc_internal void _init_languages() {
         printf("Found language section: %s\n", section.pItem);
     }
 
-    std::string language;
     if (g_app.language_code.empty()) {
-        if (!_sc_get_system_language_impl(language)) {
-            fprintf(stderr, "Failed to get system language, defaulting to en\n");
-            language = "en";
+        std::string lang;
+        if (_sc_get_system_language_impl(lang)) {
+            size_t sep = lang.find('-');
+            if (sep != std::string::npos) lang = lang.substr(0, sep);
+            g_app.language_code = lang;
         } else {
-            // strip region (en-GB -> en)
-            size_t separator_pos = language.find('-');
-            if (separator_pos != std::string::npos) {
-                language = language.substr(0, separator_pos);
-            }
+            g_app.language_code = "en";
         }
-
-        g_app.language_code = language;
-    } else {
-        language = g_app.language_code;
     }
 
-    // test
-    //language = "sv";
-    ////
-    auto language_section = ini.GetSection(language.c_str());
-    if (!language_section) {
-        if (language != "en") {
-            fprintf(stderr, "No language section found for '%s', defaulting to en\n", language.c_str());
-        }
-    } else {
-        for (auto& [key, value] : *language_section) {
-            std::string key_str(key.pItem);
+    auto section = ini.GetSection(g_app.language_code.c_str());
+    if (section) {
+        for (auto& [key, value] : *section) {
             language_map[key.pItem] = _sc_utf8_to_wstring(value);
         }
     }
@@ -134,15 +119,10 @@ void sc_load_or_create_config() {
 
     std::string path = _sc_plat_get_config_path();
     if (ini.LoadFile(path.c_str()) < 0) {
-        printf("No config file found, creating default config at %s\n", path.c_str());
-
         g_app.opt_copy_to_clipboard = true;
         g_app.opt_on_startup_enabled = false;
         g_app.opt_play_sound = true;
         g_app.save_path = _sc_plat_get_default_save_path();
-        // don't need to set language here, it will be determined by system language in _init_languages()
-
-        sc_save_config();
         return;
     }
 
@@ -206,8 +186,9 @@ void sc_initialize() {
     g_app.hotkeys[sc_hotkey_current_monitor] = { sc_hotkey_id::sc_hotkey_current_monitor, MOD_CONTROL, VK_SNAPSHOT };
     g_app.hotkeys[sc_hotkey_fallback_screenshot] = { sc_hotkey_id::sc_hotkey_fallback_screenshot, MOD_CONTROL | MOD_ALT, 'C' };
 
-    _init_languages(); // has to before loading config so we can get the defaults and create the config if it doesn't exist
     sc_load_or_create_config();
+    _init_languages();
+    sc_save_config();
     _sc_set_run_on_startup_impl(g_app.opt_on_startup_enabled);
 
     _sc_init_impl();
