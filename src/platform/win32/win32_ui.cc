@@ -581,7 +581,6 @@ static void build_gallery_tab(sc_settings_ui& ui, RECT content) {
     }
 
     if (ui.gallery_files.empty()) {
-        ui.widgets.push_back(make_label({ 170, 20, 500, 40 }, L"No screenshots found."));
         return;
     }
 
