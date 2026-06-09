@@ -13,6 +13,7 @@
 static bool g_class_registered = false;
 static HWND g_settings_window = nullptr;
 static float g_scale = 1.0f;
+static bool g_win_pressed = false;
 
 constexpr int MIN_WINDOW_WIDTH = 550;
 constexpr int MIN_WINDOW_HEIGHT = 328;
@@ -85,6 +86,7 @@ sc_internal std::string _sc_get_key_display_string(uint32_t modifiers, uint32_t 
     if (modifiers & MOD_CONTROL) res += "Ctrl + ";
     if (modifiers & MOD_SHIFT)   res += "Shift + ";
     if (modifiers & MOD_ALT)     res += "Alt + ";
+    if (modifiers & MOD_WIN)     res += "Win + ";
 
     if (key == VK_SNAPSHOT) {
         res += "PrintScreen";
@@ -219,6 +221,7 @@ static void _sc_stop_hotkey_recording() {
     if (g_keyboard_hook) {
         UnhookWindowsHookEx(g_keyboard_hook);
         g_keyboard_hook = nullptr;
+        g_win_pressed = false;
     }
 }
 
@@ -227,17 +230,22 @@ static LRESULT CALLBACK _sc_ll_keyboard_proc(int nCode, WPARAM wParam, LPARAM lP
         if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
             KBDLLHOOKSTRUCT* kb = (KBDLLHOOKSTRUCT*)lParam;
             UINT vk = kb->vkCode;
-            if (vk != VK_CONTROL && vk != VK_SHIFT && vk != VK_MENU &&
-                vk != VK_LCONTROL && vk != VK_RCONTROL &&
-                vk != VK_LSHIFT   && vk != VK_RSHIFT   &&
-                vk != VK_LMENU    && vk != VK_RMENU) {
+
+            bool isModifier = (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL ||
+                vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT ||
+                vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU ||
+                vk == VK_LWIN || vk == VK_RWIN);
+
+            if (!isModifier) {
                 uint32_t mods = 0;
+                if ((GetKeyState(VK_LWIN) & 0x8000) || (GetKeyState(VK_RWIN) & 0x8000)) mods |= MOD_WIN;
                 if (GetKeyState(VK_CONTROL) & 0x8000) mods |= MOD_CONTROL;
                 if (GetKeyState(VK_SHIFT)   & 0x8000) mods |= MOD_SHIFT;
                 //if (kb->flags & LLKHF_ALTDOWN)        mods |= MOD_ALT;
                 if ((kb->flags & LLKHF_ALTDOWN) || (GetAsyncKeyState(VK_MENU) & 0x8000)) {
                     mods |= MOD_ALT;
                 }
+
                 PostMessage(g_settings_window, WM_HOTKEY_RECORDED, (WPARAM)vk, (LPARAM)mods);
                 return 1; // swallow
             }
