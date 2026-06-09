@@ -12,11 +12,22 @@
 
 static bool g_class_registered = false;
 static HWND g_settings_window = nullptr;
+static float g_scale = 1.0f;
 
 constexpr int MIN_WINDOW_WIDTH = 550;
 constexpr int MIN_WINDOW_HEIGHT = 328;
 
 #pragma region Utils
+static float get_dpi_scale(HWND hwnd) {
+    HDC hdc = GetDC(hwnd);
+    int dpi = GetDeviceCaps(hdc, LOGPIXELSY);
+    ReleaseDC(hwnd, hdc);
+    return dpi / 96.0f;
+}
+
+int scale_i(int val) { return (int)(val * g_scale); }
+int unscale_i(int val) { return (int)(val / g_scale); }
+
 void OpenFolderPickerDialog(HWND hwnd, HWND hEditPath) {
     std::thread([](HWND hwndParent, HWND hEdit) {
         winrt::init_apartment();
@@ -116,17 +127,17 @@ void sc_open_settings_window() {
     }
 
     if (!g_settings_window) {
+        g_scale = get_dpi_scale(nullptr);
         g_settings_window = CreateWindowExW(
             0, L"ScCustomSettingsWindow", L"Screencap",
             WS_OVERLAPPEDWINDOW | WS_THICKFRAME | WS_CLIPCHILDREN,
-            CW_USEDEFAULT, CW_USEDEFAULT, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT,
+            CW_USEDEFAULT, CW_USEDEFAULT, scale_i(MIN_WINDOW_WIDTH), scale_i(MIN_WINDOW_HEIGHT),
             nullptr, nullptr, GetModuleHandle(nullptr), nullptr
         );
     } else {
         BringWindowToTop(g_settings_window);
         SetForegroundWindow(g_settings_window);
     }
-
     ShowWindow(g_settings_window, SW_SHOW);
     UpdateWindow(g_settings_window);
 }
@@ -233,8 +244,8 @@ static LRESULT CALLBACK _sc_ll_keyboard_proc(int nCode, WPARAM wParam, LPARAM lP
 }
 
 static void theme_create(sc_ui_theme& t) {
-    t.font      = CreateFontA(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
-    t.bold      = CreateFontA(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+    t.font      = CreateFontA(scale_i(15), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+    t.bold      = CreateFontA(scale_i(15), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
     t.bg        = CreateSolidBrush(RGB(28, 28, 28));
     t.sidebar   = CreateSolidBrush(RGB(32, 32, 32));
     t.row       = CreateSolidBrush(RGB(38, 38, 38));
@@ -280,39 +291,39 @@ static sc_widget make_dropdown(RECT rect, std::wstring label, std::string curren
 static void draw_label(HDC dc, const sc_ui_theme& t, const sc_widget& w) {
     SelectObject(dc, t.font);
     SetTextColor(dc, RGB(240, 240, 240));
-    TextOutW(dc, w.rect.left, w.rect.top, w.label.c_str(), (int)w.label.length());
+    TextOutW(dc, scale_i(w.rect.left), scale_i(w.rect.top), w.label.c_str(), (int)w.label.length());
 }
 
 static void draw_toggle(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool hovered) {
-    FillRect(dc, &w.rect, hovered ? t.row_hover : t.row);
-
+    RECT r = { scale_i(w.rect.left), scale_i(w.rect.top), scale_i(w.rect.right), scale_i(w.rect.bottom) };
+    FillRect(dc, &r, hovered ? t.row_hover : t.row);
     SelectObject(dc, t.font);
     SetTextColor(dc, RGB(240, 240, 240));
-    TextOutW(dc, w.rect.left + 15, w.rect.top + 10, w.label.c_str(), (int)w.label.length());
+    TextOutW(dc, scale_i(w.rect.left + 15), scale_i(w.rect.top + 10), w.label.c_str(), (int)w.label.length());
 
     bool isOn = *w.value;
     int pillLeft = w.rect.right - 55;
     int pillTop = w.rect.top + 9;
-    RECT pillRect = { pillLeft, pillTop, pillLeft + 40, pillTop + 20 };
+    RECT pillRect = { scale_i(pillLeft), scale_i(pillTop), scale_i(pillLeft + 40), scale_i(pillTop + 20) };
     FillRect(dc, &pillRect, isOn ? t.pill_on : t.pill_off);
 
     RECT thumbRect = {
-        isOn ? pillLeft + 22 : pillLeft + 3,
-        pillTop + 3,
-        isOn ? pillLeft + 37 : pillLeft + 18,
-        pillTop + 17
+        scale_i(isOn ? pillLeft + 22 : pillLeft + 3),
+        scale_i(pillTop + 3),
+        scale_i(isOn ? pillLeft + 37 : pillLeft + 18),
+        scale_i(pillTop + 17)
     };
     FillRect(dc, &thumbRect, t.thumb);
 }
 
 static void draw_dropdown(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool hovered) {
-    FillRect(dc, &w.rect, hovered ? t.row_hover : t.row);
-
+    RECT r = { scale_i(w.rect.left), scale_i(w.rect.top), scale_i(w.rect.right), scale_i(w.rect.bottom) };
+    FillRect(dc, &r, hovered ? t.row_hover : t.row);
     SelectObject(dc, t.font);
     SetTextColor(dc, RGB(240, 240, 240));
-    TextOutW(dc, w.rect.left + 15, w.rect.top + 10, w.label.c_str(), (int)w.label.length());
+    TextOutW(dc, scale_i(w.rect.left + 15), scale_i(w.rect.top + 10), w.label.c_str(), (int)w.label.length());
 
-    RECT boxRect = { w.rect.right - 165, w.rect.top + 6, w.rect.right - 15, w.rect.bottom - 6 };
+    RECT boxRect = { scale_i(w.rect.right - 165), scale_i(w.rect.top + 6), scale_i(w.rect.right - 15), scale_i(w.rect.bottom - 6) };
     FillRect(dc, &boxRect, t.sidebar);
     
     HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(65, 65, 65));
@@ -320,52 +331,51 @@ static void draw_dropdown(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool
     HBRUSH oldBrush = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
     Rectangle(dc, boxRect.left, boxRect.top, boxRect.right, boxRect.bottom);
     SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
+    SelectObject(dc, oldPen); 
     DeleteObject(borderPen);
 
     std::wstring valW = _sc_utf8_to_wstring(w.string_val);
-    TextOutW(dc, boxRect.left + 10, boxRect.top + 5, valW.c_str(), (int)valW.length());
-    
-    TextOutW(dc, boxRect.right - 20, boxRect.top + 5, L"\x25BC", 1);
+    TextOutW(dc, boxRect.left + scale_i(10), boxRect.top + scale_i(5), valW.c_str(), (int)valW.length());
+    TextOutW(dc, boxRect.right - scale_i(20), boxRect.top + scale_i(5), L"\x25BC", 1);
 }
 
 static void draw_hotkey(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool hovered) {
     const auto& hk = sc_get_app().hotkeys[w.hotkey];
     bool editing = (g_ui.editing_hotkey == w.hotkey);
 
-    FillRect(dc, &w.rect, editing ? t.recording : (hovered ? t.row_hover : t.row));
+    RECT r = { scale_i(w.rect.left), scale_i(w.rect.top), scale_i(w.rect.right), scale_i(w.rect.bottom) };
+    FillRect(dc, &r, editing ? t.recording : (hovered ? t.row_hover : t.row));
 
-    RECT indicatorRect = { w.rect.left + 10, w.rect.top + 10, w.rect.left + 20, w.rect.top + 20 };
+    RECT indicator = { scale_i(w.rect.left + 10), scale_i(w.rect.top + 10), scale_i(w.rect.left + 20), scale_i(w.rect.top + 20) };
     HBRUSH indicatorBrush = (hk.key == 0) ? t.pill_off : (hk.registered ? t.ok : t.err);
-    FillRect(dc, &indicatorRect, indicatorBrush);
+    FillRect(dc, &indicator, indicatorBrush);
 
     SelectObject(dc, t.font);
     SetTextColor(dc, RGB(240, 240, 240));
-
-    const char* idName = sc_hotkey_id_strings[hk.id];
-    TextOutA(dc, w.rect.left + 30, w.rect.top + 6, idName, (int)strlen(idName));
+    TextOutA(dc, scale_i(w.rect.left + 30), scale_i(w.rect.top + 6), sc_hotkey_id_strings[hk.id], (int)strlen(sc_hotkey_id_strings[hk.id]));
 
     if (editing) {
         const char* prompt = "Press a key... (Esc to cancel, Del to remove)";
         SIZE textSize;
         int textWidth = GetTextExtentPoint32A(dc, prompt, (int)strlen(prompt), &textSize) ? textSize.cx : 0;
         SetTextColor(dc, RGB(180, 210, 255));
-        TextOutA(dc, w.rect.right - textWidth - 15, w.rect.top + 6, prompt, (int)strlen(prompt));
+        TextOutA(dc, scale_i(w.rect.right) - textWidth - scale_i(15), scale_i(w.rect.top + 6), prompt, (int)strlen(prompt));
     } else {
         std::string bindStr = _sc_get_key_display_string(hk.modifiers, hk.key);
         SIZE textSize;
         int textWidth = GetTextExtentPoint32A(dc, bindStr.c_str(), (int)bindStr.length(), &textSize) ? textSize.cx : 0;
-        TextOutA(dc, w.rect.right - textWidth - 15, w.rect.top + 6, bindStr.c_str(), (int)bindStr.length());
+        TextOutA(dc, scale_i(w.rect.right) - textWidth - scale_i(15), scale_i(w.rect.top + 6), bindStr.c_str(), (int)bindStr.length());
     }
 }
 
 static void draw_gallery_item(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool hovered) {
-    FillRect(dc, &w.rect, hovered ? t.row_hover : t.row);
+    RECT r = { scale_i(w.rect.left), scale_i(w.rect.top), scale_i(w.rect.right), scale_i(w.rect.bottom) };
+    FillRect(dc, &r, hovered ? t.row_hover : t.row);
 
     HPEN borderPen = CreatePen(PS_SOLID, 1, hovered ? RGB(0, 120, 215) : RGB(55, 55, 55));
     HPEN oldPen = (HPEN)SelectObject(dc, borderPen);
     HBRUSH oldBrush = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
-    Rectangle(dc, w.rect.left, w.rect.top, w.rect.right, w.rect.bottom);
+    Rectangle(dc, r.left, r.top, r.right, r.bottom);
     SelectObject(dc, oldBrush);
     SelectObject(dc, oldPen);
     DeleteObject(borderPen);
@@ -433,11 +443,11 @@ static void draw_gallery_item(HDC dc, const sc_ui_theme& t, const sc_widget& w, 
         BITMAP bmp;
         GetObject(hBmp, sizeof(BITMAP), &bmp);
 
-        RECT imgRect = w.rect;
-        imgRect.bottom -= 30;
-        imgRect.left += 2;
-        imgRect.right -= 2;
-        imgRect.top += 2;
+        RECT imgRect = r;
+        imgRect.bottom -= scale_i(30);
+        imgRect.left += scale_i(2);
+        imgRect.right -= scale_i(2);
+        imgRect.top += scale_i(2);
 
         float srcAspect = (float)bmp.bmWidth / (float)bmp.bmHeight;
         float dstAspect = (float)(imgRect.right - imgRect.left) / (float)(imgRect.bottom - imgRect.top);
@@ -462,15 +472,15 @@ static void draw_gallery_item(HDC dc, const sc_ui_theme& t, const sc_widget& w, 
         SelectObject(memDC, oldBmp);
         DeleteDC(memDC);
     } else {
-        RECT iconRect = w.rect;
-        iconRect.bottom -= 30;
+        RECT iconRect = r;
+        iconRect.bottom -= scale_i(30);
         DrawTextW(dc, L"PNG", -1, &iconRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 
-    RECT textRect = w.rect;
-    textRect.top = textRect.bottom - 30;
-    textRect.left += 5;
-    textRect.right -= 5;
+    RECT textRect = r;
+    textRect.top = textRect.bottom - scale_i(30);
+    textRect.left += scale_i(5);
+    textRect.right -= scale_i(5);
     DrawTextW(dc, w.label.c_str(), -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
@@ -486,14 +496,15 @@ static void draw_widget(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool h
 
 static int widget_at(const std::vector<sc_widget>& widgets, POINT pt) {
     for (int i = 0; i < (int)widgets.size(); ++i) {
-        if (PtInRect(&widgets[i].rect, pt)) return i;
+        RECT r = { scale_i(widgets[i].rect.left), scale_i(widgets[i].rect.top), scale_i(widgets[i].rect.right), scale_i(widgets[i].rect.bottom) };
+        if (PtInRect(&r, pt)) return i;
     }
     return -1;
 }
 
 static RECT sidebar_tab_rect(int i) {
     int top = 20 + i * 35;
-    return RECT{ 10, top, 140, top + 30 };
+    return RECT{ scale_i(10), scale_i(top), scale_i(140), scale_i(top + 30) };
 }
 
 static void build_general_tab(sc_settings_ui& ui, RECT content) {
@@ -634,7 +645,8 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         RECT cr;
         GetClientRect(hwnd, &cr);
         if (ui.needs_layout || cr.right != ui.last_content_rect.right || cr.bottom != ui.last_content_rect.bottom) {
-            g_tabs[ui.active_tab].build(ui, cr);
+            RECT logical_cr = { 0, 0, unscale_i(cr.right), unscale_i(cr.bottom) };
+            g_tabs[ui.active_tab].build(ui, logical_cr);
             ui.needs_layout = false;
             ui.last_content_rect = cr;
         }
@@ -651,13 +663,13 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             ui = sc_settings_ui{};
             theme_create(ui.theme);
 
-            ui.edit_path = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, 160, 45, 260, 24, hwnd, (HMENU)3001, GetModuleHandle(nullptr), nullptr);
+            ui.edit_path = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, scale_i(160), scale_i(45), scale_i(260), scale_i(24), hwnd, (HMENU)3001, GetModuleHandle(nullptr), nullptr);
             SendMessageW(ui.edit_path, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
 
             std::wstring widePath = winrt::to_hstring(sc_get_app().save_path).c_str();
             SetWindowTextW(ui.edit_path, widePath.c_str());
 
-            ui.btn_browse = CreateWindowExW(0, L"BUTTON", sc_get_localized_string("Browse...").c_str(), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 430, 45, 100, 24, hwnd, (HMENU)3002, GetModuleHandle(nullptr), nullptr);
+            ui.btn_browse = CreateWindowExW(0, L"BUTTON", sc_get_localized_string("Browse...").c_str(), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, scale_i(430), scale_i(45), scale_i(100), scale_i(24), hwnd, (HMENU)3002, GetModuleHandle(nullptr), nullptr);
             SendMessageW(ui.btn_browse, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
 
             SetWindowTheme(ui.edit_path, L"Explorer", nullptr);
@@ -683,7 +695,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
                     const wchar_t* text = (const wchar_t*)pDIS->itemData;
                     RECT textRect = pDIS->rcItem;
-                    textRect.left += 10;
+                    textRect.left += scale_i(10);
 
                     DrawTextW(pDIS->hDC, text, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
                     SelectObject(pDIS->hDC, oldFont);
@@ -748,16 +760,14 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         }
         case WM_GETMINMAXINFO: {
             MINMAXINFO* mmi = (MINMAXINFO*)lParam;
-            mmi->ptMinTrackSize.x = MIN_WINDOW_WIDTH;
-            mmi->ptMinTrackSize.y = MIN_WINDOW_HEIGHT;
+            mmi->ptMinTrackSize.x = scale_i(MIN_WINDOW_WIDTH);
+            mmi->ptMinTrackSize.y = scale_i(MIN_WINDOW_HEIGHT);
             return 0;
         }
         case WM_SIZE: {
             int width = LOWORD(lParam);
-            if (ui.edit_path && ui.btn_browse) {
-                MoveWindow(ui.edit_path, 160, 45, width - 290, 24, TRUE);
-                MoveWindow(ui.btn_browse, width - 120, 45, 100, 24, TRUE);
-            }
+            MoveWindow(ui.edit_path, scale_i(160), scale_i(45), width - scale_i(290), scale_i(24), TRUE);
+            MoveWindow(ui.btn_browse, width - scale_i(120), scale_i(45), scale_i(100), scale_i(24), TRUE);
             ui.expanded_dropdown = -1;
             ui.needs_layout = true;
             InvalidateRect(hwnd, nullptr, TRUE);
@@ -768,8 +778,9 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             if (ui.expanded_dropdown != -1) {
                 const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
                 RECT cr; GetClientRect(hwnd, &cr);
-                int space_below = cr.bottom - dw.rect.bottom;
-                int max_visible_items = std::max(1, (space_below - 20) / 28);
+                int item_height = scale_i(28);
+                int space_below = cr.bottom - scale_i(dw.rect.bottom);
+                int max_visible_items = std::max(1, (space_below - scale_i(20)) / item_height);
 
                 int zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
                 ui.dropdown_scroll_y -= (zDelta * 28) / WHEEL_DELTA;
@@ -823,7 +834,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
             FillRect(memDC, &cr, ui.theme.bg);
 
-            RECT sidebarRect = { 0, 0, 150, cr.bottom };
+            RECT sidebarRect = { 0, 0, scale_i(150), cr.bottom };
             FillRect(memDC, &sidebarRect, ui.theme.sidebar);
 
             SetBkMode(memDC, TRANSPARENT);
@@ -838,7 +849,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 SetTextColor(memDC, active ? RGB(255, 255, 255) : RGB(200, 200, 200));
 
                 std::wstring& label = sc_get_localized_string(g_tabs[i].loc_key);
-                TextOutW(memDC, tabRect.left + 15, tabRect.top + 7, label.c_str(), (int)label.length());
+                TextOutW(memDC, tabRect.left + scale_i(15), tabRect.top + scale_i(7), label.c_str(), (int)label.length());
             }
 
             for (int i = 0; i < (int)ui.widgets.size(); ++i) {
@@ -847,13 +858,13 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
             if (ui.expanded_dropdown >= 0 && ui.expanded_dropdown < (int)ui.widgets.size()) {
                 const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
-                int item_height = 28;
+                int item_height = scale_i(28);
 
-                int space_below = cr.bottom - dw.rect.bottom;
-                int max_visible_items = std::max(1, (space_below - 20) / item_height);
+                int space_below = cr.bottom - scale_i(dw.rect.bottom);
+                int max_visible_items = std::max(1, (space_below - scale_i(20)) / item_height);
                 int visible_items = std::min((int)dw.options.size(), max_visible_items);
 
-                RECT boxRect = { dw.rect.right - 165, dw.rect.bottom - 6, dw.rect.right - 15, dw.rect.bottom - 6 + visible_items * item_height };
+                RECT boxRect = { scale_i(dw.rect.right - 165), scale_i(dw.rect.bottom - 6), scale_i(dw.rect.right - 15), scale_i(dw.rect.bottom - 6) + visible_items * item_height };
 
                 FillRect(memDC, &boxRect, ui.theme.sidebar);
 
@@ -870,7 +881,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
                 SelectObject(memDC, ui.theme.font);
                 for (size_t i = 0; i < dw.options.size(); ++i) {
-                    int item_top = boxRect.top + 1 + (int)i * item_height - ui.dropdown_scroll_y;
+                    int item_top = boxRect.top + 1 + (int)i * item_height - scale_i(ui.dropdown_scroll_y);
                     int item_bottom = item_top + item_height;
 
                     if (item_bottom > boxRect.top && item_top < boxRect.bottom) {
@@ -880,7 +891,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                         }
                         SetTextColor(memDC, RGB(240, 240, 240));
                         std::wstring optW = _sc_utf8_to_wstring(dw.options[i]);
-                        TextOutW(memDC, itemRect.left + 10, itemRect.top + 5, optW.c_str(), (int)optW.length());
+                        TextOutW(memDC, itemRect.left + scale_i(10), itemRect.top + scale_i(5), optW.c_str(), (int)optW.length());
                     }
                 }
 
@@ -903,12 +914,14 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             if (ui.expanded_dropdown != -1) {
                 const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
                 RECT cr; GetClientRect(hwnd, &cr);
-                int space_below = cr.bottom - dw.rect.bottom;
-                int max_visible_items = std::max(1, (space_below - 20) / 28);
+                int item_height = scale_i(28);
+                int space_below = cr.bottom - scale_i(dw.rect.bottom);
+                int max_visible_items = std::max(1, (space_below - scale_i(20)) / item_height);
                 int visible_items = std::min((int)dw.options.size(), max_visible_items);
-                RECT expRect = { dw.rect.right - 165, dw.rect.bottom - 6, dw.rect.right - 15, dw.rect.bottom - 6 + visible_items * 28 };
+                RECT expRect = { scale_i(dw.rect.right - 165), scale_i(dw.rect.bottom - 6), scale_i(dw.rect.right - 15), scale_i(dw.rect.bottom - 6) + visible_items * item_height };
+                
                 if (PtInRect(&expRect, pt)) {
-                    int idx = (pt.y - expRect.top + ui.dropdown_scroll_y) / 28;
+                    int idx = (pt.y - expRect.top + scale_i(ui.dropdown_scroll_y)) / item_height;
                     ui.dropdown_hovered_index = (idx >= 0 && idx < (int)dw.options.size()) ? idx : -1;
                 } else {
                     ui.dropdown_hovered_index = -1;
@@ -955,13 +968,14 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             if (ui.expanded_dropdown != -1) {
                 const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
                 RECT cr; GetClientRect(hwnd, &cr);
-                int space_below = cr.bottom - dw.rect.bottom;
-                int max_visible_items = std::max(1, (space_below - 20) / 28);
+                int item_height = scale_i(28);
+                int space_below = cr.bottom - scale_i(dw.rect.bottom);
+                int max_visible_items = std::max(1, (space_below - scale_i(20)) / item_height);
                 int visible_items = std::min((int)dw.options.size(), max_visible_items);
-                RECT expRect = { dw.rect.right - 165, dw.rect.bottom - 6, dw.rect.right - 15, dw.rect.bottom - 6 + visible_items * 28 };
+                RECT expRect = { scale_i(dw.rect.right - 165), scale_i(dw.rect.bottom - 6), scale_i(dw.rect.right - 15), scale_i(dw.rect.bottom - 6) + visible_items * item_height };
 
                 if (PtInRect(&expRect, pt)) {
-                    int idx = (pt.y - expRect.top + ui.dropdown_scroll_y) / 28;
+                    int idx = (pt.y - expRect.top + scale_i(ui.dropdown_scroll_y)) / item_height;
                     if (idx >= 0 && idx < (int)dw.options.size()) {
                         if (dw.opt_name && strcmp(dw.opt_name, "language") == 0) {
                             sc_set_language(dw.options[idx]);
@@ -997,7 +1011,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                     _sc_on_option_changed(w.opt_name, *w.value);
                     InvalidateRect(hwnd, nullptr, FALSE);
                 } else if (ui.widgets[hit].kind == SC_W_DROPDOWN) {
-                    RECT boxRect = { ui.widgets[hit].rect.right - 165, ui.widgets[hit].rect.top + 6, ui.widgets[hit].rect.right - 15, ui.widgets[hit].rect.bottom - 6 };
+                    RECT boxRect = { scale_i(ui.widgets[hit].rect.right - 165), scale_i(ui.widgets[hit].rect.top + 6), scale_i(ui.widgets[hit].rect.right - 15), scale_i(ui.widgets[hit].rect.bottom - 6) };
                     if (PtInRect(&boxRect, pt)) {
                         ui.expanded_dropdown = hit;
                         ui.dropdown_scroll_y = 0;
@@ -1131,8 +1145,8 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                     SelectObject(hdc, oldFont);
                     ReleaseDC(hwnd, hdc);
                 }
-                pMIS->itemWidth = std::max<UINT>(150, textWidth + 30);
-                pMIS->itemHeight = 24;
+                pMIS->itemWidth = std::max<UINT>(scale_i(150), textWidth + scale_i(30));
+                pMIS->itemHeight = scale_i(24);
                 return TRUE;
             }
             break;
