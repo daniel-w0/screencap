@@ -19,7 +19,9 @@ int entry(int argc, char** argv) {
         if (sc_update()) {
             sc_capture_info ci = {};
             if (sc_capture_update(ci)) {
-                sc_save_capture(ci);
+                if (ci.captureMode != sc_capture_mode::ocr) {
+                    sc_save_capture(ci);
+                }
                 sc_cleanup(ci);
             }
         } else {
