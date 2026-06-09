@@ -234,7 +234,10 @@ static LRESULT CALLBACK _sc_ll_keyboard_proc(int nCode, WPARAM wParam, LPARAM lP
                 uint32_t mods = 0;
                 if (GetKeyState(VK_CONTROL) & 0x8000) mods |= MOD_CONTROL;
                 if (GetKeyState(VK_SHIFT)   & 0x8000) mods |= MOD_SHIFT;
-                if (kb->flags & LLKHF_ALTDOWN)        mods |= MOD_ALT;
+                //if (kb->flags & LLKHF_ALTDOWN)        mods |= MOD_ALT;
+                if ((kb->flags & LLKHF_ALTDOWN) || (GetAsyncKeyState(VK_MENU) & 0x8000)) {
+                    mods |= MOD_ALT;
+                }
                 PostMessage(g_settings_window, WM_HOTKEY_RECORDED, (WPARAM)vk, (LPARAM)mods);
                 return 1; // swallow
             }
