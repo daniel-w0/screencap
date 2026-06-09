@@ -19,16 +19,7 @@ int entry(int argc, char** argv) {
         if (sc_update()) {
             sc_capture_info ci = {};
             if (sc_capture_update(ci)) {
-                if (ci.shouldSave) {
-                    unsigned char* data = ci.data;
-                    ci.data = nullptr;
-                    sc_capture_info snap = ci;
-                    snap.data = data;
-                    std::thread([snap]() mutable {
-                        sc_save_capture(snap);
-                        delete[] snap.data;
-                    }).detach();
-                }
+                sc_save_capture(ci);
                 sc_cleanup(ci);
             }
         } else {

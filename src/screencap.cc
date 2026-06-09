@@ -2,6 +2,7 @@
 #include "screencap.h"
 #include "locales_data.h"
 #include "simpleini.h"
+#include <fstream>
 
 static sc_app g_app;
 static std::unordered_map<std::string, std::wstring> language_map;
@@ -234,11 +235,60 @@ bool sc_save_capture(sc_capture_info& ci) {
 
     fs::path saveFile = sc_get_save_path() / (_get_filename_timestamp() + ".png");
 
-    if (!stbi_write_png(saveFile.string().c_str(), ci.width, ci.height, ci.channels, ci.data, ci.width * ci.channels)) {
-        fprintf(stderr, "Failed to save capture to %s\n", saveFile.string().c_str());
+    //if (!stbi_write_png(saveFile.string().c_str(), ci.width, ci.height, ci.channels, ci.data, ci.width * ci.channels)) {
+    //    fprintf(stderr, "Failed to save capture to %s\n", saveFile.string().c_str());
+    //    return false;
+    //}
+
+    std::vector<unsigned char> pngData;
+    stbi_write_func* writeFunc = [](void* context, void* data, int size) {
+        std::vector<unsigned char>* pngData = reinterpret_cast<std::vector<unsigned char>*>(context);
+        unsigned char* bytes = reinterpret_cast<unsigned char*>(data);
+        pngData->insert(pngData->end(), bytes, bytes + size);
+    };
+
+    if (!stbi_write_png_to_func(writeFunc, &pngData, ci.width, ci.height, ci.channels, ci.data, ci.width * ci.channels)) {
+        fprintf(stderr, "Failed to encode capture PNG data\n");
         return false;
     }
-    printf("Saved capture (%dx%d) to %s\n", ci.width, ci.height, saveFile.string().c_str());
-    sc_settings_on_capture_saved(saveFile.string());
+
+    if (sc_get_app().opt_copy_to_clipboard && OpenClipboard(nullptr)) {
+        BITMAPINFOHEADER bih = {};
+        bih.biSize = sizeof(BITMAPINFOHEADER);
+        bih.biWidth = (int)ci.width;
+        bih.biHeight = -static_cast<int>(ci.height);
+        bih.biPlanes = 1;
+        bih.biBitCount = 32;
+        bih.biCompression = BI_RGB;
+
+        EmptyClipboard();
+        // write old-style DIB data for compatibility with apps that don't support PNG
+        _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), ci.data, ci.width * ci.height * 4);
+
+        // and now png
+        _sc_write_to_clipboard(RegisterClipboardFormatA("PNG"), pngData.data(), pngData.size());
+        CloseClipboard();
+    }
+
+    if (ci.shouldSave) {
+        std::error_code ec;
+        fs::create_directories(saveFile.parent_path(), ec);
+        if (ec) {
+            fprintf(stderr, "Failed to create directories for saving capture: %s\n", ec.message().c_str());
+            return false;
+        }
+
+        std::ofstream outFile(saveFile, std::ios::binary);
+        if (!outFile) {
+            fprintf(stderr, "Failed to open file for saving capture: %s\n", saveFile.string().c_str());
+            return false;
+        }
+
+        outFile.write((const char*)pngData.data(), pngData.size());
+        outFile.close();
+
+        printf("Saved capture (%dx%d) to %s\n", ci.width, ci.height, saveFile.string().c_str());
+        sc_settings_on_capture_saved(saveFile.string());
+    }
     return true;
 }
