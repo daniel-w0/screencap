@@ -59,9 +59,22 @@ struct {
     POINT dragStart             = { 0 };
     HWND hoveredHwnd            = nullptr;
     HWND finalHwnd              = nullptr;
-    HWND backgroundHwnd          = nullptr;
+    HWND backgroundHwnd         = nullptr;
     HDC frozenDC                = nullptr;
     HBITMAP frozenBitmap        = nullptr;
+
+    HDC     overlayMemDC  = nullptr;
+    HBITMAP overlayMemBmp = nullptr;
+    int     overlayMemW   = 0;
+    int     overlayMemH   = 0;
+    int     captureVX     = 0;
+    int     captureVY     = 0;
+
+    HDC     magDC    = nullptr;
+    HBITMAP magBmp   = nullptr;
+    int     magDestX = 0;
+    int     magDestY = 0;
+    bool    magValid = false;
 
     std::vector<sc_ocr_line> ocrLines;
     std::mutex               ocrMutex;
@@ -340,7 +353,9 @@ void sc_begin_capture(sc_hotkey_id hotkey) {
 
     int vx, vy, vw, vh;
     _sc_get_display_metrics(vx, vy, vw, vh);
-    
+    g_state.captureVX = vx;
+    g_state.captureVY = vy;
+
     HDC hScreenDC = GetDC(nullptr);
     if (g_state.frozenDC) {
         DeleteDC(g_state.frozenDC);
@@ -519,20 +534,6 @@ bool sc_capture_update(sc_capture_info& ci) {
     } else if (sc_get_app().opt_copy_to_clipboard && OpenClipboard(nullptr)) {
         EmptyClipboard();
         _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), ci.data, ci.width * ci.height * 4);
-
-        if (!ci.channels_swapped) {
-            _sc_swap_channels((uint32_t*)ci.data, ci.width * ci.height);
-            ci.channels_swapped = true;
-        }
-        
-        std::vector<unsigned char> pngData;
-        stbi_write_png_to_func([](void* ctx, void* d, int s) {
-            auto* vec = static_cast<std::vector<unsigned char>*>(ctx);
-            auto* bytes = static_cast<unsigned char*>(d);
-            vec->insert(vec->end(), bytes, bytes + s);
-        }, &pngData, ci.width, ci.height, 4, ci.data, ci.width * 4);
-        
-        _sc_write_to_clipboard(RegisterClipboardFormatA("PNG"), pngData.data(), pngData.size());
         CloseClipboard();
     }
 
@@ -546,6 +547,21 @@ void _sc_cleanup_impl(sc_capture_info& ci) {
     if (g_state.overlayHwnd) {
         DestroyWindow(g_state.overlayHwnd);
         g_state.overlayHwnd = nullptr;
+    }
+    if (g_state.overlayMemDC) {
+        DeleteDC(g_state.overlayMemDC);
+        DeleteObject(g_state.overlayMemBmp);
+        g_state.overlayMemDC  = nullptr;
+        g_state.overlayMemBmp = nullptr;
+        g_state.overlayMemW   = 0;
+        g_state.overlayMemH   = 0;
+    }
+    if (g_state.magDC) {
+        DeleteDC(g_state.magDC);
+        DeleteObject(g_state.magBmp);
+        g_state.magDC   = nullptr;
+        g_state.magBmp  = nullptr;
+        g_state.magValid = false;
     }
     if (g_state.frozenDC) {
         DeleteDC(g_state.frozenDC);
@@ -614,6 +630,29 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     UpdateHoverRect(pt);
                 }
             }
+            if (g_state.frozenDC) {
+                const int magSize = 120;
+                const int srcSize = magSize / 4;
+                if (!g_state.magDC) {
+                    HDC hdc = GetDC(nullptr);
+                    g_state.magDC = CreateCompatibleDC(hdc);
+                    g_state.magBmp = CreateCompatibleBitmap(hdc, magSize, magSize);
+                    SelectObject(g_state.magDC, g_state.magBmp);
+                    SetStretchBltMode(g_state.magDC, COLORONCOLOR);
+                    ReleaseDC(nullptr, hdc);
+                }
+                HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+                MONITORINFO mi = { sizeof(MONITORINFO) };
+                GetMonitorInfo(hMon, &mi);
+                g_state.magDestX = (pt.x + magSize < mi.rcMonitor.right)  ? pt.x - g_state.captureVX + 20 : pt.x - g_state.captureVX - magSize - 20;
+                g_state.magDestY = (pt.y + magSize < mi.rcMonitor.bottom) ? pt.y - g_state.captureVY + 20 : pt.y - g_state.captureVY - magSize - 20;
+                StretchBlt(g_state.magDC, 0, 0, magSize, magSize,
+                           g_state.frozenDC,
+                           pt.x - srcSize / 2 - g_state.captureVX,
+                           pt.y - srcSize / 2 - g_state.captureVY,
+                           srcSize, srcSize, SRCCOPY);
+                g_state.magValid = true;
+            }
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -668,19 +707,26 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             HDC hdc = BeginPaint(hwnd, &ps);
             RECT cr;
             GetClientRect(hwnd, &cr);
-            
-            HDC memDC = CreateCompatibleDC(hdc);
-            HBITMAP memBitmap = CreateCompatibleBitmap(hdc, cr.right, cr.bottom);
-            HBITMAP hOldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
+
+            if (!g_state.overlayMemDC || g_state.overlayMemW != cr.right || g_state.overlayMemH != cr.bottom) {
+                if (g_state.overlayMemDC) {
+                    DeleteDC(g_state.overlayMemDC);
+                    DeleteObject(g_state.overlayMemBmp);
+                }
+                g_state.overlayMemDC = CreateCompatibleDC(hdc);
+                g_state.overlayMemBmp = CreateCompatibleBitmap(hdc, cr.right, cr.bottom);
+                SelectObject(g_state.overlayMemDC, g_state.overlayMemBmp);
+                g_state.overlayMemW = cr.right;
+                g_state.overlayMemH = cr.bottom;
+            }
+            HDC memDC = g_state.overlayMemDC;
             
             if (g_state.frozenDC) {
                 BitBlt(memDC, 0, 0, cr.right, cr.bottom, g_state.frozenDC, 0, 0, SRCCOPY);
             }
 
-            int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-            int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-            int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-            int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            int vx = g_state.captureVX;
+            int vy = g_state.captureVY;
             
             RECT r = { 
                 g_state.currentRect.x - vx, 
@@ -741,49 +787,31 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
 
             // Magnifier
-            POINT pt;
-            GetCursorPos(&pt);
-            int magSize = 120;
-            int zoom = 4;
-            int srcSize = magSize / zoom;
-            
-            HMONITOR hMonitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-            MONITORINFO monInfo = { sizeof(MONITORINFO) };
-            GetMonitorInfo(hMonitor, &monInfo);
+            if (g_state.magValid) {
+                const int magSize = 120;
+                int destX = g_state.magDestX;
+                int destY = g_state.magDestY;
 
-            int destX = pt.x - vx + 20;
-            if (pt.x + magSize > monInfo.rcMonitor.right) {
-                destX = pt.x - vx - magSize - 20;
-            }
-            int destY = pt.y - vy + 20;
-            if (pt.y + magSize > monInfo.rcMonitor.bottom) {
-                destY = pt.y - vy - magSize - 20;
-            }
-            
-            StretchBlt(memDC, destX, destY, magSize, magSize, g_state.frozenDC, pt.x - srcSize / 2 - vx, pt.y - srcSize / 2 - vy, srcSize, srcSize, SRCCOPY);
+                BitBlt(memDC, destX, destY, magSize, magSize, g_state.magDC, 0, 0, SRCCOPY);
 
-            HPEN magPen = CreatePen(PS_SOLID, 1, RGB(156, 215, 228));
-            HPEN oldMagPen = (HPEN)SelectObject(memDC, magPen);
-            
-            MoveToEx(memDC, destX + magSize / 2, destY, nullptr);
-            LineTo(memDC, destX + magSize / 2, destY + magSize);
-            MoveToEx(memDC, destX, destY + magSize / 2, nullptr);
-            LineTo(memDC, destX + magSize, destY + magSize / 2);
-            
-            HBRUSH hOldMagBrush = (HBRUSH)SelectObject(memDC, GetStockObject(NULL_BRUSH));
-            Rectangle(memDC, destX, destY, destX + magSize, destY + magSize);
-            
-            SelectObject(memDC, hOldMagBrush);
-            SelectObject(memDC, oldMagPen);
-            DeleteObject(magPen);
+                HPEN magPen = CreatePen(PS_SOLID, 1, RGB(156, 215, 228));
+                HPEN oldMagPen = (HPEN)SelectObject(memDC, magPen);
+
+                MoveToEx(memDC, destX + magSize / 2, destY, nullptr);
+                LineTo(memDC, destX + magSize / 2, destY + magSize);
+                MoveToEx(memDC, destX, destY + magSize / 2, nullptr);
+                LineTo(memDC, destX + magSize, destY + magSize / 2);
+
+                HBRUSH hOldMagBrush = (HBRUSH)SelectObject(memDC, GetStockObject(NULL_BRUSH));
+                Rectangle(memDC, destX, destY, destX + magSize, destY + magSize);
+
+                SelectObject(memDC, hOldMagBrush);
+                SelectObject(memDC, oldMagPen);
+                DeleteObject(magPen);
+            }
 
             // Blit to screen
             BitBlt(hdc, 0, 0, cr.right, cr.bottom, memDC, 0, 0, SRCCOPY);
-            
-            SelectObject(memDC, hOldBitmap);
-            DeleteObject(memBitmap);
-            DeleteDC(memDC);
-            
             EndPaint(hwnd, &ps);
             return 0;
         }
