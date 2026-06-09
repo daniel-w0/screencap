@@ -97,6 +97,7 @@ fs::path sc_get_save_path();
 
 std::wstring _sc_utf8_to_wstring(const std::string& str);
 
+void sc_reregister_hotkeys();
 void _sc_init_impl();
 void _sc_shutdown_impl();
 void _sc_cleanup_impl(sc_capture_info& ci);

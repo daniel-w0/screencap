@@ -68,6 +68,8 @@ LRESULT CALLBACK BrowseButtonSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LP
 }
 
 sc_internal std::string _sc_get_key_display_string(uint32_t modifiers, uint32_t key) {
+    if (key == 0) return "None";
+
     std::string res;
     if (modifiers & MOD_CONTROL) res += "Ctrl + ";
     if (modifiers & MOD_SHIFT)   res += "Shift + ";
@@ -142,6 +144,7 @@ struct sc_ui_theme {
     HBRUSH thumb     = nullptr;
     HBRUSH ok        = nullptr;
     HBRUSH err       = nullptr;
+    HBRUSH recording = nullptr;
 };
 
 enum sc_widget_kind {
@@ -185,6 +188,8 @@ struct sc_settings_ui {
     int expanded_dropdown = -1;
     int dropdown_hovered_index = -1;
     int dropdown_scroll_y = 0;
+
+    int editing_hotkey = -1;
 };
 
 struct sc_tab {
@@ -194,6 +199,38 @@ struct sc_tab {
 };
 
 static sc_settings_ui g_ui;
+
+#define WM_HOTKEY_RECORDED (WM_APP + 100)
+
+static HHOOK g_keyboard_hook = nullptr;
+
+static void _sc_stop_hotkey_recording() {
+    if (g_keyboard_hook) {
+        UnhookWindowsHookEx(g_keyboard_hook);
+        g_keyboard_hook = nullptr;
+    }
+}
+
+static LRESULT CALLBACK _sc_ll_keyboard_proc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION && g_ui.editing_hotkey != -1 && g_settings_window) {
+        if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+            KBDLLHOOKSTRUCT* kb = (KBDLLHOOKSTRUCT*)lParam;
+            UINT vk = kb->vkCode;
+            if (vk != VK_CONTROL && vk != VK_SHIFT && vk != VK_MENU &&
+                vk != VK_LCONTROL && vk != VK_RCONTROL &&
+                vk != VK_LSHIFT   && vk != VK_RSHIFT   &&
+                vk != VK_LMENU    && vk != VK_RMENU) {
+                uint32_t mods = 0;
+                if (GetKeyState(VK_CONTROL) & 0x8000) mods |= MOD_CONTROL;
+                if (GetKeyState(VK_SHIFT)   & 0x8000) mods |= MOD_SHIFT;
+                if (kb->flags & LLKHF_ALTDOWN)        mods |= MOD_ALT;
+                PostMessage(g_settings_window, WM_HOTKEY_RECORDED, (WPARAM)vk, (LPARAM)mods);
+                return 1; // swallow
+            }
+        }
+    }
+    return CallNextHookEx(g_keyboard_hook, nCode, wParam, lParam);
+}
 
 static void theme_create(sc_ui_theme& t) {
     t.font      = CreateFontA(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
@@ -207,10 +244,11 @@ static void theme_create(sc_ui_theme& t) {
     t.thumb     = CreateSolidBrush(RGB(255, 255, 255));
     t.ok        = CreateSolidBrush(RGB(34, 139, 34));
     t.err       = CreateSolidBrush(RGB(178, 34, 34));
+    t.recording = CreateSolidBrush(RGB(0, 60, 120));
 }
 
 static void theme_destroy(sc_ui_theme& t) {
-    for (HGDIOBJ o : { (HGDIOBJ)t.font, (HGDIOBJ)t.bold, (HGDIOBJ)t.bg, (HGDIOBJ)t.sidebar, (HGDIOBJ)t.row, (HGDIOBJ)t.row_hover, (HGDIOBJ)t.pill_on, (HGDIOBJ)t.pill_off, (HGDIOBJ)t.thumb, (HGDIOBJ)t.ok, (HGDIOBJ)t.err }) {
+    for (HGDIOBJ o : { (HGDIOBJ)t.font, (HGDIOBJ)t.bold, (HGDIOBJ)t.bg, (HGDIOBJ)t.sidebar, (HGDIOBJ)t.row, (HGDIOBJ)t.row_hover, (HGDIOBJ)t.pill_on, (HGDIOBJ)t.pill_off, (HGDIOBJ)t.thumb, (HGDIOBJ)t.ok, (HGDIOBJ)t.err, (HGDIOBJ)t.recording }) {
         if (o) DeleteObject(o);
     }
     t = sc_ui_theme{};
@@ -291,13 +329,15 @@ static void draw_dropdown(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool
     TextOutW(dc, boxRect.right - 20, boxRect.top + 5, L"\x25BC", 1);
 }
 
-static void draw_hotkey(HDC dc, const sc_ui_theme& t, const sc_widget& w) {
+static void draw_hotkey(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool hovered) {
     const auto& hk = sc_get_app().hotkeys[w.hotkey];
+    bool editing = (g_ui.editing_hotkey == w.hotkey);
 
-    FillRect(dc, &w.rect, t.row);
+    FillRect(dc, &w.rect, editing ? t.recording : (hovered ? t.row_hover : t.row));
 
     RECT indicatorRect = { w.rect.left + 10, w.rect.top + 10, w.rect.left + 20, w.rect.top + 20 };
-    FillRect(dc, &indicatorRect, hk.registered ? t.ok : t.err);
+    HBRUSH indicatorBrush = (hk.key == 0) ? t.pill_off : (hk.registered ? t.ok : t.err);
+    FillRect(dc, &indicatorRect, indicatorBrush);
 
     SelectObject(dc, t.font);
     SetTextColor(dc, RGB(240, 240, 240));
@@ -305,10 +345,18 @@ static void draw_hotkey(HDC dc, const sc_ui_theme& t, const sc_widget& w) {
     const char* idName = sc_hotkey_id_strings[hk.id];
     TextOutA(dc, w.rect.left + 30, w.rect.top + 6, idName, (int)strlen(idName));
 
-    std::string bindStr = _sc_get_key_display_string(hk.modifiers, hk.key);
-    SIZE textSize;
-    int textWidth = GetTextExtentPoint32A(dc, bindStr.c_str(), (int)bindStr.length(), &textSize) ? textSize.cx : 0;
-    TextOutA(dc, w.rect.right - textWidth - 15, w.rect.top + 6, bindStr.c_str(), (int)bindStr.length());
+    if (editing) {
+        const char* prompt = "Press a key... (Esc to cancel, Del to remove)";
+        SIZE textSize;
+        int textWidth = GetTextExtentPoint32A(dc, prompt, (int)strlen(prompt), &textSize) ? textSize.cx : 0;
+        SetTextColor(dc, RGB(180, 210, 255));
+        TextOutA(dc, w.rect.right - textWidth - 15, w.rect.top + 6, prompt, (int)strlen(prompt));
+    } else {
+        std::string bindStr = _sc_get_key_display_string(hk.modifiers, hk.key);
+        SIZE textSize;
+        int textWidth = GetTextExtentPoint32A(dc, bindStr.c_str(), (int)bindStr.length(), &textSize) ? textSize.cx : 0;
+        TextOutA(dc, w.rect.right - textWidth - 15, w.rect.top + 6, bindStr.c_str(), (int)bindStr.length());
+    }
 }
 
 static void draw_gallery_item(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool hovered) {
@@ -431,7 +479,7 @@ static void draw_widget(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool h
         case SC_W_LABEL:       draw_label(dc, t, w);       break;
         case SC_W_TOGGLE:      draw_toggle(dc, t, w, hovered); break;
         case SC_W_DROPDOWN:    draw_dropdown(dc, t, w, hovered); break;
-        case SC_W_HOTKEY_ROW:  draw_hotkey(dc, t, w);      break;
+        case SC_W_HOTKEY_ROW:  draw_hotkey(dc, t, w, hovered); break;
         case SC_W_GALLERY_ITEM: draw_gallery_item(dc, t, w, hovered); break;
     }
 }
@@ -882,7 +930,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             }
 
             int hit = widget_at(ui.widgets, pt);
-            ui.hovered_widget = (hit >= 0 && (ui.widgets[hit].kind == SC_W_TOGGLE || ui.widgets[hit].kind == SC_W_DROPDOWN || ui.widgets[hit].kind == SC_W_GALLERY_ITEM)) ? hit : -1;
+            ui.hovered_widget = (hit >= 0 && (ui.widgets[hit].kind == SC_W_TOGGLE || ui.widgets[hit].kind == SC_W_DROPDOWN || ui.widgets[hit].kind == SC_W_GALLERY_ITEM || ui.widgets[hit].kind == SC_W_HOTKEY_ROW)) ? hit : -1;
 
             if (ui.hovered_tab != prevTab || ui.hovered_widget != prevWidget) {
                 InvalidateRect(hwnd, nullptr, FALSE);
@@ -957,6 +1005,22 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                     }
                 } else if (ui.widgets[hit].kind == SC_W_GALLERY_ITEM) {
                     ShellExecuteA(nullptr, "open", ui.widgets[hit].full_path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                } else if (ui.widgets[hit].kind == SC_W_HOTKEY_ROW) {
+                    if (ui.editing_hotkey != -1) {
+                        _sc_stop_hotkey_recording();
+                        ui.editing_hotkey = -1;
+                        sc_reregister_hotkeys();
+                    }
+                    for (auto& hk : sc_get_app().hotkeys) {
+                        if (hk.registered) {
+                            UnregisterHotKey(nullptr, hk.id);
+                            hk.registered = false;
+                        }
+                    }
+                    ui.editing_hotkey = ui.widgets[hit].hotkey;
+                    SetFocus(hwnd);
+                    g_keyboard_hook = SetWindowsHookEx(WH_KEYBOARD_LL, _sc_ll_keyboard_proc, nullptr, 0);
+                    InvalidateRect(hwnd, nullptr, FALSE);
                 }
             }
             return 0;
@@ -1074,7 +1138,52 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             break;
         }
 
+        case WM_HOTKEY_RECORDED: {
+            if (ui.editing_hotkey == -1) return 0;
+
+            UINT     vk   = (UINT)wParam;
+            uint32_t mods = (uint32_t)lParam;
+
+            _sc_stop_hotkey_recording();
+
+            if (vk == VK_ESCAPE) {
+                ui.editing_hotkey = -1;
+                sc_reregister_hotkeys();
+            } else if (vk == VK_DELETE) {
+                sc_get_app().hotkeys[ui.editing_hotkey].key       = 0;
+                sc_get_app().hotkeys[ui.editing_hotkey].modifiers = 0;
+                ui.editing_hotkey = -1;
+                sc_reregister_hotkeys();
+                sc_save_config();
+            } else {
+                sc_get_app().hotkeys[ui.editing_hotkey].key       = vk;
+                sc_get_app().hotkeys[ui.editing_hotkey].modifiers = mods;
+                ui.editing_hotkey = -1;
+                sc_reregister_hotkeys();
+                sc_save_config();
+            }
+
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        case WM_ACTIVATE: {
+            if (LOWORD(wParam) == WA_INACTIVE && ui.editing_hotkey != -1) {
+                _sc_stop_hotkey_recording();
+                ui.editing_hotkey = -1;
+                sc_reregister_hotkeys();
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            break;
+        }
+
         case WM_DESTROY: {
+            if (ui.editing_hotkey != -1) {
+                _sc_stop_hotkey_recording();
+                ui.editing_hotkey = -1;
+                sc_reregister_hotkeys();
+            }
+
             for (auto& pair : ui.image_cache) {
                 if (pair.second) DeleteObject(pair.second);
             }

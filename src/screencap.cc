@@ -156,6 +156,14 @@ void sc_load_or_create_config() {
     if (const char* language = ini.GetValue("options", "language")) {
         g_app.language_code = language;
     }
+
+    for (auto& hk : g_app.hotkeys) {
+        const char* id_str = sc_hotkey_id_strings[hk.id];
+        std::string key_name = std::string(id_str) + "_key";
+        std::string mod_name = std::string(id_str) + "_modifiers";
+        hk.key       = (uint32_t)ini.GetLongValue("hotkeys", key_name.c_str(), (long)hk.key);
+        hk.modifiers = (uint32_t)ini.GetLongValue("hotkeys", mod_name.c_str(), (long)hk.modifiers);
+    }
 }
 
 void sc_save_config() {
@@ -167,6 +175,14 @@ void sc_save_config() {
     ini.SetBoolValue("options", "play_sound", g_app.opt_play_sound);
     ini.SetValue("options", "save_path", g_app.save_path.c_str());
     ini.SetValue("options", "language", g_app.language_code.c_str());
+
+    for (const auto& hk : g_app.hotkeys) {
+        const char* id_str = sc_hotkey_id_strings[hk.id];
+        std::string key_name = std::string(id_str) + "_key";
+        std::string mod_name = std::string(id_str) + "_modifiers";
+        ini.SetLongValue("hotkeys", key_name.c_str(), (long)hk.key);
+        ini.SetLongValue("hotkeys", mod_name.c_str(), (long)hk.modifiers);
+    }
 
     std::string path = _sc_plat_get_config_path();
     ini.SaveFile(path.c_str());

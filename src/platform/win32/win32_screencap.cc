@@ -279,6 +279,23 @@ void _sc_shutdown_impl() {
     }
 }
 
+void sc_reregister_hotkeys() {
+    for (auto& hk : sc_get_app().hotkeys) {
+        if (hk.registered) {
+            UnregisterHotKey(nullptr, hk.id);
+            hk.registered = false;
+        }
+    }
+    for (auto& hk : sc_get_app().hotkeys) {
+        if (hk.key != 0) {
+            hk.registered = RegisterHotKey(nullptr, hk.id, hk.modifiers | MOD_NOREPEAT, hk.key);
+            if (!hk.registered) {
+                fprintf(stderr, "Failed to register hotkey: %s\n", sc_hotkey_id_strings[hk.id]);
+            }
+        }
+    }
+}
+
 bool sc_update() {
     MSG msg = {};
     if (GetMessageA(&msg, nullptr, 0, 0) > 0) {
