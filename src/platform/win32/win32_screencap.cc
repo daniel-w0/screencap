@@ -9,8 +9,8 @@
 #include <commctrl.h>
 #include <mmsystem.h>
 #include "win32_ui.h"
-#include "screenshot_sound.h"
-#include "screenshot_sound_quick.h"
+#include "embed/screenshot_sound.h"
+#include "embed/screenshot_sound_quick.h"
 
 #define WM_TRAYICON (WM_USER + 1)
 

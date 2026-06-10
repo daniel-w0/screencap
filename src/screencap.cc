@@ -1,6 +1,6 @@
 #include "pch.h"
 #include "screencap.h"
-#include "locales_data.h"
+#include "embed/locales_data.h"
 #include "simpleini.h"
 #include <fstream>
 

@@ -38,9 +38,9 @@ workspace "screencap"
     pchheader "pch.h"
     pchsource "src/pch.cc"
 
-    embed_file("res/locales.ini", "src/locales_data.h", "locales_ini")
-    embed_file("res/Shutter_07.wav", "src/screenshot_sound.h", "screenshot_sound")
-    embed_file("res/Shutter_09.wav", "src/screenshot_sound_quick.h", "screenshot_sound_quick")
+    embed_file("res/locales.ini", "src/embed/locales_data.h", "locales_ini")
+    embed_file("res/Shutter_07.wav", "src/embed/screenshot_sound.h", "screenshot_sound")
+    embed_file("res/Shutter_09.wav", "src/embed/screenshot_sound_quick.h", "screenshot_sound_quick")
 
     filter "files:**.rc"
       buildaction "ResourceCompile"
