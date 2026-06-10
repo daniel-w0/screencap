@@ -8,7 +8,9 @@ Features:
 - Recent Gallery
 - Magnifier for Interactive Mode
 - Screenshot Sounds - made by [Thea](https://art.synthesthea.com/)
-- Ability to change hotkeys
+- Ability to change hotkeys  
+
+I was going to get this working on MacOS, but I don't see the point as there's already some really nice ones there (CleanShot X for example), so there's some cleanup to do to simplify it as it only supports Windows now. However, I may support Linux in the future.
 
 ## Screenshots
 ### Interactive Mode
