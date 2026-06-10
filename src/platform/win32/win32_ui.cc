@@ -10,6 +10,9 @@
 #include <unordered_map>
 #include "stb_image.h"
 
+#include <gdiplus.h>
+#include <winrt/Windows.UI.ViewManagement.h>
+
 static bool g_class_registered = false;
 static HWND g_settings_window = nullptr;
 static float g_scale = 1.0f;
@@ -17,6 +20,10 @@ static bool g_win_pressed = false;
 
 constexpr int MIN_WINDOW_WIDTH = 550;
 constexpr int MIN_WINDOW_HEIGHT = 328;
+
+constexpr int PATH_FIELD_Y = 42;
+constexpr int PATH_FIELD_H = 30;
+constexpr int PATH_EDIT_H = 18;
 
 #pragma region Utils
 static float get_dpi_scale(HWND hwnd) {
@@ -115,6 +122,12 @@ sc_internal void _sc_on_option_changed(const char* name, bool value) {
 LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 void sc_open_settings_window() {
+    static ULONG_PTR gdiplus_token = 0;
+    if (!gdiplus_token) {
+        Gdiplus::GdiplusStartupInput gpsi;
+        Gdiplus::GdiplusStartup(&gdiplus_token, &gpsi, nullptr);
+    }
+
     if (!g_class_registered) {
         WNDCLASSEXW wcc = {};
         wcc.cbSize = sizeof(WNDCLASSEXW);
@@ -146,18 +159,30 @@ void sc_open_settings_window() {
 
 #pragma region UI
 struct sc_ui_theme {
-    HFONT  font      = nullptr;
-    HFONT  bold      = nullptr;
-    HBRUSH bg        = nullptr;
-    HBRUSH sidebar   = nullptr;
-    HBRUSH row       = nullptr;
-    HBRUSH row_hover = nullptr;
-    HBRUSH pill_on   = nullptr;
-    HBRUSH pill_off  = nullptr;
-    HBRUSH thumb     = nullptr;
-    HBRUSH ok        = nullptr;
-    HBRUSH err       = nullptr;
-    HBRUSH recording = nullptr;
+    HFONT  font = nullptr;
+    HFONT  bold = nullptr;
+    bool   dark = true;
+
+    COLORREF bg          = 0;
+    COLORREF sidebar     = 0;
+    COLORREF card        = 0;
+    COLORREF card_hover  = 0;
+    COLORREF card_active = 0;
+    COLORREF popup       = 0;
+    COLORREF stroke      = 0;
+    COLORREF stroke_soft = 0;
+    COLORREF text        = 0;
+    COLORREF text_dim    = 0;
+    COLORREF text_faint  = 0;
+    COLORREF accent      = 0;
+    COLORREF accent_hover = 0;
+    COLORREF pill_off    = 0;
+    COLORREF ok          = 0;
+    COLORREF err         = 0;
+    COLORREF scroll_thumb = 0;
+
+    HBRUSH bg_brush   = nullptr;
+    HBRUSH card_brush = nullptr;
 };
 
 enum sc_widget_kind {
@@ -203,6 +228,14 @@ struct sc_settings_ui {
     int dropdown_scroll_y = 0;
 
     int editing_hotkey = -1;
+
+    int gallery_content_h = 0;
+    int hovered_scrollbar = 0;
+    int dragging_scrollbar = 0;
+    int drag_start_y = 0;
+    int drag_start_scroll = 0;
+    int drag_track_range = 0;
+    int drag_max_scroll = 0;
 };
 
 struct sc_tab {
@@ -212,6 +245,60 @@ struct sc_tab {
 };
 
 static sc_settings_ui g_ui;
+
+#pragma region Scrollbars
+struct sc_scroll_geom {
+    bool visible = false;
+    RECT track = {};
+    RECT thumb = {};
+    int track_range = 0;
+};
+
+static sc_scroll_geom compute_scroll_geom(RECT track, int content_h, int viewport_h, int scroll, int max_scroll) {
+    sc_scroll_geom sg = {};
+    if (max_scroll <= 0 || content_h <= viewport_h) return sg;
+    sg.visible = true;
+    sg.track = track;
+    int track_h = track.bottom - track.top;
+    int thumb_h = std::clamp((int)((int64_t)track_h * viewport_h / content_h), scale_i(24), track_h);
+    sg.track_range = track_h - thumb_h;
+    int y = track.top + (int)((int64_t)sg.track_range * std::clamp(scroll, 0, max_scroll) / max_scroll);
+    sg.thumb = { track.left, y, track.right, y + thumb_h };
+    return sg;
+}
+
+static sc_scroll_geom gallery_scrollbar(const sc_settings_ui& ui, const RECT& cr) {
+    if (ui.max_scroll_y <= 0) return {};
+    RECT track = { (int)cr.right - scale_i(14), scale_i(8), (int)cr.right - scale_i(6), (int)cr.bottom - scale_i(8) };
+    return compute_scroll_geom(track, scale_i(ui.gallery_content_h), (int)cr.bottom, ui.scroll_y, ui.max_scroll_y);
+}
+
+struct sc_dropdown_geom {
+    RECT box = {};
+    int item_height = 0;
+    int visible_items = 0;
+    bool has_scroll = false;
+    int max_scroll = 0;
+    sc_scroll_geom scroll;
+};
+
+static sc_dropdown_geom dropdown_geom(const sc_settings_ui& ui, const RECT& cr) {
+    const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
+    sc_dropdown_geom dg = {};
+    dg.item_height = scale_i(28);
+    int space_below = (int)cr.bottom - scale_i(dw.rect.bottom);
+    int max_visible_items = std::max(1, (space_below - scale_i(20)) / dg.item_height);
+    dg.visible_items = std::min((int)dw.options.size(), max_visible_items);
+    dg.box = { scale_i(dw.rect.right - 165), scale_i(dw.rect.bottom - 6), scale_i(dw.rect.right - 15), scale_i(dw.rect.bottom - 6) + dg.visible_items * dg.item_height };
+    dg.has_scroll = (int)dw.options.size() > dg.visible_items;
+    dg.max_scroll = std::max(0, ((int)dw.options.size() - dg.visible_items) * 28);
+    if (dg.has_scroll) {
+        RECT track = { dg.box.right - scale_i(10), dg.box.top + scale_i(4), dg.box.right - scale_i(4), dg.box.bottom - scale_i(4) };
+        dg.scroll = compute_scroll_geom(track, (int)dw.options.size() * dg.item_height, dg.visible_items * dg.item_height, ui.dropdown_scroll_y, dg.max_scroll);
+    }
+    return dg;
+}
+#pragma endregion
 
 #define WM_HOTKEY_RECORDED (WM_APP + 100)
 
@@ -254,27 +341,129 @@ static LRESULT CALLBACK _sc_ll_keyboard_proc(int nCode, WPARAM wParam, LPARAM lP
     return CallNextHookEx(g_keyboard_hook, nCode, wParam, lParam);
 }
 
+static bool _sc_system_uses_dark_theme() {
+    DWORD val = 1, size = sizeof(val);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &val, &size) == ERROR_SUCCESS) {
+        return val == 0;
+    }
+    return true;
+}
+
+static COLORREF _sc_system_accent_color() {
+    try {
+        winrt::Windows::UI::ViewManagement::UISettings settings;
+        auto c = settings.GetColorValue(winrt::Windows::UI::ViewManagement::UIColorType::Accent);
+        return RGB(c.R, c.G, c.B);
+    } catch (...) {
+        return RGB(0, 120, 215);
+    }
+}
+
+static COLORREF blend_color(COLORREF a, COLORREF b, float f) {
+    auto mix = [f](int x, int y) {
+        return (int)(x + (y - x) * f);
+    };
+    return RGB(mix(GetRValue(a), GetRValue(b)), mix(GetGValue(a), GetGValue(b)), mix(GetBValue(a), GetBValue(b)));
+}
+
+static bool color_is_light(COLORREF c) {
+    return (GetRValue(c) * 299 + GetGValue(c) * 587 + GetBValue(c) * 114) / 1000 > 150;
+}
+
 static void theme_create(sc_ui_theme& t) {
-    t.font      = CreateFontA(scale_i(15), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
-    t.bold      = CreateFontA(scale_i(15), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
-    t.bg        = CreateSolidBrush(RGB(28, 28, 28));
-    t.sidebar   = CreateSolidBrush(RGB(32, 32, 32));
-    t.row       = CreateSolidBrush(RGB(38, 38, 38));
-    t.row_hover = CreateSolidBrush(RGB(45, 45, 45));
-    t.pill_on   = CreateSolidBrush(RGB(0, 120, 215));
-    t.pill_off  = CreateSolidBrush(RGB(100, 100, 100));
-    t.thumb     = CreateSolidBrush(RGB(255, 255, 255));
-    t.ok        = CreateSolidBrush(RGB(34, 139, 34));
-    t.err       = CreateSolidBrush(RGB(178, 34, 34));
-    t.recording = CreateSolidBrush(RGB(0, 60, 120));
+    t.font = CreateFontA(scale_i(15), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+    t.bold = CreateFontA(scale_i(15), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+
+    t.dark = _sc_system_uses_dark_theme();
+    t.accent = _sc_system_accent_color();
+
+    if (t.dark) {
+        t.bg           = RGB(28, 28, 28);
+        t.sidebar      = RGB(35, 35, 35);
+        t.card         = RGB(43, 43, 43);
+        t.card_hover   = RGB(52, 52, 52);
+        t.card_active  = RGB(60, 60, 60);
+        t.popup        = RGB(45, 45, 45);
+        t.stroke       = RGB(70, 70, 70);
+        t.stroke_soft  = RGB(50, 50, 50);
+        t.text         = RGB(243, 243, 243);
+        t.text_dim     = RGB(176, 176, 176);
+        t.text_faint   = RGB(122, 122, 122);
+        t.pill_off     = RGB(158, 158, 158);
+        t.ok           = RGB(108, 203, 95);
+        t.err          = RGB(255, 99, 97);
+        t.scroll_thumb = RGB(170, 170, 170);
+        t.accent_hover = blend_color(t.accent, RGB(255, 255, 255), 0.15f);
+    } else {
+        t.bg           = RGB(243, 243, 243);
+        t.sidebar      = RGB(236, 236, 236);
+        t.card         = RGB(251, 251, 251);
+        t.card_hover   = RGB(245, 245, 245);
+        t.card_active  = RGB(238, 238, 238);
+        t.popup        = RGB(252, 252, 252);
+        t.stroke       = RGB(208, 208, 208);
+        t.stroke_soft  = RGB(224, 224, 224);
+        t.text         = RGB(27, 27, 27);
+        t.text_dim     = RGB(96, 96, 96);
+        t.text_faint   = RGB(142, 142, 142);
+        t.pill_off     = RGB(134, 134, 134);
+        t.ok           = RGB(15, 123, 15);
+        t.err          = RGB(196, 43, 28);
+        t.scroll_thumb = RGB(120, 120, 120);
+        t.accent_hover = blend_color(t.accent, RGB(0, 0, 0), 0.15f);
+    }
+
+    t.bg_brush   = CreateSolidBrush(t.bg);
+    t.card_brush = CreateSolidBrush(t.card);
 }
 
 static void theme_destroy(sc_ui_theme& t) {
-    for (HGDIOBJ o : { (HGDIOBJ)t.font, (HGDIOBJ)t.bold, (HGDIOBJ)t.bg, (HGDIOBJ)t.sidebar, (HGDIOBJ)t.row, (HGDIOBJ)t.row_hover, (HGDIOBJ)t.pill_on, (HGDIOBJ)t.pill_off, (HGDIOBJ)t.thumb, (HGDIOBJ)t.ok, (HGDIOBJ)t.err, (HGDIOBJ)t.recording }) {
+    for (HGDIOBJ o : { (HGDIOBJ)t.font, (HGDIOBJ)t.bold, (HGDIOBJ)t.bg_brush, (HGDIOBJ)t.card_brush }) {
         if (o) DeleteObject(o);
     }
     t = sc_ui_theme{};
 }
+
+#pragma region GDI Plus helpers
+static Gdiplus::Color gpc(COLORREF c, BYTE a = 255) {
+    return Gdiplus::Color(a, GetRValue(c), GetGValue(c), GetBValue(c));
+}
+
+static void gp_setup(Gdiplus::Graphics& g) {
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+}
+
+static void make_round_path(Gdiplus::GraphicsPath& path, const Gdiplus::RectF& r, float rad) {
+    float d = rad * 2.0f;
+    if (d > r.Width) d = r.Width;
+    if (d > r.Height) d = r.Height;
+    path.AddArc(r.X, r.Y, d, d, 180.0f, 90.0f);
+    path.AddArc(r.X + r.Width - d, r.Y, d, d, 270.0f, 90.0f);
+    path.AddArc(r.X + r.Width - d, r.Y + r.Height - d, d, d, 0.0f, 90.0f);
+    path.AddArc(r.X, r.Y + r.Height - d, d, d, 90.0f, 90.0f);
+    path.CloseFigure();
+}
+
+static void gp_fill_round(Gdiplus::Graphics& g, const RECT& r, float rad, Gdiplus::Color c) {
+    Gdiplus::GraphicsPath path;
+    Gdiplus::RectF rf((float)r.left, (float)r.top, (float)(r.right - r.left), (float)(r.bottom - r.top));
+    make_round_path(path, rf, rad);
+    Gdiplus::SolidBrush brush(c);
+    g.FillPath(&brush, &path);
+}
+
+static void gp_stroke_round(Gdiplus::Graphics& g, const RECT& r, float rad, Gdiplus::Color c, float width = 1.0f) {
+    Gdiplus::GraphicsPath path;
+    Gdiplus::RectF rf((float)r.left, (float)r.top, (float)(r.right - r.left) - 1.0f, (float)(r.bottom - r.top) - 1.0f);
+    make_round_path(path, rf, rad);
+    Gdiplus::Pen pen(c, width);
+    g.DrawPath(&pen, &path);
+}
+
+static float round_rad() { return 6.0f * g_scale; }
+#pragma endregion
 
 static sc_widget make_label(RECT rect, std::wstring label) {
     return { .kind = SC_W_LABEL, .rect = rect, .label = label };
@@ -300,53 +489,64 @@ static sc_widget make_dropdown(RECT rect, std::wstring label, std::string curren
 }
 
 static void draw_label(HDC dc, const sc_ui_theme& t, const sc_widget& w) {
-    SelectObject(dc, t.font);
-    SetTextColor(dc, RGB(240, 240, 240));
+    SelectObject(dc, t.bold);
+    SetTextColor(dc, t.text);
     TextOutW(dc, scale_i(w.rect.left), scale_i(w.rect.top), w.label.c_str(), (int)w.label.length());
 }
 
 static void draw_toggle(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool hovered) {
     RECT r = { scale_i(w.rect.left), scale_i(w.rect.top), scale_i(w.rect.right), scale_i(w.rect.bottom) };
-    FillRect(dc, &r, hovered ? t.row_hover : t.row);
-    SelectObject(dc, t.font);
-    SetTextColor(dc, RGB(240, 240, 240));
-    TextOutW(dc, scale_i(w.rect.left + 15), scale_i(w.rect.top + 10), w.label.c_str(), (int)w.label.length());
-
     bool isOn = *w.value;
-    int pillLeft = w.rect.right - 55;
-    int pillTop = w.rect.top + 9;
-    RECT pillRect = { scale_i(pillLeft), scale_i(pillTop), scale_i(pillLeft + 40), scale_i(pillTop + 20) };
-    FillRect(dc, &pillRect, isOn ? t.pill_on : t.pill_off);
+    {
+        Gdiplus::Graphics g(dc);
+        gp_setup(g);
+        gp_fill_round(g, r, round_rad(), gpc(hovered ? t.card_hover : t.card));
+        gp_stroke_round(g, r, round_rad(), gpc(t.stroke_soft));
 
-    RECT thumbRect = {
-        scale_i(isOn ? pillLeft + 22 : pillLeft + 3),
-        scale_i(pillTop + 3),
-        scale_i(isOn ? pillLeft + 37 : pillLeft + 18),
-        scale_i(pillTop + 17)
-    };
-    FillRect(dc, &thumbRect, t.thumb);
+        RECT pill = { scale_i(w.rect.right - 55), scale_i(w.rect.top + 10), scale_i(w.rect.right - 15), scale_i(w.rect.top + 30) };
+        float pillRad = (pill.bottom - pill.top) / 2.0f;
+        if (isOn) {
+            gp_fill_round(g, pill, pillRad, gpc(hovered ? t.accent_hover : t.accent));
+        } else {
+            gp_fill_round(g, pill, pillRad, gpc(t.card_active));
+            gp_stroke_round(g, pill, pillRad, gpc(t.pill_off));
+        }
+
+        float inset = 3.0f * g_scale;
+        float th = (pill.bottom - pill.top) - inset * 2.0f;
+        float tx = isOn ? (pill.right - inset - th) : (pill.left + inset);
+        COLORREF thumbColor = isOn ? (color_is_light(t.accent) ? RGB(0, 0, 0) : RGB(255, 255, 255)) : t.pill_off;
+        Gdiplus::SolidBrush thumbBrush(gpc(thumbColor));
+        g.FillEllipse(&thumbBrush, tx, pill.top + inset, th, th);
+    }
+
+    SelectObject(dc, t.font);
+    SetTextColor(dc, t.text);
+    TextOutW(dc, scale_i(w.rect.left + 15), scale_i(w.rect.top + 10), w.label.c_str(), (int)w.label.length());
 }
 
 static void draw_dropdown(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool hovered) {
     RECT r = { scale_i(w.rect.left), scale_i(w.rect.top), scale_i(w.rect.right), scale_i(w.rect.bottom) };
-    FillRect(dc, &r, hovered ? t.row_hover : t.row);
-    SelectObject(dc, t.font);
-    SetTextColor(dc, RGB(240, 240, 240));
-    TextOutW(dc, scale_i(w.rect.left + 15), scale_i(w.rect.top + 10), w.label.c_str(), (int)w.label.length());
-
     RECT boxRect = { scale_i(w.rect.right - 165), scale_i(w.rect.top + 6), scale_i(w.rect.right - 15), scale_i(w.rect.bottom - 6) };
-    FillRect(dc, &boxRect, t.sidebar);
-    
-    HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(65, 65, 65));
-    HPEN oldPen = (HPEN)SelectObject(dc, borderPen);
-    HBRUSH oldBrush = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
-    Rectangle(dc, boxRect.left, boxRect.top, boxRect.right, boxRect.bottom);
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen); 
-    DeleteObject(borderPen);
+    bool expanded = (g_ui.expanded_dropdown >= 0 && g_ui.expanded_dropdown < (int)g_ui.widgets.size() && &g_ui.widgets[g_ui.expanded_dropdown] == &w);
+    {
+        Gdiplus::Graphics g(dc);
+        gp_setup(g);
+        gp_fill_round(g, r, round_rad(), gpc(hovered ? t.card_hover : t.card));
+        gp_stroke_round(g, r, round_rad(), gpc(t.stroke_soft));
+
+        float boxRad = 4.0f * g_scale;
+        gp_fill_round(g, boxRect, boxRad, gpc(t.bg));
+        gp_stroke_round(g, boxRect, boxRad, gpc((expanded || hovered) ? t.accent : t.stroke), expanded ? 1.5f : 1.0f);
+    }
+
+    SelectObject(dc, t.font);
+    SetTextColor(dc, t.text);
+    TextOutW(dc, scale_i(w.rect.left + 15), scale_i(w.rect.top + 10), w.label.c_str(), (int)w.label.length());
 
     std::wstring valW = _sc_utf8_to_wstring(w.string_val);
     TextOutW(dc, boxRect.left + scale_i(10), boxRect.top + scale_i(5), valW.c_str(), (int)valW.length());
+    SetTextColor(dc, t.text_dim);
     TextOutW(dc, boxRect.right - scale_i(20), boxRect.top + scale_i(5), L"\x25BC", 1);
 }
 
@@ -355,21 +555,31 @@ static void draw_hotkey(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool h
     bool editing = (g_ui.editing_hotkey == w.hotkey);
 
     RECT r = { scale_i(w.rect.left), scale_i(w.rect.top), scale_i(w.rect.right), scale_i(w.rect.bottom) };
-    FillRect(dc, &r, editing ? t.recording : (hovered ? t.row_hover : t.row));
+    {
+        Gdiplus::Graphics g(dc);
+        gp_setup(g);
+        gp_fill_round(g, r, round_rad(), gpc(hovered ? t.card_hover : t.card));
+        if (editing) {
+            gp_fill_round(g, r, round_rad(), gpc(t.accent, 36));
+            gp_stroke_round(g, r, round_rad(), gpc(t.accent), 1.5f);
+        } else {
+            gp_stroke_round(g, r, round_rad(), gpc(t.stroke_soft));
+        }
 
-    RECT indicator = { scale_i(w.rect.left + 10), scale_i(w.rect.top + 10), scale_i(w.rect.left + 20), scale_i(w.rect.top + 20) };
-    HBRUSH indicatorBrush = (hk.key == 0) ? t.pill_off : (hk.registered ? t.ok : t.err);
-    FillRect(dc, &indicator, indicatorBrush);
+        COLORREF indicatorColor = (hk.key == 0) ? t.pill_off : (hk.registered ? t.ok : t.err);
+        Gdiplus::SolidBrush ib(gpc(indicatorColor));
+        g.FillEllipse(&ib, (float)scale_i(w.rect.left + 11), (float)scale_i(w.rect.top + 10), (float)scale_i(9), (float)scale_i(9));
+    }
 
     SelectObject(dc, t.font);
-    SetTextColor(dc, RGB(240, 240, 240));
+    SetTextColor(dc, t.text);
     TextOutA(dc, scale_i(w.rect.left + 30), scale_i(w.rect.top + 6), sc_hotkey_id_strings[hk.id], (int)strlen(sc_hotkey_id_strings[hk.id]));
 
     if (editing) {
         const char* prompt = "Press a key... (Esc to cancel, Del to remove)";
         SIZE textSize;
         int textWidth = GetTextExtentPoint32A(dc, prompt, (int)strlen(prompt), &textSize) ? textSize.cx : 0;
-        SetTextColor(dc, RGB(180, 210, 255));
+        SetTextColor(dc, t.text_dim);
         TextOutA(dc, scale_i(w.rect.right) - textWidth - scale_i(15), scale_i(w.rect.top + 6), prompt, (int)strlen(prompt));
     } else {
         std::string bindStr = _sc_get_key_display_string(hk.modifiers, hk.key);
@@ -381,18 +591,18 @@ static void draw_hotkey(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool h
 
 static void draw_gallery_item(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool hovered) {
     RECT r = { scale_i(w.rect.left), scale_i(w.rect.top), scale_i(w.rect.right), scale_i(w.rect.bottom) };
-    FillRect(dc, &r, hovered ? t.row_hover : t.row);
+    float rad = 8.0f * g_scale;
+    {
+        Gdiplus::Graphics g(dc);
+        gp_setup(g);
+        gp_fill_round(g, r, rad, gpc(hovered ? t.card_hover : t.card));
+    }
 
-    HPEN borderPen = CreatePen(PS_SOLID, 1, hovered ? RGB(0, 120, 215) : RGB(55, 55, 55));
-    HPEN oldPen = (HPEN)SelectObject(dc, borderPen);
-    HBRUSH oldBrush = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
-    Rectangle(dc, r.left, r.top, r.right, r.bottom);
-    SelectObject(dc, oldBrush);
-    SelectObject(dc, oldPen);
-    DeleteObject(borderPen);
+    HRGN clipRgn = CreateRoundRectRgn(r.left, r.top, r.right + 1, r.bottom + 1, (int)(rad * 2), (int)(rad * 2));
+    SelectClipRgn(dc, clipRgn);
 
     SelectObject(dc, t.font);
-    SetTextColor(dc, RGB(220, 220, 220));
+    SetTextColor(dc, t.text);
     SetBkMode(dc, TRANSPARENT);
 
     HBITMAP hBmp = nullptr;
@@ -493,6 +703,15 @@ static void draw_gallery_item(HDC dc, const sc_ui_theme& t, const sc_widget& w, 
     textRect.left += scale_i(5);
     textRect.right -= scale_i(5);
     DrawTextW(dc, w.label.c_str(), -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    SelectClipRgn(dc, nullptr);
+    DeleteObject(clipRgn);
+
+    {
+        Gdiplus::Graphics g(dc);
+        gp_setup(g);
+        gp_stroke_round(g, r, rad, gpc(hovered ? t.accent : t.stroke_soft), hovered ? 1.5f : 1.0f);
+    }
 }
 
 static void draw_widget(HDC dc, const sc_ui_theme& t, const sc_widget& w, bool hovered) {
@@ -592,22 +811,27 @@ static void build_gallery_tab(sc_settings_ui& ui, RECT content) {
     }
 
     if (ui.gallery_files.empty()) {
+        ui.gallery_content_h = 0;
+        ui.max_scroll_y = 0;
         return;
     }
 
     const int item_w = 320;
     const int item_h = 260;
     const int gap = 20;
-    
+
     int start_x = 170;
-    int start_y = 20 - ui.scroll_y;
-    int available_w = content.right - start_x - 10; 
+    int available_w = content.right - start_x - 10;
 
     int cols = std::max(1, (available_w + gap) / (item_w + gap));
     int rows = ((int)ui.gallery_files.size() + cols - 1) / cols;
 
     int total_content_height = (rows * (item_h + gap)) + 20;
+    ui.gallery_content_h = total_content_height;
     ui.max_scroll_y = std::max(0, total_content_height - (int)content.bottom);
+    ui.scroll_y = std::clamp(ui.scroll_y, 0, ui.max_scroll_y);
+
+    int start_y = 20 - ui.scroll_y;
 
     for (size_t i = 0; i < ui.gallery_files.size(); ++i) {
         int col = i % cols;
@@ -665,21 +889,22 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
     switch (msg) {
         case WM_CREATE: {
-            BOOL dark = TRUE;
+            ui = sc_settings_ui{};
+            theme_create(ui.theme);
+
+            BOOL dark = ui.theme.dark ? TRUE : FALSE;
             DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
             DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
             DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
 
-            ui = sc_settings_ui{};
-            theme_create(ui.theme);
-
-            ui.edit_path = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, scale_i(160), scale_i(45), scale_i(260), scale_i(24), hwnd, (HMENU)3001, GetModuleHandle(nullptr), nullptr);
+            int editY = scale_i(PATH_FIELD_Y) + (scale_i(PATH_FIELD_H) - scale_i(PATH_EDIT_H)) / 2;
+            ui.edit_path = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, scale_i(170), editY, scale_i(260), scale_i(PATH_EDIT_H), hwnd, (HMENU)3001, GetModuleHandle(nullptr), nullptr);
             SendMessageW(ui.edit_path, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
 
             std::wstring widePath = winrt::to_hstring(sc_get_app().save_path).c_str();
             SetWindowTextW(ui.edit_path, widePath.c_str());
 
-            ui.btn_browse = CreateWindowExW(0, L"BUTTON", sc_get_localized_string("Browse...").c_str(), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, scale_i(430), scale_i(45), scale_i(100), scale_i(24), hwnd, (HMENU)3002, GetModuleHandle(nullptr), nullptr);
+            ui.btn_browse = CreateWindowExW(0, L"BUTTON", sc_get_localized_string("Browse...").c_str(), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, scale_i(430), scale_i(PATH_FIELD_Y), scale_i(100), scale_i(PATH_FIELD_H), hwnd, (HMENU)3002, GetModuleHandle(nullptr), nullptr);
             SendMessageW(ui.btn_browse, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
 
             SetWindowTheme(ui.edit_path, L"Explorer", nullptr);
@@ -695,17 +920,24 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
             if (pDIS->CtlType == ODT_MENU) {
                 bool isSelected = (pDIS->itemState & ODS_SELECTED);
-                HBRUSH bgBrush = isSelected ? ui.theme.row_hover : ui.theme.row;
-                FillRect(pDIS->hDC, &pDIS->rcItem, bgBrush);
+                FillRect(pDIS->hDC, &pDIS->rcItem, ui.theme.bg_brush);
+
+                if (isSelected) {
+                    RECT sel = pDIS->rcItem;
+                    InflateRect(&sel, -scale_i(3), -scale_i(2));
+                    Gdiplus::Graphics g(pDIS->hDC);
+                    gp_setup(g);
+                    gp_fill_round(g, sel, 4.0f * g_scale, gpc(ui.theme.card_hover));
+                }
 
                 if (pDIS->itemData) {
                     SetBkMode(pDIS->hDC, TRANSPARENT);
-                    SetTextColor(pDIS->hDC, RGB(240, 240, 240));
+                    SetTextColor(pDIS->hDC, ui.theme.text);
                     HFONT oldFont = (HFONT)SelectObject(pDIS->hDC, ui.theme.font);
 
                     const wchar_t* text = (const wchar_t*)pDIS->itemData;
                     RECT textRect = pDIS->rcItem;
-                    textRect.left += scale_i(10);
+                    textRect.left += scale_i(12);
 
                     DrawTextW(pDIS->hDC, text, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
                     SelectObject(pDIS->hDC, oldFont);
@@ -722,30 +954,17 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 ScreenToClient(ui.btn_browse, &mousePt);
                 bool isHovered = PtInRect(&pDIS->rcItem, mousePt);
 
-                HBRUSH btnBrush = nullptr;
-                if (isPressed) {
-                    btnBrush = CreateSolidBrush(RGB(55, 55, 55));
-                } else if (isHovered) {
-                    btnBrush = CreateSolidBrush(RGB(48, 48, 48));
-                } else {
-                    btnBrush = CreateSolidBrush(RGB(38, 38, 38));
+                FillRect(pDIS->hDC, &pDIS->rcItem, ui.theme.bg_brush);
+                {
+                    Gdiplus::Graphics g(pDIS->hDC);
+                    gp_setup(g);
+                    COLORREF fill = isPressed ? ui.theme.card_active : (isHovered ? ui.theme.card_hover : ui.theme.card);
+                    gp_fill_round(g, pDIS->rcItem, 4.0f * g_scale, gpc(fill));
+                    gp_stroke_round(g, pDIS->rcItem, 4.0f * g_scale, gpc((isFocused || isHovered) ? ui.theme.accent : ui.theme.stroke));
                 }
 
-                FillRect(pDIS->hDC, &pDIS->rcItem, btnBrush);
-                DeleteObject(btnBrush);
-
-                HPEN borderPen = CreatePen(PS_SOLID, 1, (isFocused || isHovered) ? RGB(0, 120, 215) : RGB(55, 55, 55));
-                HPEN oldPen = (HPEN)SelectObject(pDIS->hDC, borderPen);
-                HBRUSH oldBrush = (HBRUSH)SelectObject(pDIS->hDC, GetStockObject(NULL_BRUSH));
-
-                Rectangle(pDIS->hDC, pDIS->rcItem.left, pDIS->rcItem.top, pDIS->rcItem.right, pDIS->rcItem.bottom);
-
-                SelectObject(pDIS->hDC, oldBrush);
-                SelectObject(pDIS->hDC, oldPen);
-                DeleteObject(borderPen);
-
                 SetBkMode(pDIS->hDC, TRANSPARENT);
-                SetTextColor(pDIS->hDC, RGB(240, 240, 240));
+                SetTextColor(pDIS->hDC, ui.theme.text);
                 HFONT oldFont = (HFONT)SelectObject(pDIS->hDC, ui.theme.font);
 
                 std::wstring& browseText = sc_get_localized_string("Browse...");
@@ -762,9 +981,9 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             HDC hdcStatic = (HDC)wParam;
             HWND hwndChild = (HWND)lParam;
             if (hwndChild == ui.edit_path) {
-                SetTextColor(hdcStatic, RGB(240, 240, 240));
-                SetBkColor(hdcStatic, RGB(45, 45, 45));
-                return (INT_PTR)ui.theme.row_hover;
+                SetTextColor(hdcStatic, ui.theme.text);
+                SetBkColor(hdcStatic, ui.theme.card);
+                return (INT_PTR)ui.theme.card_brush;
             }
             break;
         }
@@ -776,8 +995,9 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         }
         case WM_SIZE: {
             int width = LOWORD(lParam);
-            MoveWindow(ui.edit_path, scale_i(160), scale_i(45), width - scale_i(290), scale_i(24), TRUE);
-            MoveWindow(ui.btn_browse, width - scale_i(120), scale_i(45), scale_i(100), scale_i(24), TRUE);
+            int editY = scale_i(PATH_FIELD_Y) + (scale_i(PATH_FIELD_H) - scale_i(PATH_EDIT_H)) / 2;
+            MoveWindow(ui.edit_path, scale_i(170), editY, width - scale_i(310), scale_i(PATH_EDIT_H), TRUE);
+            MoveWindow(ui.btn_browse, width - scale_i(120), scale_i(PATH_FIELD_Y), scale_i(100), scale_i(PATH_FIELD_H), TRUE);
             ui.expanded_dropdown = -1;
             ui.needs_layout = true;
             InvalidateRect(hwnd, nullptr, TRUE);
@@ -786,19 +1006,11 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         case WM_MOUSEWHEEL: {
             if (ui.expanded_dropdown != -1) {
-                const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
                 RECT cr; GetClientRect(hwnd, &cr);
-                int item_height = scale_i(28);
-                int space_below = cr.bottom - scale_i(dw.rect.bottom);
-                int max_visible_items = std::max(1, (space_below - scale_i(20)) / item_height);
+                sc_dropdown_geom dg = dropdown_geom(ui, cr);
 
                 int zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
-                ui.dropdown_scroll_y -= (zDelta * 28) / WHEEL_DELTA;
-
-                int max_scroll = std::max(0, (int)dw.options.size() * 28 - max_visible_items * 28);
-
-                if (ui.dropdown_scroll_y < 0) ui.dropdown_scroll_y = 0;
-                if (ui.dropdown_scroll_y > max_scroll) ui.dropdown_scroll_y = max_scroll;
+                ui.dropdown_scroll_y = std::clamp(ui.dropdown_scroll_y - (zDelta * 28) / WHEEL_DELTA, 0, dg.max_scroll);
 
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
@@ -842,21 +1054,42 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             HBITMAP memBmp = CreateCompatibleBitmap(hdc, cr.right, cr.bottom);
             HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, memBmp);
 
-            FillRect(memDC, &cr, ui.theme.bg);
+            FillRect(memDC, &cr, ui.theme.bg_brush);
 
-            RECT sidebarRect = { 0, 0, scale_i(150), cr.bottom };
-            FillRect(memDC, &sidebarRect, ui.theme.sidebar);
+            {
+                Gdiplus::Graphics g(memDC);
+                gp_setup(g);
+                Gdiplus::SolidBrush sidebarBrush(gpc(ui.theme.sidebar));
+                g.FillRectangle(&sidebarBrush, 0, 0, (INT)scale_i(150), (INT)cr.bottom);
+
+                for (int i = 0; i < g_tab_count; ++i) {
+                    RECT tabRect = sidebar_tab_rect(i);
+                    bool active = (i == ui.active_tab);
+                    bool hot = active || (i == ui.hovered_tab);
+
+                    if (hot) gp_fill_round(g, tabRect, 5.0f * g_scale, gpc(active ? ui.theme.card_hover : ui.theme.card));
+                    if (active) {
+                        int cy = (tabRect.top + tabRect.bottom) / 2;
+                        RECT ind = { tabRect.left + scale_i(3), cy - scale_i(8), tabRect.left + scale_i(6), cy + scale_i(8) };
+                        gp_fill_round(g, ind, 1.5f * g_scale, gpc(ui.theme.accent));
+                    }
+                }
+
+                if (ui.active_tab == 0 && ui.edit_path && IsWindowVisible(ui.edit_path)) {
+                    RECT er = { scale_i(160), scale_i(PATH_FIELD_Y), (int)cr.right - scale_i(130), scale_i(PATH_FIELD_Y + PATH_FIELD_H) };
+                    gp_fill_round(g, er, 4.0f * g_scale, gpc(ui.theme.card));
+                    gp_stroke_round(g, er, 4.0f * g_scale, gpc(ui.theme.stroke));
+                }
+            }
 
             SetBkMode(memDC, TRANSPARENT);
 
             for (int i = 0; i < g_tab_count; ++i) {
                 RECT tabRect = sidebar_tab_rect(i);
                 bool active = (i == ui.active_tab);
-                bool hot = active || (i == ui.hovered_tab);
 
-                FillRect(memDC, &tabRect, hot ? ui.theme.row_hover : ui.theme.sidebar);
                 SelectObject(memDC, active ? ui.theme.bold : ui.theme.font);
-                SetTextColor(memDC, active ? RGB(255, 255, 255) : RGB(200, 200, 200));
+                SetTextColor(memDC, active ? ui.theme.text : ui.theme.text_dim);
 
                 std::wstring& label = sc_get_localized_string(g_tabs[i].loc_key);
                 TextOutW(memDC, tabRect.left + scale_i(15), tabRect.top + scale_i(7), label.c_str(), (int)label.length());
@@ -865,7 +1098,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             { // version (shows at bottom of sidebar)
                 constexpr std::wstring_view versionStr = SC_VERSION_STRING_FULL_W;
                 SelectObject(memDC, ui.theme.font);
-                SetTextColor(memDC, RGB(120, 120, 120));
+                SetTextColor(memDC, ui.theme.text_faint);
                 RECT verRect = { 0, cr.bottom - scale_i(30), scale_i(150), cr.bottom };
                 DrawTextW(memDC, versionStr.data(), (int)versionStr.length(), &verRect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
             }
@@ -874,43 +1107,69 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 draw_widget(memDC, ui.theme, ui.widgets[i], i == ui.hovered_widget);
             }
 
+            if (ui.active_tab == 2) { // gallery/recents
+                sc_scroll_geom sg = gallery_scrollbar(ui, cr);
+                if (sg.visible) {
+                    Gdiplus::Graphics g(memDC);
+                    gp_setup(g);
+                    float rad = (sg.track.right - sg.track.left) / 2.0f;
+                    bool hot = (ui.hovered_scrollbar == 1 || ui.dragging_scrollbar == 1);
+                    gp_fill_round(g, sg.track, rad, gpc(ui.theme.scroll_thumb, 32));
+                    gp_fill_round(g, sg.thumb, rad, gpc(ui.theme.scroll_thumb, hot ? 230 : 150));
+                }
+            }
+
             if (ui.expanded_dropdown >= 0 && ui.expanded_dropdown < (int)ui.widgets.size()) {
                 const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
-                int item_height = scale_i(28);
+                sc_dropdown_geom dg = dropdown_geom(ui, cr);
+                float popRad = 6.0f * g_scale;
 
-                int space_below = cr.bottom - scale_i(dw.rect.bottom);
-                int max_visible_items = std::max(1, (space_below - scale_i(20)) / item_height);
-                int visible_items = std::min((int)dw.options.size(), max_visible_items);
+                {
+                    Gdiplus::Graphics g(memDC);
+                    gp_setup(g);
+                    gp_fill_round(g, dg.box, popRad, gpc(ui.theme.popup));
+                    gp_stroke_round(g, dg.box, popRad, gpc(ui.theme.stroke));
+                }
 
-                RECT boxRect = { scale_i(dw.rect.right - 165), scale_i(dw.rect.bottom - 6), scale_i(dw.rect.right - 15), scale_i(dw.rect.bottom - 6) + visible_items * item_height };
-
-                FillRect(memDC, &boxRect, ui.theme.sidebar);
-
-                HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(100, 100, 100));
-                HPEN oldPen = (HPEN)SelectObject(memDC, borderPen);
-                HBRUSH oldBrush = (HBRUSH)SelectObject(memDC, GetStockObject(NULL_BRUSH));
-                Rectangle(memDC, boxRect.left, boxRect.top, boxRect.right, boxRect.bottom);
-                SelectObject(memDC, oldBrush);
-                SelectObject(memDC, oldPen);
-                DeleteObject(borderPen);
-
-                HRGN hRgn = CreateRectRgn(boxRect.left + 1, boxRect.top + 1, boxRect.right - 1, boxRect.bottom - 1);
+                HRGN hRgn = CreateRoundRectRgn(dg.box.left, dg.box.top, dg.box.right + 1, dg.box.bottom + 1, (int)(popRad * 2), (int)(popRad * 2));
                 SelectClipRgn(memDC, hRgn);
 
-                SelectObject(memDC, ui.theme.font);
-                for (size_t i = 0; i < dw.options.size(); ++i) {
-                    int item_top = boxRect.top + 1 + (int)i * item_height - scale_i(ui.dropdown_scroll_y);
-                    int item_bottom = item_top + item_height;
+                {
+                    Gdiplus::Graphics g(memDC);
+                    gp_setup(g);
+                    for (size_t i = 0; i < dw.options.size(); ++i) {
+                        int item_top = dg.box.top + (int)i * dg.item_height - scale_i(ui.dropdown_scroll_y);
+                        int item_bottom = item_top + dg.item_height;
+                        if (item_bottom <= dg.box.top || item_top >= dg.box.bottom) continue;
 
-                    if (item_bottom > boxRect.top && item_top < boxRect.bottom) {
-                        RECT itemRect = { boxRect.left + 1, item_top, boxRect.right - 1, item_bottom };
                         if (ui.dropdown_hovered_index == (int)i) {
-                            FillRect(memDC, &itemRect, ui.theme.row_hover);
+                            RECT itemRect = { dg.box.left + scale_i(3), item_top + scale_i(1), dg.box.right - scale_i(dg.has_scroll ? 11 : 3), item_bottom - scale_i(1) };
+                            gp_fill_round(g, itemRect, 4.0f * g_scale, gpc(ui.theme.card_hover));
                         }
-                        SetTextColor(memDC, RGB(240, 240, 240));
-                        std::wstring optW = _sc_utf8_to_wstring(dw.options[i]);
-                        TextOutW(memDC, itemRect.left + scale_i(10), itemRect.top + scale_i(5), optW.c_str(), (int)optW.length());
+                        if (dw.options[i] == dw.string_val) {
+                            int cy = (item_top + item_bottom) / 2;
+                            RECT ind = { dg.box.left + scale_i(3), cy - scale_i(7), dg.box.left + scale_i(6), cy + scale_i(7) };
+                            gp_fill_round(g, ind, 1.5f * g_scale, gpc(ui.theme.accent));
+                        }
                     }
+
+                    if (dg.has_scroll && dg.scroll.visible) {
+                        float rad = (dg.scroll.track.right - dg.scroll.track.left) / 2.0f;
+                        bool hot = (ui.hovered_scrollbar == 2 || ui.dragging_scrollbar == 2);
+                        gp_fill_round(g, dg.scroll.track, rad, gpc(ui.theme.scroll_thumb, 32));
+                        gp_fill_round(g, dg.scroll.thumb, rad, gpc(ui.theme.scroll_thumb, hot ? 230 : 150));
+                    }
+                }
+
+                SelectObject(memDC, ui.theme.font);
+                SetTextColor(memDC, ui.theme.text);
+                for (size_t i = 0; i < dw.options.size(); ++i) {
+                    int item_top = dg.box.top + (int)i * dg.item_height - scale_i(ui.dropdown_scroll_y);
+                    int item_bottom = item_top + dg.item_height;
+                    if (item_bottom <= dg.box.top || item_top >= dg.box.bottom) continue;
+
+                    std::wstring optW = _sc_utf8_to_wstring(dw.options[i]);
+                    TextOutW(memDC, dg.box.left + scale_i(12), item_top + scale_i(5), optW.c_str(), (int)optW.length());
                 }
 
                 SelectClipRgn(memDC, nullptr);
@@ -927,19 +1186,34 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         case WM_MOUSEMOVE: {
             POINT pt = { LOWORD(lParam), HIWORD(lParam) };
-            ensure_layout();
+
+            if (ui.dragging_scrollbar != 0) {
+                int delta = pt.y - ui.drag_start_y;
+                int scroll = ui.drag_start_scroll + (ui.drag_track_range > 0 ? (int)((int64_t)delta * ui.drag_max_scroll / ui.drag_track_range) : 0);
+                scroll = std::clamp(scroll, 0, ui.drag_max_scroll);
+                if (ui.dragging_scrollbar == 1 && scroll != ui.scroll_y) {
+                    ui.scroll_y = scroll;
+                    ui.needs_layout = true;
+                    InvalidateRect(hwnd, nullptr, TRUE);
+                } else if (ui.dragging_scrollbar == 2 && scroll != ui.dropdown_scroll_y) {
+                    ui.dropdown_scroll_y = scroll;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+
+            RECT cr = ensure_layout();
 
             if (ui.expanded_dropdown != -1) {
                 const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
-                RECT cr; GetClientRect(hwnd, &cr);
-                int item_height = scale_i(28);
-                int space_below = cr.bottom - scale_i(dw.rect.bottom);
-                int max_visible_items = std::max(1, (space_below - scale_i(20)) / item_height);
-                int visible_items = std::min((int)dw.options.size(), max_visible_items);
-                RECT expRect = { scale_i(dw.rect.right - 165), scale_i(dw.rect.bottom - 6), scale_i(dw.rect.right - 15), scale_i(dw.rect.bottom - 6) + visible_items * item_height };
-                
-                if (PtInRect(&expRect, pt)) {
-                    int idx = (pt.y - expRect.top + scale_i(ui.dropdown_scroll_y)) / item_height;
+                sc_dropdown_geom dg = dropdown_geom(ui, cr);
+
+                ui.hovered_scrollbar = 0;
+                if (dg.has_scroll && dg.scroll.visible && PtInRect(&dg.scroll.thumb, pt)) {
+                    ui.hovered_scrollbar = 2;
+                    ui.dropdown_hovered_index = -1;
+                } else if (PtInRect(&dg.box, pt)) {
+                    int idx = (pt.y - dg.box.top + scale_i(ui.dropdown_scroll_y)) / dg.item_height;
                     ui.dropdown_hovered_index = (idx >= 0 && idx < (int)dw.options.size()) ? idx : -1;
                 } else {
                     ui.dropdown_hovered_index = -1;
@@ -950,6 +1224,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
             int prevTab = ui.hovered_tab;
             int prevWidget = ui.hovered_widget;
+            int prevScrollbar = ui.hovered_scrollbar;
 
             ui.hovered_tab = -1;
             for (int i = 0; i < g_tab_count; ++i) {
@@ -960,10 +1235,16 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 }
             }
 
-            int hit = widget_at(ui.widgets, pt);
-            ui.hovered_widget = (hit >= 0 && (ui.widgets[hit].kind == SC_W_TOGGLE || ui.widgets[hit].kind == SC_W_DROPDOWN || ui.widgets[hit].kind == SC_W_GALLERY_ITEM || ui.widgets[hit].kind == SC_W_HOTKEY_ROW)) ? hit : -1;
+            ui.hovered_scrollbar = 0;
+            if (ui.active_tab == 2) {
+                sc_scroll_geom sg = gallery_scrollbar(ui, cr);
+                if (sg.visible && PtInRect(&sg.thumb, pt)) ui.hovered_scrollbar = 1;
+            }
 
-            if (ui.hovered_tab != prevTab || ui.hovered_widget != prevWidget) {
+            int hit = widget_at(ui.widgets, pt);
+            ui.hovered_widget = (hit >= 0 && ui.hovered_scrollbar == 0 && (ui.widgets[hit].kind == SC_W_TOGGLE || ui.widgets[hit].kind == SC_W_DROPDOWN || ui.widgets[hit].kind == SC_W_GALLERY_ITEM || ui.widgets[hit].kind == SC_W_HOTKEY_ROW)) ? hit : -1;
+
+            if (ui.hovered_tab != prevTab || ui.hovered_widget != prevWidget || ui.hovered_scrollbar != prevScrollbar) {
                 InvalidateRect(hwnd, nullptr, FALSE);
                 TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, HOVER_DEFAULT };
                 TrackMouseEvent(&tme);
@@ -975,37 +1256,73 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             ui.hovered_tab = -1;
             ui.hovered_widget = -1;
             ui.dropdown_hovered_index = -1;
+            ui.hovered_scrollbar = 0;
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
 
         case WM_LBUTTONDOWN: {
             POINT pt = { LOWORD(lParam), HIWORD(lParam) };
-            ensure_layout();
+            RECT cr = ensure_layout();
 
             if (ui.expanded_dropdown != -1) {
                 const sc_widget& dw = ui.widgets[ui.expanded_dropdown];
-                RECT cr; GetClientRect(hwnd, &cr);
-                int item_height = scale_i(28);
-                int space_below = cr.bottom - scale_i(dw.rect.bottom);
-                int max_visible_items = std::max(1, (space_below - scale_i(20)) / item_height);
-                int visible_items = std::min((int)dw.options.size(), max_visible_items);
-                RECT expRect = { scale_i(dw.rect.right - 165), scale_i(dw.rect.bottom - 6), scale_i(dw.rect.right - 15), scale_i(dw.rect.bottom - 6) + visible_items * item_height };
+                sc_dropdown_geom dg = dropdown_geom(ui, cr);
 
-                if (PtInRect(&expRect, pt)) {
-                    int idx = (pt.y - expRect.top + scale_i(ui.dropdown_scroll_y)) / item_height;
+                if (dg.has_scroll && dg.scroll.visible && PtInRect(&dg.scroll.thumb, pt)) {
+                    ui.dragging_scrollbar = 2;
+                    ui.drag_start_y = pt.y;
+                    ui.drag_start_scroll = ui.dropdown_scroll_y;
+                    ui.drag_track_range = dg.scroll.track_range;
+                    ui.drag_max_scroll = dg.max_scroll;
+                    SetCapture(hwnd);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+
+                bool on_track = dg.has_scroll && dg.scroll.visible && PtInRect(&dg.scroll.track, pt);
+                if (PtInRect(&dg.box, pt) && !on_track) {
+                    int idx = (pt.y - dg.box.top + scale_i(ui.dropdown_scroll_y)) / dg.item_height;
                     if (idx >= 0 && idx < (int)dw.options.size()) {
                         if (dw.opt_name && strcmp(dw.opt_name, "language") == 0) {
                             sc_set_language(dw.options[idx]);
-                            ui.needs_layout = true; 
+                            ui.needs_layout = true;
                         }
                     }
+                } else if (on_track) {
+                    return 0;
                 }
-                
+
                 ui.expanded_dropdown = -1;
                 ui.dropdown_hovered_index = -1;
                 InvalidateRect(hwnd, nullptr, TRUE);
                 return 0;
+            }
+
+            if (ui.active_tab == 2) {
+                sc_scroll_geom sg = gallery_scrollbar(ui, cr);
+                if (sg.visible) {
+                    bool on_thumb = PtInRect(&sg.thumb, pt);
+                    RECT trackHit = sg.track;
+                    InflateRect(&trackHit, scale_i(3), 0);
+                    if (!on_thumb && PtInRect(&trackHit, pt)) {
+                        int thumb_h = sg.thumb.bottom - sg.thumb.top;
+                        int rel = pt.y - sg.track.top - thumb_h / 2;
+                        ui.scroll_y = sg.track_range > 0 ? std::clamp((int)((int64_t)rel * ui.max_scroll_y / sg.track_range), 0, ui.max_scroll_y) : 0;
+                        ui.needs_layout = true;
+                        on_thumb = true;
+                    }
+                    if (on_thumb) {
+                        ui.dragging_scrollbar = 1;
+                        ui.drag_start_y = pt.y;
+                        ui.drag_start_scroll = ui.scroll_y;
+                        ui.drag_track_range = sg.track_range;
+                        ui.drag_max_scroll = ui.max_scroll_y;
+                        SetCapture(hwnd);
+                        InvalidateRect(hwnd, nullptr, TRUE);
+                        return 0;
+                    }
+                }
             }
 
             for (int i = 0; i < g_tab_count; ++i) {
@@ -1058,6 +1375,35 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             return 0;
         }
 
+        case WM_LBUTTONUP: {
+            if (ui.dragging_scrollbar != 0) {
+                ui.dragging_scrollbar = 0;
+                ReleaseCapture();
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
+        case WM_CAPTURECHANGED: {
+            ui.dragging_scrollbar = 0;
+            break;
+        }
+
+        case WM_SETTINGCHANGE: {
+            if (lParam && wcscmp((const wchar_t*)lParam, L"ImmersiveColorSet") == 0) {
+                theme_destroy(ui.theme);
+                theme_create(ui.theme);
+
+                BOOL dark = ui.theme.dark ? TRUE : FALSE;
+                DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+
+                SendMessageW(ui.edit_path, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
+                SendMessageW(ui.btn_browse, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
+                InvalidateRect(hwnd, nullptr, TRUE);
+            }
+            break;
+        }
+
         case WM_RBUTTONUP: {
             POINT pt = { LOWORD(lParam), HIWORD(lParam) };
             ensure_layout();
@@ -1072,7 +1418,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                     MENUINFO mi = { sizeof(MENUINFO) };
                     mi.fMask = MIM_BACKGROUND | MIM_STYLE;
                     mi.dwStyle = MNS_NOCHECK;
-                    mi.hbrBack = ui.theme.bg;
+                    mi.hbrBack = ui.theme.bg_brush;
                     SetMenuInfo(hMenu, &mi);
 
                     AppendMenuW(hMenu, MF_OWNERDRAW, 1, sc_get_localized_string("Copy to Clipboard").c_str());

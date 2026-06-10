@@ -26,7 +26,7 @@ workspace "screencap"
 
   filter "system:windows"
     defines { "SC_PLATFORM_WINDOWS", "_CRT_SECURE_NO_WARNINGS" }
-    links { "dwmapi", "winmm", "uxtheme", "comctl32", "windowsapp" }
+    links { "dwmapi", "winmm", "uxtheme", "comctl32", "windowsapp", "gdiplus" }
 
   filter {}
 
