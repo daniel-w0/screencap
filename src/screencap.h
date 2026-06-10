@@ -3,7 +3,7 @@
 #include <cstdint>
 
 #define SC_VERSION_MAJOR 1
-#define SC_VERSION_MINOR 0
+#define SC_VERSION_MINOR 1
 #define SC_VERSION_PATCH 0
 
 #define SC_STRINGIZE_(x) #x
