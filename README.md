@@ -25,7 +25,7 @@ As for the `fallback_screenshot` shortcut, that's a fallback for `screenshot` as
 ![general](screenshots/general.png)
 ### Input
 ![input](screenshots/input.png)
-### Gallery
-![gallery](screenshots/gallery.png)
+### Recents
+![recents](screenshots/recents.png)
 
 [Credits](credits.md)
