@@ -862,6 +862,14 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 TextOutW(memDC, tabRect.left + scale_i(15), tabRect.top + scale_i(7), label.c_str(), (int)label.length());
             }
 
+            { // version (shows at bottom of sidebar)
+                constexpr std::wstring_view versionStr = SC_VERSION_STRING_FULL_W;
+                SelectObject(memDC, ui.theme.font);
+                SetTextColor(memDC, RGB(120, 120, 120));
+                RECT verRect = { 0, cr.bottom - scale_i(30), scale_i(150), cr.bottom };
+                DrawTextW(memDC, versionStr.data(), (int)versionStr.length(), &verRect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+            }
+
             for (int i = 0; i < (int)ui.widgets.size(); ++i) {
                 draw_widget(memDC, ui.theme, ui.widgets[i], i == ui.hovered_widget);
             }

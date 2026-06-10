@@ -2,6 +2,16 @@
 
 #include <cstdint>
 
+#define SC_VERSION_MAJOR 1
+#define SC_VERSION_MINOR 0
+#define SC_VERSION_PATCH 0
+
+#define SC_STRINGIZE_(x) #x
+#define SC_STRINGIZE(x) SC_STRINGIZE_(x)
+#define SC_VERSION_STRING SC_STRINGIZE(SC_VERSION_MAJOR) "." SC_STRINGIZE(SC_VERSION_MINOR) "." SC_STRINGIZE(SC_VERSION_PATCH)
+#define SC_VERSION_STRING_W L"" SC_VERSION_STRING
+#define SC_VERSION_STRING_FULL_W L"v" SC_VERSION_STRING
+
 enum class sc_capture_mode {
     none = -1,
     interactive,
