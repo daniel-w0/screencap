@@ -18,6 +18,11 @@ In here, you can find the recents gallery along with the options. I'll likely ad
 
 As for the `fallback_screenshot` shortcut, that's a fallback for `screenshot` as printscrn on its own doesn't work in all applications.
 
+## Windows 7
+In order for this to work on Windows 7 (I tested with Ultimate SP1), you need to download the following [redist](https://download.visualstudio.microsoft.com/download/pr/34922e31-a9d4-49cf-a245-9211b353c894/1AD7988C17663CC742B01BEF1A6DF2ED1741173009579AD50A94434E54F56073/VC_redist.x64.exe)
+
+And you will not be able to use OCR in this, but everything else will work.
+
 ## Screenshots
 ### Interactive Mode
 ![interactive](screenshots/capture_window.png)
