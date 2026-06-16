@@ -12,6 +12,30 @@
 #include "embed/screenshot_sound.h"
 #include "embed/screenshot_sound_quick.h"
 
+extern "C" HRESULT WINAPI CoIncrementMTAUsage(PVOID* cookie) {
+    // Dynamically look up the function in ole32.dll at runtime
+    typedef HRESULT(WINAPI* CoIncMTAFunc)(PVOID*);
+    static CoIncMTAFunc pCoIncrementMTAUsage = nullptr;
+    static bool checked = false;
+
+    if (!checked) {
+        HMODULE hOle32 = GetModuleHandleW(L"ole32.dll");
+        if (hOle32) {
+            pCoIncrementMTAUsage = (CoIncMTAFunc)GetProcAddress(hOle32, "CoIncrementMTAUsage");
+        }
+        checked = true;
+    }
+
+    if (pCoIncrementMTAUsage) {
+        return pCoIncrementMTAUsage(cookie);
+    }
+
+    if (cookie) {
+        *cookie = (PVOID)1;
+    }
+    return S_OK;
+}
+
 #define WM_TRAYICON (WM_USER + 1)
 
 enum {

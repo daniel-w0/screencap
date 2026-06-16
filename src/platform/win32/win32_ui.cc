@@ -12,11 +12,22 @@
 
 #include <algorithm>
 
-//#define min(a,b) (((a)<(b))?(a):(b))
-//#define max(a,b) (((a)>(b))?(a):(b))
-
 using std::min;
 using std::max;
+
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+
+#ifndef DWM_WINDOW_CORNER_PREFERENCE
+typedef enum DWM_WINDOW_CORNER_PREFERENCE {
+    DWMWCP_DEFAULT = 0,
+    DWMWCP_DONOTROUND = 1,
+    DWMWCP_ROUND = 2,
+    DWMWCP_ROUNDSMALL = 3
+} DWM_WINDOW_CORNER_PREFERENCE;
+#endif
 
 #include <gdiplus.h>
 #include <winrt/Windows.UI.ViewManagement.h>
@@ -350,21 +361,27 @@ static LRESULT CALLBACK _sc_ll_keyboard_proc(int nCode, WPARAM wParam, LPARAM lP
 }
 
 static bool _sc_system_uses_dark_theme() {
-    DWORD val = 1, size = sizeof(val);
-    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &val, &size) == ERROR_SUCCESS) {
-        return val == 0;
+    if (_sc_is_win10_or_greater()) {
+        DWORD val = 1, size = sizeof(val);
+        if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+            L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &val, &size) == ERROR_SUCCESS) {
+            return val == 0;
+        }
     }
-    return true;
+    return false;
 }
 
 static COLORREF _sc_system_accent_color() {
-    try {
-        winrt::Windows::UI::ViewManagement::UISettings settings;
-        auto c = settings.GetColorValue(winrt::Windows::UI::ViewManagement::UIColorType::Accent);
-        return RGB(c.R, c.G, c.B);
-    } catch (...) {
-        return RGB(0, 120, 215);
+    constexpr COLORREF default_accent = RGB(0, 120, 215);
+    if (_sc_is_win10_or_greater()) {
+        DWORD val = 0, size = sizeof(val);
+        if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\DWM", L"ColorizationColor", RRF_RT_REG_DWORD, nullptr, &val, &size) == ERROR_SUCCESS) {
+            return RGB((val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF);
+        } else {
+            return default_accent;
+        }
+    } else {
+        return default_accent;
     }
 }
 
@@ -919,12 +936,12 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             ui = sc_settings_ui{};
             theme_create(ui.theme);
 
-            //BOOL dark = ui.theme.dark ? TRUE : FALSE;
-            //DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-            //DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
-            //DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
-
-            bool dark = true;
+            bool dark = _sc_system_uses_dark_theme();
+            if (_sc_is_win10_or_greater()) {
+                DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+                DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+                DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+            }
 
             int editY = scale_i(PATH_FIELD_Y) + (scale_i(PATH_FIELD_H) - scale_i(PATH_EDIT_H)) / 2;
             ui.edit_path = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, scale_i(170), editY, scale_i(260), scale_i(PATH_EDIT_H), hwnd, (HMENU)3001, GetModuleHandle(nullptr), nullptr);
@@ -941,6 +958,13 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             SetWindowSubclass(ui.btn_browse, BrowseButtonSubclassProc, 0, 0);
 
             g_tabs[ui.active_tab].on_activate(ui, true);
+
+            if (!_sc_is_win10_or_greater()) {
+                SendMessage(hwnd, WM_SIZE, 0, MAKELPARAM(scale_i(MIN_WINDOW_WIDTH), scale_i(MIN_WINDOW_HEIGHT)));
+                InvalidateRect(ui.edit_path, nullptr, TRUE);
+                InvalidateRect(ui.btn_browse, nullptr, TRUE);
+            }
+
             return 0;
         }
 
@@ -1419,17 +1443,18 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         }
 
         case WM_SETTINGCHANGE: {
-            if (lParam && wcscmp((const wchar_t*)lParam, L"ImmersiveColorSet") == 0) {
-                theme_destroy(ui.theme);
-                theme_create(ui.theme);
+            if (_sc_is_win10_or_greater()) {
+                if (lParam && wcscmp((const wchar_t*)lParam, L"ImmersiveColorSet") == 0) {
+                    theme_destroy(ui.theme);
+                    theme_create(ui.theme);
 
-                bool dark = true;
-                //BOOL dark = ui.theme.dark ? TRUE : FALSE;
-                //DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+                    BOOL dark = ui.theme.dark ? TRUE : FALSE;
+                    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 
-                SendMessageW(ui.edit_path, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
-                SendMessageW(ui.btn_browse, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
-                InvalidateRect(hwnd, nullptr, TRUE);
+                    SendMessageW(ui.edit_path, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
+                    SendMessageW(ui.btn_browse, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
+                    InvalidateRect(hwnd, nullptr, TRUE);
+                }
             }
             break;
         }

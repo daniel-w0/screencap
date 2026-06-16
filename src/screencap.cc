@@ -4,6 +4,8 @@
 #include "simpleini.h"
 #include <fstream>
 
+typedef LONG(WINAPI* RtlGetVersionPtr)(PRTL_OSVERSIONINFOW);
+
 static sc_app g_app;
 static std::unordered_map<std::string, std::wstring> language_map;
 
@@ -67,6 +69,31 @@ std::wstring _sc_utf8_to_wstring(const std::string& str) {
 // don't think I need to do this on MacOS
 #error "UTF-8 to wstring conversion not implemented for this platform"
 #endif
+}
+
+bool _sc_is_win10_or_greater() {
+    static bool isGreater = false;
+    static bool isSet = false;
+    if (isSet) {
+        return isGreater;
+    }
+
+    HMODULE hMod = GetModuleHandleA("ntdll.dll");
+    if (hMod) {
+        RtlGetVersionPtr pRtlGetVersion = (RtlGetVersionPtr)GetProcAddress(hMod, "RtlGetVersion");
+        if (pRtlGetVersion) {
+            RTL_OSVERSIONINFOW osInfo = {};
+            osInfo.dwOSVersionInfoSize = sizeof(osInfo);
+            if (pRtlGetVersion(&osInfo) == 0) {
+                isGreater = osInfo.dwMajorVersion >= 10;
+                isSet = true;
+                return isGreater;
+            }
+        }
+    }
+
+    fprintf(stderr, "Failed getting Windows version, defaulting to older API's\n");
+    return false; // just in case this failed
 }
 
 sc_internal void _init_languages() {
