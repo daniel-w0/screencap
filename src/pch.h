@@ -36,19 +36,19 @@ namespace fs = std::filesystem;
 #  include <dwmapi.h>
 #  include <shellapi.h>
 
-//#  include <winrt/Windows.Foundation.h>
-//#  include <winrt/Windows.Foundation.Collections.h>
-//#  include <winrt/Windows.Graphics.Imaging.h>
-//#  include <winrt/Windows.Media.Ocr.h>
-//#  include <winrt/Windows.Storage.Streams.h>
+#  include <winrt/Windows.Foundation.h>
+#  include <winrt/Windows.Foundation.Collections.h>
+#  include <winrt/Windows.Graphics.Imaging.h>
+#  include <winrt/Windows.Media.Ocr.h>
+#  include <winrt/Windows.Storage.Streams.h>
 
-//using DataWriter = winrt::Windows::Storage::Streams::DataWriter;
-//using IBuffer = winrt::Windows::Storage::Streams::IBuffer;
-//using SoftwareBitmap = winrt::Windows::Graphics::Imaging::SoftwareBitmap;
-//using OcrEngine = winrt::Windows::Media::Ocr::OcrEngine;
-//using BitmapPixelFormat = winrt::Windows::Graphics::Imaging::BitmapPixelFormat;
-//using BitmapAlphaMode = winrt::Windows::Graphics::Imaging::BitmapAlphaMode;
-//using OcrResult = winrt::Windows::Media::Ocr::OcrResult;
+using DataWriter = winrt::Windows::Storage::Streams::DataWriter;
+using IBuffer = winrt::Windows::Storage::Streams::IBuffer;
+using SoftwareBitmap = winrt::Windows::Graphics::Imaging::SoftwareBitmap;
+using OcrEngine = winrt::Windows::Media::Ocr::OcrEngine;
+using BitmapPixelFormat = winrt::Windows::Graphics::Imaging::BitmapPixelFormat;
+using BitmapAlphaMode = winrt::Windows::Graphics::Imaging::BitmapAlphaMode;
+using OcrResult = winrt::Windows::Media::Ocr::OcrResult;
 
 #  ifndef PW_RENDERFULLCONTENT
 #    define PW_RENDERFULLCONTENT 2

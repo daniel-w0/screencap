@@ -45,26 +45,19 @@ enum {
 };
 
 #pragma region OCR Decl
-//using DataWriter = winrt::Windows::Storage::Streams::DataWriter;
-//using IBuffer = winrt::Windows::Storage::Streams::IBuffer;
-//using SoftwareBitmap = winrt::Windows::Graphics::Imaging::SoftwareBitmap;
-//using OcrEngine = winrt::Windows::Media::Ocr::OcrEngine;
-//using BitmapPixelFormat = winrt::Windows::Graphics::Imaging::BitmapPixelFormat;
-//using BitmapAlphaMode = winrt::Windows::Graphics::Imaging::BitmapAlphaMode;
-//using OcrResult = winrt::Windows::Media::Ocr::OcrResult;
-//
-//struct sc_ocr_line {
-//    sc_rect rect;
-//    std::vector<sc_rect> chars;
-//};
-//
-////sc_internal OcrResult _ocr_get_bitmap_result(const unsigned char* data, int w, int h);
-//sc_internal void _ocr_run_async();
-//sc_internal bool _sc_rects_intersect(const sc_rect& a, const sc_rect& b);
-//sc_internal bool _ocr_snap_to_text(const sc_rect& drag, sc_rect& out);
-//sc_internal bool _ocr_text_at_point(POINT pt, sc_rect& out);
-//sc_internal std::wstring _ocr_text(OcrResult const& result);
-////#pragma endregion
+
+struct sc_ocr_line {
+    sc_rect rect;
+    std::vector<sc_rect> chars;
+};
+
+sc_internal OcrResult _ocr_get_bitmap_result(const unsigned char* data, int w, int h);
+sc_internal void _ocr_run_async();
+sc_internal bool _sc_rects_intersect(const sc_rect& a, const sc_rect& b);
+sc_internal bool _ocr_snap_to_text(const sc_rect& drag, sc_rect& out);
+sc_internal bool _ocr_text_at_point(POINT pt, sc_rect& out);
+sc_internal std::wstring _ocr_text(OcrResult const& result);
+#pragma endregion
 
 #pragma region Windows Decl
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -101,8 +94,8 @@ struct {
     int     magDestY = 0;
     bool    magValid = false;
 
-    //std::vector<sc_ocr_line> ocrLines;
-    //std::mutex               ocrMutex;
+    std::vector<sc_ocr_line> ocrLines;
+    std::mutex               ocrMutex;
 
     bool shouldSave   = false;
     bool capturing    = false;
@@ -261,14 +254,9 @@ bool _sc_write_to_clipboard(UINT format, const void* data, size_t size, const vo
 }
 
 void _sc_init_impl() {
-    { // Register hotkeys
-        for (auto& hk : sc_get_app().hotkeys) {
-            hk.registered = RegisterHotKey(nullptr, hk.id, hk.modifiers | MOD_NOREPEAT, hk.key);
-            if (!hk.registered) {
-                fprintf(stderr, "Failed to register hotkey: %s\n", sc_hotkey_id_strings[hk.id]);
-            }
-        }
+    sc_reregister_hotkeys();
 
+    { // Setup console
         HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
         DWORD prev_mode;
         if (GetConsoleMode(hInput, &prev_mode)) {
@@ -277,6 +265,9 @@ void _sc_init_impl() {
     }
 
     //winrt::init_apartment();
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); // fuck it, we will do it here for now idc.
+    // todo: do this ^^ ONCE in init and close it in shutdown. the filepath browse uses this as well and manages its own
+
     SetProcessDPIAware();
     _sc_get_monitors(g_state.monitors);
 
@@ -326,6 +317,10 @@ void sc_reregister_hotkeys() {
     }
     for (auto& hk : sc_get_app().hotkeys) {
         if (hk.key != 0) {
+            if (hk.id == sc_hotkey_ocr && !_sc_is_win10_or_greater()) {
+                fprintf(stderr, "Skipping OCR hotkey registration on unsupported OS version.\n");
+                continue;
+            }
             hk.registered = RegisterHotKey(nullptr, hk.id, hk.modifiers | MOD_NOREPEAT, hk.key);
             if (!hk.registered) {
                 fprintf(stderr, "Failed to register hotkey: %s\n", sc_hotkey_id_strings[hk.id]);
@@ -355,6 +350,19 @@ void sc_begin_capture(sc_hotkey_id hotkey) {
         return;
     }
 
+    if (hotkey == sc_hotkey_active_window) {
+        g_state.captureMode = sc_capture_mode::window_under_cursor;
+    } else if (hotkey == sc_hotkey_current_monitor) {
+        g_state.captureMode = sc_capture_mode::monitor_under_cursor;
+    } else if (hotkey == sc_hotkey_ocr) {
+        if (!_sc_is_win10_or_greater()) {
+            fprintf(stderr, "OCR capture is only supported on Windows 10 or later.\n");
+            return;
+        }
+        g_state.captureMode = sc_capture_mode::ocr;
+    } else {
+        g_state.captureMode = sc_capture_mode::interactive;
+    }
 
     g_state.capturing = true;
     g_state.shouldSave = hotkey != sc_hotkey_clipboard;
@@ -365,16 +373,6 @@ void sc_begin_capture(sc_hotkey_id hotkey) {
     g_state.captureReady = false;
     g_state.hoveredHwnd = nullptr;
     g_state.finalHwnd = nullptr;
-
-    if (hotkey == sc_hotkey_active_window) {
-        g_state.captureMode = sc_capture_mode::window_under_cursor;
-    } else if (hotkey == sc_hotkey_current_monitor) {
-        g_state.captureMode = sc_capture_mode::monitor_under_cursor;
-    } else if (hotkey == sc_hotkey_ocr) {
-        g_state.captureMode = sc_capture_mode::ocr;
-    } else {
-        g_state.captureMode = sc_capture_mode::interactive;
-    }
 
     int vx, vy, vw, vh;
     _sc_get_display_metrics(vx, vy, vw, vh);
@@ -418,14 +416,16 @@ void sc_begin_capture(sc_hotkey_id hotkey) {
 
     // interactive mode...
 
-    //{
-    //    std::lock_guard<std::mutex> lock(g_state.ocrMutex);
-    //    g_state.ocrLines.clear();
-    //}
+    if (_sc_is_win10_or_greater()) {
+        {
+            std::lock_guard<std::mutex> lock(g_state.ocrMutex);
+            g_state.ocrLines.clear();
+        }
 
-    //if (g_state.captureMode == sc_capture_mode::ocr) {
-    //    _ocr_run_async();
-    //}
+        if (g_state.captureMode == sc_capture_mode::ocr) {
+            _ocr_run_async();
+        }
+    }
 
     if (!g_state.overlayHwnd) {        
         g_state.overlayHwnd = CreateWindowExA(
@@ -535,40 +535,39 @@ bool sc_capture_update(sc_capture_info& ci) {
     ci.data = new unsigned char[ci.width * ci.height * 4];
     GetDIBits(hMemoryDC, hBitmap, 0, ci.height, ci.data, (BITMAPINFO*)&bih, DIB_RGB_COLORS);
 
-    //if (g_state.captureMode == sc_capture_mode::ocr) {
-    //    try {
-    //        int pad = 24;
-    //        int pw = (int)ci.width + pad * 2;
-    //        int ph = (int)ci.height + pad * 2;
-    //        std::vector<unsigned char> padded(pw * ph * 4);
-    //        
-    //        for (int i = 0; i < pw * ph; ++i) {
-    //            padded[i * 4 + 0] = ci.data[0];
-    //            padded[i * 4 + 1] = ci.data[1];
-    //            padded[i * 4 + 2] = ci.data[2];
-    //            padded[i * 4 + 3] = 255;
-    //        }
-    //        for (int y = 0; y < (int)ci.height; ++y) {
-    //            memcpy(&padded[((y + pad) * pw + pad) * 4], &ci.data[y * ci.width * 4], ci.width * 4);
-    //        }
+    if (_sc_is_win10_or_greater() && g_state.captureMode == sc_capture_mode::ocr) {
+        try {
+            int pad = 24;
+            int pw = (int)ci.width + pad * 2;
+            int ph = (int)ci.height + pad * 2;
+            std::vector<unsigned char> padded(pw * ph * 4);
+            
+            for (int i = 0; i < pw * ph; ++i) {
+                padded[i * 4 + 0] = ci.data[0];
+                padded[i * 4 + 1] = ci.data[1];
+                padded[i * 4 + 2] = ci.data[2];
+                padded[i * 4 + 3] = 255;
+            }
+            for (int y = 0; y < (int)ci.height; ++y) {
+                memcpy(&padded[((y + pad) * pw + pad) * 4], &ci.data[y * ci.width * 4], ci.width * 4);
+            }
 
-    //        if (OcrResult result = _ocr_get_bitmap_result(padded.data(), pw, ph)) {
-    //            std::wstring text = _ocr_text(result);
-    //            if (OpenClipboard(nullptr)) {
-    //                EmptyClipboard();
-    //                _sc_write_to_clipboard(CF_UNICODETEXT, text.c_str(), (text.length() + 1) * sizeof(wchar_t));
-    //                CloseClipboard();
-    //            }
-    //        }
-    //    } catch (std::exception& e) {
-    //        fprintf(stderr, "OCR failed: %s\n", e.what());
-    //    }
-    //}
-    //else if (sc_get_app().opt_copy_to_clipboard && OpenClipboard(nullptr)) {
-    //    EmptyClipboard();
-    //    _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), ci.data, ci.width * ci.height * 4);
-    //    CloseClipboard();
-    //}
+            if (OcrResult result = _ocr_get_bitmap_result(padded.data(), pw, ph)) {
+                std::wstring text = _ocr_text(result);
+                if (OpenClipboard(nullptr)) {
+                    EmptyClipboard();
+                    _sc_write_to_clipboard(CF_UNICODETEXT, text.c_str(), (text.length() + 1) * sizeof(wchar_t));
+                    CloseClipboard();
+                }
+            }
+        } catch (std::exception& e) {
+            fprintf(stderr, "OCR failed: %s\n", e.what());
+        }
+    } else if (sc_get_app().opt_copy_to_clipboard && OpenClipboard(nullptr)) {
+        EmptyClipboard();
+        _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), ci.data, ci.width * ci.height * 4);
+        CloseClipboard();
+    }
 
     DeleteObject(hBitmap);
     DeleteDC(hMemoryDC);
@@ -615,10 +614,10 @@ void _sc_cleanup_impl(sc_capture_info& ci) {
     g_state.hoveredHwnd = nullptr;
     g_state.finalHwnd = nullptr;
 
-    //{
-    //    std::lock_guard<std::mutex> lock(g_state.ocrMutex);
-    //    g_state.ocrLines.clear();
-    //}
+    {
+        std::lock_guard<std::mutex> lock(g_state.ocrMutex);
+        g_state.ocrLines.clear();
+    }
 }
 #pragma endregion
 
@@ -647,21 +646,21 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                         std::abs(pt.x - g_state.dragStart.x), 
                         std::abs(pt.y - g_state.dragStart.y) 
                     };
-                    //sc_rect snapped;
-                    //if (g_state.snapDrag && _ocr_snap_to_text(dragRect, snapped)) {
-                        //g_state.currentRect = snapped;
-                    //} else {
+                    sc_rect snapped;
+                    if (g_state.snapDrag && _ocr_snap_to_text(dragRect, snapped)) { // snapDrag only true if winver >= 10 and captureMode == ocr
+                        g_state.currentRect = snapped;
+                    } else {
                         g_state.currentRect = dragRect;
-                    //}
+                    }
                 }
             } else {
-                //sc_rect textRect;
-                //if (g_state.captureMode == sc_capture_mode::ocr && _ocr_text_at_point(pt, textRect)) {
-                //    g_state.hoveredHwnd = nullptr;
-                //    g_state.currentRect = textRect;
-                //} else {
+                sc_rect textRect;
+                if (_sc_is_win10_or_greater() && g_state.captureMode == sc_capture_mode::ocr && _ocr_text_at_point(pt, textRect)) {
+                    g_state.hoveredHwnd = nullptr;
+                    g_state.currentRect = textRect;
+                } else {
                     UpdateHoverRect(pt);
-                //}
+                }
             }
             if (g_state.frozenDC) {
                 const int magSize = 120;
@@ -697,8 +696,8 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             GetCursorPos(&pt);
             g_state.mouseDown = true;
             g_state.dragStart = pt;
-            //sc_rect textRect;
-            //g_state.snapDrag = g_state.captureMode == sc_capture_mode::ocr && _ocr_text_at_point(pt, textRect);
+            sc_rect textRect;
+            g_state.snapDrag = _sc_is_win10_or_greater() && g_state.captureMode == sc_capture_mode::ocr && _ocr_text_at_point(pt, textRect);
             SetCapture(hwnd);
             return 0;
         }
@@ -957,217 +956,217 @@ void RegisterTrayIcon(HWND hwnd) {
 //using BitmapAlphaMode = winrt::Windows::Graphics::Imaging::BitmapAlphaMode;
 //using OcrResult = winrt::Windows::Media::Ocr::OcrResult;
 
-//sc_internal OcrResult _ocr_get_bitmap_result(const unsigned char* data, int w, int h) {
-//    DataWriter writer;
-//    writer.WriteBytes(winrt::array_view<const uint8_t>(data, w * h * 4));
-//    
-//    SoftwareBitmap bitmap = SoftwareBitmap::CreateCopyFromBuffer(
-//        writer.DetachBuffer(), 
-//        BitmapPixelFormat::Bgra8, 
-//        w, h, 
-//        BitmapAlphaMode::Ignore
-//    );
-//    
-//    OcrEngine engine = OcrEngine::TryCreateFromUserProfileLanguages();
-//    return engine ? engine.RecognizeAsync(bitmap).get() : nullptr;
-//}
+sc_internal OcrResult _ocr_get_bitmap_result(const unsigned char* data, int w, int h) {
+    DataWriter writer;
+    writer.WriteBytes(winrt::array_view<const uint8_t>(data, data + (w * h * 4)));
+    
+    SoftwareBitmap bitmap = SoftwareBitmap::CreateCopyFromBuffer(
+        writer.DetachBuffer(), 
+        BitmapPixelFormat::Bgra8, 
+        w, h, 
+        BitmapAlphaMode::Ignore
+    );
+    
+    OcrEngine engine = OcrEngine::TryCreateFromUserProfileLanguages();
+    return engine ? engine.RecognizeAsync(bitmap).get() : nullptr;
+}
 
-//sc_internal void _ocr_run_async() {
-    //int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    //int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    //int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    //int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    //int scale = 2;
+sc_internal void _ocr_run_async() {
+    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    int scale = 2;
 
-    //if (OcrEngine probe = OcrEngine::TryCreateFromUserProfileLanguages()) {
-    //    uint32_t maxDim = probe.MaxImageDimension();
-    //    while (scale > 1 && ((uint32_t)(vw * scale) > maxDim || (uint32_t)(vh * scale) > maxDim)) {
-    //        --scale;
-    //    }
-    //}
+    if (OcrEngine probe = OcrEngine::TryCreateFromUserProfileLanguages()) {
+        uint32_t maxDim = probe.MaxImageDimension();
+        while (scale > 1 && ((uint32_t)(vw * scale) > maxDim || (uint32_t)(vh * scale) > maxDim)) {
+            --scale;
+        }
+    }
 
-    //int sw = vw * scale;
-    //int sh = vh * scale;
-    //
-    //HDC hScaledDC = CreateCompatibleDC(g_state.frozenDC);
-    //HBITMAP hScaledBmp = CreateCompatibleBitmap(g_state.frozenDC, sw, sh);
-    //SelectObject(hScaledDC, hScaledBmp);
-    //SetStretchBltMode(hScaledDC, HALFTONE);
-    //StretchBlt(hScaledDC, 0, 0, sw, sh, g_state.frozenDC, 0, 0, vw, vh, SRCCOPY);
+    int sw = vw * scale;
+    int sh = vh * scale;
+    
+    HDC hScaledDC = CreateCompatibleDC(g_state.frozenDC);
+    HBITMAP hScaledBmp = CreateCompatibleBitmap(g_state.frozenDC, sw, sh);
+    SelectObject(hScaledDC, hScaledBmp);
+    SetStretchBltMode(hScaledDC, HALFTONE);
+    StretchBlt(hScaledDC, 0, 0, sw, sh, g_state.frozenDC, 0, 0, vw, vh, SRCCOPY);
 
-    //BITMAPINFOHEADER bih = {};
-    //bih.biSize = sizeof(BITMAPINFOHEADER);
-    //bih.biWidth = sw;
-    //bih.biHeight = -sh;
-    //bih.biPlanes = 1;
-    //bih.biBitCount = 32;
-    //bih.biCompression = BI_RGB;
+    BITMAPINFOHEADER bih = {};
+    bih.biSize = sizeof(BITMAPINFOHEADER);
+    bih.biWidth = sw;
+    bih.biHeight = -sh;
+    bih.biPlanes = 1;
+    bih.biBitCount = 32;
+    bih.biCompression = BI_RGB;
 
-    //auto bits = std::make_shared<std::vector<unsigned char>>(sw * sh * 4);
-    //GetDIBits(hScaledDC, hScaledBmp, 0, sh, bits->data(), (BITMAPINFO*)&bih, DIB_RGB_COLORS);
-    //
-    //DeleteObject(hScaledBmp);
-    //DeleteDC(hScaledDC);
+    auto bits = std::make_shared<std::vector<unsigned char>>(sw * sh * 4);
+    GetDIBits(hScaledDC, hScaledBmp, 0, sh, bits->data(), (BITMAPINFO*)&bih, DIB_RGB_COLORS);
+    
+    DeleteObject(hScaledBmp);
+    DeleteDC(hScaledDC);
 
-    //std::thread([bits, sw, sh, scale, vx, vy]() {
-    //    winrt::init_apartment();
-    //    try {
-    //        if (OcrResult result = _ocr_get_bitmap_result(bits->data(), sw, sh)) {
-    //            std::vector<sc_ocr_line> lines;
-    //            
-    //            for (auto const& line : result.Lines()) {
-    //                sc_ocr_line ol = {};
-    //                bool first = true;
-    //                int minx = 0, miny = 0, maxx = 0, maxy = 0;
-    //                
-    //                for (auto const& word : line.Words()) {
-    //                    auto wr = word.BoundingRect();
-    //                    sc_rect box = { 
-    //                        (int)(wr.X / scale) + vx, 
-    //                        (int)(wr.Y / scale) + vy, 
-    //                        (int)(wr.Width / scale), 
-    //                        (int)(wr.Height / scale) 
-    //                    };
-    //                    
-    //                    int n = std::max(1, (int)word.Text().size());
-    //                    for (int c = 0; c < n; ++c) {
-    //                        int x0 = box.x + box.width * c / n;
-    //                        int width_val = (box.x + box.width * (c + 1) / n) - x0;
-    //                        ol.chars.push_back({ x0, box.y, width_val, box.height });
-    //                    }
-    //                    
-    //                    if (first) {
-    //                        minx = box.x;
-    //                        miny = box.y;
-    //                        maxx = box.x + box.width;
-    //                        maxy = box.y + box.height;
-    //                        first = false;
-    //                    } else {
-    //                        minx = std::min(minx, box.x);
-    //                        miny = std::min(miny, box.y);
-    //                        maxx = std::max(maxx, box.x + box.width);
-    //                        maxy = std::max(maxy, box.y + box.height);
-    //                    }
-    //                }
-    //                
-    //                if (!first) {
-    //                    ol.rect = { minx, miny, maxx - minx, maxy - miny };
-    //                    lines.push_back(ol);
-    //                }
-    //            }
-    //            
-    //            std::lock_guard<std::mutex> lock(g_state.ocrMutex);
-    //            g_state.ocrLines = lines;
-    //        }
-    //    } catch (std::exception& e) {
-    //        fprintf(stderr, "OCR failed: %s\n", e.what());
-    //    }
-    //}).detach();
-//}
+    std::thread([bits, sw, sh, scale, vx, vy]() {
+        winrt::init_apartment();
+        try {
+            if (OcrResult result = _ocr_get_bitmap_result(bits->data(), sw, sh)) {
+                std::vector<sc_ocr_line> lines;
+                
+                for (auto const& line : result.Lines()) {
+                    sc_ocr_line ol = {};
+                    bool first = true;
+                    int minx = 0, miny = 0, maxx = 0, maxy = 0;
+                    
+                    for (auto const& word : line.Words()) {
+                        auto wr = word.BoundingRect();
+                        sc_rect box = { 
+                            (int)(wr.X / scale) + vx, 
+                            (int)(wr.Y / scale) + vy, 
+                            (int)(wr.Width / scale), 
+                            (int)(wr.Height / scale) 
+                        };
+                        
+                        int n = std::max(1, (int)word.Text().size());
+                        for (int c = 0; c < n; ++c) {
+                            int x0 = box.x + box.width * c / n;
+                            int width_val = (box.x + box.width * (c + 1) / n) - x0;
+                            ol.chars.push_back({ x0, box.y, width_val, box.height });
+                        }
+                        
+                        if (first) {
+                            minx = box.x;
+                            miny = box.y;
+                            maxx = box.x + box.width;
+                            maxy = box.y + box.height;
+                            first = false;
+                        } else {
+                            minx = std::min(minx, box.x);
+                            miny = std::min(miny, box.y);
+                            maxx = std::max(maxx, box.x + box.width);
+                            maxy = std::max(maxy, box.y + box.height);
+                        }
+                    }
+                    
+                    if (!first) {
+                        ol.rect = { minx, miny, maxx - minx, maxy - miny };
+                        lines.push_back(ol);
+                    }
+                }
+                
+                std::lock_guard<std::mutex> lock(g_state.ocrMutex);
+                g_state.ocrLines = lines;
+            }
+        } catch (std::exception& e) {
+            fprintf(stderr, "OCR failed: %s\n", e.what());
+        }
+    }).detach();
+}
 
-//sc_internal bool _ocr_snap_to_text(const sc_rect& drag, sc_rect& out) {
-//    std::lock_guard<std::mutex> lock(g_state.ocrMutex);
-//    bool found = false;
-//    int minx = 0, miny = 0, maxx = 0, maxy = 0;
-//    
-//    for (const auto& line : g_state.ocrLines) {
-//        for (const auto& w : line.chars) {
-//            if (!_sc_rects_intersect(drag, w)) {
-//                continue;
-//            }
-//            if (!found) {
-//                minx = w.x;
-//                miny = w.y;
-//                maxx = w.x + w.width;
-//                maxy = w.y + w.height;
-//                found = true;
-//            } else {
-//                minx = std::min(minx, w.x);
-//                miny = std::min(miny, w.y);
-//                maxx = std::max(maxx, w.x + w.width);
-//                maxy = std::max(maxy, w.y + w.height);
-//            }
-//        }
-//    }
-//    
-//    if (found) {
-//        out = { minx, miny, maxx - minx, maxy - miny };
-//    }
-//    return found;
-//}
-//
-//sc_internal bool _ocr_text_at_point(POINT pt, sc_rect& out) {
-//    std::lock_guard<std::mutex> lock(g_state.ocrMutex);
-//    for (const auto& line : g_state.ocrLines) {
-//        if (pt.x >= line.rect.x && pt.x < line.rect.x + line.rect.width && 
-//            pt.y >= line.rect.y && pt.y < line.rect.y + line.rect.height) {
-//            out = line.rect;
-//            return true;
-//        }
-//    }
-//    return false;
-//}
-//
-//sc_internal std::wstring _ocr_text(OcrResult const& result) {
-//    struct Frag { 
-//        int cy;
-//        int height;
-//        int left;
-//        std::wstring text;
-//    };
-//    
-//    std::vector<Frag> frags;
-//    for (auto const& line : result.Lines()) {
-//        int top = 0, bottom = 0, left = 0;
-//        bool first = true;
-//        
-//        for (auto const& word : line.Words()) {
-//            auto r = word.BoundingRect();
-//            int t = (int)r.Y;
-//            int b = (int)(r.Y + r.Height);
-//            int l = (int)r.X;
-//            
-//            if (first) {
-//                top = t;
-//                bottom = b;
-//                left = l;
-//                first = false;
-//            } else {
-//                top = std::min(top, t);
-//                bottom = std::max(bottom, b);
-//                left = std::min(left, l);
-//            }
-//        }
-//        if (!first) {
-//            frags.push_back({ (top + bottom) / 2, bottom - top, left, std::wstring(line.Text().c_str()) });
-//        }
-//    }
-//    
-//    std::sort(frags.begin(), frags.end(), [](const Frag& a, const Frag& b) {
-//        return a.cy < b.cy;
-//    });
-//
-//    std::wstring text;
-//    size_t i = 0;
-//    while (i < frags.size()) {
-//        size_t j = i + 1;
-//        while (j < frags.size() && std::abs(frags[j].cy - frags[i].cy) < frags[i].height / 2) {
-//            ++j;
-//        }
-//        std::sort(frags.begin() + i, frags.begin() + j, [](const Frag& a, const Frag& b) {
-//            return a.left < b.left;
-//        });
-//        if (!text.empty()) {
-//            text += L"\r\n";
-//        }
-//        for (size_t k = i; k < j; ++k) {
-//            if (k > i) {
-//                text += L" ";
-//            }
-//            text += frags[k].text;
-//        }
-//        i = j;
-//    }
-//    return text;
-//}
+sc_internal bool _ocr_snap_to_text(const sc_rect& drag, sc_rect& out) {
+    std::lock_guard<std::mutex> lock(g_state.ocrMutex);
+    bool found = false;
+    int minx = 0, miny = 0, maxx = 0, maxy = 0;
+    
+    for (const auto& line : g_state.ocrLines) {
+        for (const auto& w : line.chars) {
+            if (!_sc_rects_intersect(drag, w)) {
+                continue;
+            }
+            if (!found) {
+                minx = w.x;
+                miny = w.y;
+                maxx = w.x + w.width;
+                maxy = w.y + w.height;
+                found = true;
+            } else {
+                minx = std::min(minx, w.x);
+                miny = std::min(miny, w.y);
+                maxx = std::max(maxx, w.x + w.width);
+                maxy = std::max(maxy, w.y + w.height);
+            }
+        }
+    }
+    
+    if (found) {
+        out = { minx, miny, maxx - minx, maxy - miny };
+    }
+    return found;
+}
+
+sc_internal bool _ocr_text_at_point(POINT pt, sc_rect& out) {
+    std::lock_guard<std::mutex> lock(g_state.ocrMutex);
+    for (const auto& line : g_state.ocrLines) {
+        if (pt.x >= line.rect.x && pt.x < line.rect.x + line.rect.width && 
+            pt.y >= line.rect.y && pt.y < line.rect.y + line.rect.height) {
+            out = line.rect;
+            return true;
+        }
+    }
+    return false;
+}
+
+sc_internal std::wstring _ocr_text(OcrResult const& result) {
+    struct Frag { 
+        int cy;
+        int height;
+        int left;
+        std::wstring text;
+    };
+    
+    std::vector<Frag> frags;
+    for (auto const& line : result.Lines()) {
+        int top = 0, bottom = 0, left = 0;
+        bool first = true;
+        
+        for (auto const& word : line.Words()) {
+            auto r = word.BoundingRect();
+            int t = (int)r.Y;
+            int b = (int)(r.Y + r.Height);
+            int l = (int)r.X;
+            
+            if (first) {
+                top = t;
+                bottom = b;
+                left = l;
+                first = false;
+            } else {
+                top = std::min(top, t);
+                bottom = std::max(bottom, b);
+                left = std::min(left, l);
+            }
+        }
+        if (!first) {
+            frags.push_back({ (top + bottom) / 2, bottom - top, left, std::wstring(line.Text().c_str()) });
+        }
+    }
+    
+    std::sort(frags.begin(), frags.end(), [](const Frag& a, const Frag& b) {
+        return a.cy < b.cy;
+    });
+
+    std::wstring text;
+    size_t i = 0;
+    while (i < frags.size()) {
+        size_t j = i + 1;
+        while (j < frags.size() && std::abs(frags[j].cy - frags[i].cy) < frags[i].height / 2) {
+            ++j;
+        }
+        std::sort(frags.begin() + i, frags.begin() + j, [](const Frag& a, const Frag& b) {
+            return a.left < b.left;
+        });
+        if (!text.empty()) {
+            text += L"\r\n";
+        }
+        for (size_t k = i; k < j; ++k) {
+            if (k > i) {
+                text += L" ";
+            }
+            text += frags[k].text;
+        }
+        i = j;
+    }
+    return text;
+}
 #pragma endregion
