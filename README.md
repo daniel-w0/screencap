@@ -33,5 +33,7 @@ And you will not be able to use OCR in this, but everything else will work.
 ![input](screenshots/input.png)
 ### Recents
 ![recents](screenshots/recents.png)
+### Windows 7
+![win7](screenshots/win7.png)
 
 [Credits](credits.md)
