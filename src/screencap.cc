@@ -290,9 +290,15 @@ bool sc_save_capture(sc_capture_info& ci) {
         bih.biBitCount = 32;
         bih.biCompression = BI_RGB;
 
+        // swap channels for BGRA
+        size_t pixelCount = ci.width * ci.height;
+        std::vector<uint32_t> dibPixels((uint32_t*)ci.data, (uint32_t*)ci.data + pixelCount);
+        _sc_swap_channels(dibPixels.data(), pixelCount);
+
         EmptyClipboard();
-        // write old-style DIB data for compatibility with apps that don't support PNG
-        _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), ci.data, ci.width * ci.height * 4);
+
+        // write old-style DIB data
+        _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), dibPixels.data(), pixelCount * 4);
 
         // and now png
         _sc_write_to_clipboard(RegisterClipboardFormatA("PNG"), pngData.data(), pngData.size());
