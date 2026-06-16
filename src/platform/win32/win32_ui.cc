@@ -57,7 +57,13 @@ int unscale_i(int val) { return (int)(val / g_scale); }
 
 void OpenFolderPickerDialog(HWND hwnd, HWND hEditPath) {
     std::thread([](HWND hwndParent, HWND hEdit) {
-        winrt::init_apartment();
+
+        HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        if (FAILED(hrInit)) {
+            MessageBoxW(hwndParent, L"Failed to initialize COM library.", L"Error", MB_ICONERROR);
+            return;
+        }
+
         IFileOpenDialog* pFolderDlg = nullptr;
         if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFolderDlg)))) {
             DWORD options;
@@ -70,7 +76,7 @@ void OpenFolderPickerDialog(HWND hwnd, HWND hEditPath) {
                     PWSTR pszPath = nullptr;
                     if (SUCCEEDED(pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszPath))) {
                         SetWindowTextW(hEdit, pszPath);
-                        sc_get_app().save_path = winrt::to_string(pszPath);
+                        sc_get_app().save_path = std::string(pszPath, pszPath + wcslen(pszPath));
                         sc_save_config();
                         CoTaskMemFree(pszPath);
                     }
@@ -79,6 +85,8 @@ void OpenFolderPickerDialog(HWND hwnd, HWND hEditPath) {
             }
             pFolderDlg->Release();
         }
+
+        CoUninitialize();
     }, hwnd, hEditPath).detach();
 }
 
@@ -947,7 +955,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             ui.edit_path = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, scale_i(170), editY, scale_i(260), scale_i(PATH_EDIT_H), hwnd, (HMENU)3001, GetModuleHandle(nullptr), nullptr);
             SendMessageW(ui.edit_path, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
 
-            std::wstring widePath = winrt::to_hstring(sc_get_app().save_path).c_str();
+            std::wstring widePath = _sc_utf8_to_wstring(sc_get_save_path().string());
             SetWindowTextW(ui.edit_path, widePath.c_str());
 
             ui.btn_browse = CreateWindowExW(0, L"BUTTON", sc_get_localized_string("Browse...").c_str(), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, scale_i(430), scale_i(PATH_FIELD_Y), scale_i(100), scale_i(PATH_FIELD_H), hwnd, (HMENU)3002, GetModuleHandle(nullptr), nullptr);
@@ -1087,7 +1095,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 int len = GetWindowTextLengthW(ui.edit_path);
                 std::vector<wchar_t> buf(len + 1);
                 GetWindowTextW(ui.edit_path, buf.data(), len + 1);
-                sc_get_app().save_path = winrt::to_string(buf.data());
+                sc_get_app().save_path = std::string(buf.data(), buf.data() + len);
                 sc_save_config();
             }
 
