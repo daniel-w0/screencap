@@ -944,11 +944,11 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             ui = sc_settings_ui{};
             theme_create(ui.theme);
 
-            bool dark = _sc_system_uses_dark_theme();
+            BOOL dark = ui.theme.dark ? TRUE : FALSE;
             if (_sc_is_win10_or_greater()) {
                 DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-                DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
-                DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+                //DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+                //DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
             }
 
             int editY = scale_i(PATH_FIELD_Y) + (scale_i(PATH_FIELD_H) - scale_i(PATH_EDIT_H)) / 2;
@@ -967,11 +967,15 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
             g_tabs[ui.active_tab].on_activate(ui, true);
 
+            //SendMessageW(ui.edit_path, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
+            //SendMessageW(ui.btn_browse, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
+
             if (!_sc_is_win10_or_greater()) {
                 SendMessage(hwnd, WM_SIZE, 0, MAKELPARAM(scale_i(MIN_WINDOW_WIDTH), scale_i(MIN_WINDOW_HEIGHT)));
                 InvalidateRect(ui.edit_path, nullptr, TRUE);
                 InvalidateRect(ui.btn_browse, nullptr, TRUE);
             }
+            InvalidateRect(hwnd, nullptr, TRUE);
 
             return 0;
         }
