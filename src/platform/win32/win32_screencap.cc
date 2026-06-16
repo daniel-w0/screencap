@@ -34,7 +34,7 @@ struct sc_ocr_line {
     std::vector<sc_rect> chars;
 };
 
-sc_internal OcrResult _ocr_get_bitmap_result(const unsigned char* data, int w, int h);
+//sc_internal OcrResult _ocr_get_bitmap_result(const unsigned char* data, int w, int h);
 sc_internal void _ocr_run_async();
 sc_internal bool _sc_rects_intersect(const sc_rect& a, const sc_rect& b);
 sc_internal bool _ocr_snap_to_text(const sc_rect& drag, sc_rect& out);
@@ -511,35 +511,35 @@ bool sc_capture_update(sc_capture_info& ci) {
     ci.data = new unsigned char[ci.width * ci.height * 4];
     GetDIBits(hMemoryDC, hBitmap, 0, ci.height, ci.data, (BITMAPINFO*)&bih, DIB_RGB_COLORS);
 
-    if (g_state.captureMode == sc_capture_mode::ocr) {
-        try {
-            int pad = 24;
-            int pw = (int)ci.width + pad * 2;
-            int ph = (int)ci.height + pad * 2;
-            std::vector<unsigned char> padded(pw * ph * 4);
-            
-            for (int i = 0; i < pw * ph; ++i) {
-                padded[i * 4 + 0] = ci.data[0];
-                padded[i * 4 + 1] = ci.data[1];
-                padded[i * 4 + 2] = ci.data[2];
-                padded[i * 4 + 3] = 255;
-            }
-            for (int y = 0; y < (int)ci.height; ++y) {
-                memcpy(&padded[((y + pad) * pw + pad) * 4], &ci.data[y * ci.width * 4], ci.width * 4);
-            }
+    //if (g_state.captureMode == sc_capture_mode::ocr) {
+    //    try {
+    //        int pad = 24;
+    //        int pw = (int)ci.width + pad * 2;
+    //        int ph = (int)ci.height + pad * 2;
+    //        std::vector<unsigned char> padded(pw * ph * 4);
+    //        
+    //        for (int i = 0; i < pw * ph; ++i) {
+    //            padded[i * 4 + 0] = ci.data[0];
+    //            padded[i * 4 + 1] = ci.data[1];
+    //            padded[i * 4 + 2] = ci.data[2];
+    //            padded[i * 4 + 3] = 255;
+    //        }
+    //        for (int y = 0; y < (int)ci.height; ++y) {
+    //            memcpy(&padded[((y + pad) * pw + pad) * 4], &ci.data[y * ci.width * 4], ci.width * 4);
+    //        }
 
-            if (OcrResult result = _ocr_get_bitmap_result(padded.data(), pw, ph)) {
-                std::wstring text = _ocr_text(result);
-                if (OpenClipboard(nullptr)) {
-                    EmptyClipboard();
-                    _sc_write_to_clipboard(CF_UNICODETEXT, text.c_str(), (text.length() + 1) * sizeof(wchar_t));
-                    CloseClipboard();
-                }
-            }
-        } catch (std::exception& e) {
-            fprintf(stderr, "OCR failed: %s\n", e.what());
-        }
-    }
+    //        if (OcrResult result = _ocr_get_bitmap_result(padded.data(), pw, ph)) {
+    //            std::wstring text = _ocr_text(result);
+    //            if (OpenClipboard(nullptr)) {
+    //                EmptyClipboard();
+    //                _sc_write_to_clipboard(CF_UNICODETEXT, text.c_str(), (text.length() + 1) * sizeof(wchar_t));
+    //                CloseClipboard();
+    //            }
+    //        }
+    //    } catch (std::exception& e) {
+    //        fprintf(stderr, "OCR failed: %s\n", e.what());
+    //    }
+    //}
     //else if (sc_get_app().opt_copy_to_clipboard && OpenClipboard(nullptr)) {
     //    EmptyClipboard();
     //    _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), ci.data, ci.width * ci.height * 4);
@@ -933,112 +933,112 @@ using BitmapPixelFormat = winrt::Windows::Graphics::Imaging::BitmapPixelFormat;
 using BitmapAlphaMode = winrt::Windows::Graphics::Imaging::BitmapAlphaMode;
 using OcrResult = winrt::Windows::Media::Ocr::OcrResult;
 
-sc_internal OcrResult _ocr_get_bitmap_result(const unsigned char* data, int w, int h) {
-    DataWriter writer;
-    writer.WriteBytes(winrt::array_view<const uint8_t>(data, w * h * 4));
-    
-    SoftwareBitmap bitmap = SoftwareBitmap::CreateCopyFromBuffer(
-        writer.DetachBuffer(), 
-        BitmapPixelFormat::Bgra8, 
-        w, h, 
-        BitmapAlphaMode::Ignore
-    );
-    
-    OcrEngine engine = OcrEngine::TryCreateFromUserProfileLanguages();
-    return engine ? engine.RecognizeAsync(bitmap).get() : nullptr;
-}
+//sc_internal OcrResult _ocr_get_bitmap_result(const unsigned char* data, int w, int h) {
+//    DataWriter writer;
+//    writer.WriteBytes(winrt::array_view<const uint8_t>(data, w * h * 4));
+//    
+//    SoftwareBitmap bitmap = SoftwareBitmap::CreateCopyFromBuffer(
+//        writer.DetachBuffer(), 
+//        BitmapPixelFormat::Bgra8, 
+//        w, h, 
+//        BitmapAlphaMode::Ignore
+//    );
+//    
+//    OcrEngine engine = OcrEngine::TryCreateFromUserProfileLanguages();
+//    return engine ? engine.RecognizeAsync(bitmap).get() : nullptr;
+//}
 
 sc_internal void _ocr_run_async() {
-    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    int scale = 2;
+    //int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    //int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    //int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    //int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    //int scale = 2;
 
-    if (OcrEngine probe = OcrEngine::TryCreateFromUserProfileLanguages()) {
-        uint32_t maxDim = probe.MaxImageDimension();
-        while (scale > 1 && ((uint32_t)(vw * scale) > maxDim || (uint32_t)(vh * scale) > maxDim)) {
-            --scale;
-        }
-    }
+    //if (OcrEngine probe = OcrEngine::TryCreateFromUserProfileLanguages()) {
+    //    uint32_t maxDim = probe.MaxImageDimension();
+    //    while (scale > 1 && ((uint32_t)(vw * scale) > maxDim || (uint32_t)(vh * scale) > maxDim)) {
+    //        --scale;
+    //    }
+    //}
 
-    int sw = vw * scale;
-    int sh = vh * scale;
-    
-    HDC hScaledDC = CreateCompatibleDC(g_state.frozenDC);
-    HBITMAP hScaledBmp = CreateCompatibleBitmap(g_state.frozenDC, sw, sh);
-    SelectObject(hScaledDC, hScaledBmp);
-    SetStretchBltMode(hScaledDC, HALFTONE);
-    StretchBlt(hScaledDC, 0, 0, sw, sh, g_state.frozenDC, 0, 0, vw, vh, SRCCOPY);
+    //int sw = vw * scale;
+    //int sh = vh * scale;
+    //
+    //HDC hScaledDC = CreateCompatibleDC(g_state.frozenDC);
+    //HBITMAP hScaledBmp = CreateCompatibleBitmap(g_state.frozenDC, sw, sh);
+    //SelectObject(hScaledDC, hScaledBmp);
+    //SetStretchBltMode(hScaledDC, HALFTONE);
+    //StretchBlt(hScaledDC, 0, 0, sw, sh, g_state.frozenDC, 0, 0, vw, vh, SRCCOPY);
 
-    BITMAPINFOHEADER bih = {};
-    bih.biSize = sizeof(BITMAPINFOHEADER);
-    bih.biWidth = sw;
-    bih.biHeight = -sh;
-    bih.biPlanes = 1;
-    bih.biBitCount = 32;
-    bih.biCompression = BI_RGB;
+    //BITMAPINFOHEADER bih = {};
+    //bih.biSize = sizeof(BITMAPINFOHEADER);
+    //bih.biWidth = sw;
+    //bih.biHeight = -sh;
+    //bih.biPlanes = 1;
+    //bih.biBitCount = 32;
+    //bih.biCompression = BI_RGB;
 
-    auto bits = std::make_shared<std::vector<unsigned char>>(sw * sh * 4);
-    GetDIBits(hScaledDC, hScaledBmp, 0, sh, bits->data(), (BITMAPINFO*)&bih, DIB_RGB_COLORS);
-    
-    DeleteObject(hScaledBmp);
-    DeleteDC(hScaledDC);
+    //auto bits = std::make_shared<std::vector<unsigned char>>(sw * sh * 4);
+    //GetDIBits(hScaledDC, hScaledBmp, 0, sh, bits->data(), (BITMAPINFO*)&bih, DIB_RGB_COLORS);
+    //
+    //DeleteObject(hScaledBmp);
+    //DeleteDC(hScaledDC);
 
-    std::thread([bits, sw, sh, scale, vx, vy]() {
-        winrt::init_apartment();
-        try {
-            if (OcrResult result = _ocr_get_bitmap_result(bits->data(), sw, sh)) {
-                std::vector<sc_ocr_line> lines;
-                
-                for (auto const& line : result.Lines()) {
-                    sc_ocr_line ol = {};
-                    bool first = true;
-                    int minx = 0, miny = 0, maxx = 0, maxy = 0;
-                    
-                    for (auto const& word : line.Words()) {
-                        auto wr = word.BoundingRect();
-                        sc_rect box = { 
-                            (int)(wr.X / scale) + vx, 
-                            (int)(wr.Y / scale) + vy, 
-                            (int)(wr.Width / scale), 
-                            (int)(wr.Height / scale) 
-                        };
-                        
-                        int n = std::max(1, (int)word.Text().size());
-                        for (int c = 0; c < n; ++c) {
-                            int x0 = box.x + box.width * c / n;
-                            int width_val = (box.x + box.width * (c + 1) / n) - x0;
-                            ol.chars.push_back({ x0, box.y, width_val, box.height });
-                        }
-                        
-                        if (first) {
-                            minx = box.x;
-                            miny = box.y;
-                            maxx = box.x + box.width;
-                            maxy = box.y + box.height;
-                            first = false;
-                        } else {
-                            minx = std::min(minx, box.x);
-                            miny = std::min(miny, box.y);
-                            maxx = std::max(maxx, box.x + box.width);
-                            maxy = std::max(maxy, box.y + box.height);
-                        }
-                    }
-                    
-                    if (!first) {
-                        ol.rect = { minx, miny, maxx - minx, maxy - miny };
-                        lines.push_back(ol);
-                    }
-                }
-                
-                std::lock_guard<std::mutex> lock(g_state.ocrMutex);
-                g_state.ocrLines = lines;
-            }
-        } catch (std::exception& e) {
-            fprintf(stderr, "OCR failed: %s\n", e.what());
-        }
-    }).detach();
+    //std::thread([bits, sw, sh, scale, vx, vy]() {
+    //    winrt::init_apartment();
+    //    try {
+    //        if (OcrResult result = _ocr_get_bitmap_result(bits->data(), sw, sh)) {
+    //            std::vector<sc_ocr_line> lines;
+    //            
+    //            for (auto const& line : result.Lines()) {
+    //                sc_ocr_line ol = {};
+    //                bool first = true;
+    //                int minx = 0, miny = 0, maxx = 0, maxy = 0;
+    //                
+    //                for (auto const& word : line.Words()) {
+    //                    auto wr = word.BoundingRect();
+    //                    sc_rect box = { 
+    //                        (int)(wr.X / scale) + vx, 
+    //                        (int)(wr.Y / scale) + vy, 
+    //                        (int)(wr.Width / scale), 
+    //                        (int)(wr.Height / scale) 
+    //                    };
+    //                    
+    //                    int n = std::max(1, (int)word.Text().size());
+    //                    for (int c = 0; c < n; ++c) {
+    //                        int x0 = box.x + box.width * c / n;
+    //                        int width_val = (box.x + box.width * (c + 1) / n) - x0;
+    //                        ol.chars.push_back({ x0, box.y, width_val, box.height });
+    //                    }
+    //                    
+    //                    if (first) {
+    //                        minx = box.x;
+    //                        miny = box.y;
+    //                        maxx = box.x + box.width;
+    //                        maxy = box.y + box.height;
+    //                        first = false;
+    //                    } else {
+    //                        minx = std::min(minx, box.x);
+    //                        miny = std::min(miny, box.y);
+    //                        maxx = std::max(maxx, box.x + box.width);
+    //                        maxy = std::max(maxy, box.y + box.height);
+    //                    }
+    //                }
+    //                
+    //                if (!first) {
+    //                    ol.rect = { minx, miny, maxx - minx, maxy - miny };
+    //                    lines.push_back(ol);
+    //                }
+    //            }
+    //            
+    //            std::lock_guard<std::mutex> lock(g_state.ocrMutex);
+    //            g_state.ocrLines = lines;
+    //        }
+    //    } catch (std::exception& e) {
+    //        fprintf(stderr, "OCR failed: %s\n", e.what());
+    //    }
+    //}).detach();
 }
 
 sc_internal bool _ocr_snap_to_text(const sc_rect& drag, sc_rect& out) {

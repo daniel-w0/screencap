@@ -10,6 +10,14 @@
 #include <unordered_map>
 #include "stb_image.h"
 
+#include <algorithm>
+
+//#define min(a,b) (((a)<(b))?(a):(b))
+//#define max(a,b) (((a)>(b))?(a):(b))
+
+using std::min;
+using std::max;
+
 #include <gdiplus.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 
@@ -466,16 +474,35 @@ static float round_rad() { return 6.0f * g_scale; }
 #pragma endregion
 
 static sc_widget make_label(RECT rect, std::wstring label) {
-    return { .kind = SC_W_LABEL, .rect = rect, .label = label };
+    sc_widget w = {};
+    w.kind = SC_W_LABEL;
+    w.rect = rect;
+    w.label = label;
+    return w;
 }
 static sc_widget make_toggle(RECT rect, std::wstring label, bool* value, const char* name) {
-    return { .kind = SC_W_TOGGLE, .rect = rect, .label = label, .value = value, .opt_name = name };
+    sc_widget w = {};
+    w.kind = SC_W_TOGGLE;
+    w.rect = rect;
+    w.label = label;
+    w.value = value;
+    w.opt_name = name;
+    return w;
 }
 static sc_widget make_hotkey(RECT rect, int index) {
-    return { .kind = SC_W_HOTKEY_ROW, .rect = rect, .hotkey = index };
+    sc_widget w = {};
+    w.kind = SC_W_HOTKEY_ROW;
+    w.rect = rect;
+    w.hotkey = index;
+    return w;
 }
 static sc_widget make_gallery_item(RECT rect, std::wstring filename, std::string full_path) {
-    return sc_widget{ .kind = SC_W_GALLERY_ITEM, .rect = rect, .label = filename, .full_path = full_path };
+    sc_widget w = {};
+    w.kind = SC_W_GALLERY_ITEM;
+    w.rect = rect;
+    w.label = filename;
+    w.full_path = full_path;
+    return w;
 }
 static sc_widget make_dropdown(RECT rect, std::wstring label, std::string current_val, std::vector<std::string> options, const char* name) {
     sc_widget w = {};
@@ -892,10 +919,12 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             ui = sc_settings_ui{};
             theme_create(ui.theme);
 
-            BOOL dark = ui.theme.dark ? TRUE : FALSE;
-            DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-            DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
-            DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+            //BOOL dark = ui.theme.dark ? TRUE : FALSE;
+            //DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+            //DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+            //DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+
+            bool dark = true;
 
             int editY = scale_i(PATH_FIELD_Y) + (scale_i(PATH_FIELD_H) - scale_i(PATH_EDIT_H)) / 2;
             ui.edit_path = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, scale_i(170), editY, scale_i(260), scale_i(PATH_EDIT_H), hwnd, (HMENU)3001, GetModuleHandle(nullptr), nullptr);
@@ -1394,8 +1423,9 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 theme_destroy(ui.theme);
                 theme_create(ui.theme);
 
-                BOOL dark = ui.theme.dark ? TRUE : FALSE;
-                DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+                bool dark = true;
+                //BOOL dark = ui.theme.dark ? TRUE : FALSE;
+                //DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 
                 SendMessageW(ui.edit_path, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
                 SendMessageW(ui.btn_browse, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
