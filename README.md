@@ -1,6 +1,7 @@
 ## Screencap
 A simple standalone executable used for screenshotting  
 Features:
+- Windows 7 Support (Read Below)
 - Interactive Screenshotting - Selecting window or region
 - Screenshot active window
 - Screenshot active desktop
