@@ -6,6 +6,7 @@
 #  include <crtdbg.h>
 #endif
 
+#include <algorithm>
 #include <cstdlib>
 
 #include <cstdio>
@@ -21,6 +22,7 @@
 #include <string>
 #include <chrono>
 #include <filesystem>
+#include <array>
 
 namespace fs = std::filesystem;
 

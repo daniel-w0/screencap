@@ -6,7 +6,9 @@ workspace "screencap"
   location "build"
 
   language "C++"
-  cppdialect "C++20"
+  cppdialect "C++17"
+  systemversion "10.0.19041.0"
+  toolset "v141"
 
   targetdir "bin/%{cfg.buildcfg}-%{cfg.platform}"
   objdir "obj/%{cfg.buildcfg}-%{cfg.platform}/%{prj.name}"
@@ -25,8 +27,15 @@ workspace "screencap"
     architecture "x86_64"
 
   filter "system:windows"
+    linkoptions { 
+        "/DELAYLOAD:api-ms-win-core-winrt-string-l1-1-0.dll", 
+        "/DELAYLOAD:api-ms-win-core-winrt-l1-1-0.dll",
+        "/DELAYLOAD:api-ms-win-core-winrt-error-l1-1-0.dll",
+        "/DELAYLOAD:api-ms-win-core-winrt-error-l1-1-1.dll"
+    }
+
     defines { "SC_PLATFORM_WINDOWS", "_CRT_SECURE_NO_WARNINGS" }
-    links { "dwmapi", "winmm", "uxtheme", "comctl32", "windowsapp", "gdiplus" }
+    links { "dwmapi", "winmm", "uxtheme", "comctl32", "gdiplus", "delayimp", "runtimeobject" }
 
   filter {}
 
@@ -34,6 +43,7 @@ workspace "screencap"
     kind "WindowedApp"
     files { "src/**.cc", "src/**.h", "ext/**.h", "src/resources.rc" }
     includedirs { "src", "ext" }
+    defines { "WINVER=0x0601", "_WIN32_WINNT=0x0601" }
 
     pchheader "pch.h"
     pchsource "src/pch.cc"

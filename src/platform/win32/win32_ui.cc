@@ -10,6 +10,25 @@
 #include <unordered_map>
 #include "stb_image.h"
 
+#include <algorithm>
+
+using std::min;
+using std::max;
+
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#ifndef DWMWA_WINDOW_CORNER_PREFERENCE
+#define DWMWA_WINDOW_CORNER_PREFERENCE 33
+#endif
+
+#ifndef DWM_WINDOW_CORNER_PREFERENCE
+typedef enum DWM_WINDOW_CORNER_PREFERENCE {
+    DWMWCP_DEFAULT = 0,
+    DWMWCP_DONOTROUND = 1,
+    DWMWCP_ROUND = 2,
+    DWMWCP_ROUNDSMALL = 3
+} DWM_WINDOW_CORNER_PREFERENCE;
+#endif
+
 #include <gdiplus.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 
@@ -38,7 +57,13 @@ int unscale_i(int val) { return (int)(val / g_scale); }
 
 void OpenFolderPickerDialog(HWND hwnd, HWND hEditPath) {
     std::thread([](HWND hwndParent, HWND hEdit) {
-        winrt::init_apartment();
+
+        HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        if (FAILED(hrInit)) {
+            MessageBoxW(hwndParent, L"Failed to initialize COM library.", L"Error", MB_ICONERROR);
+            return;
+        }
+
         IFileOpenDialog* pFolderDlg = nullptr;
         if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pFolderDlg)))) {
             DWORD options;
@@ -51,7 +76,7 @@ void OpenFolderPickerDialog(HWND hwnd, HWND hEditPath) {
                     PWSTR pszPath = nullptr;
                     if (SUCCEEDED(pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszPath))) {
                         SetWindowTextW(hEdit, pszPath);
-                        sc_get_app().save_path = winrt::to_string(pszPath);
+                        sc_get_app().save_path = std::string(pszPath, pszPath + wcslen(pszPath));
                         sc_save_config();
                         CoTaskMemFree(pszPath);
                     }
@@ -60,6 +85,8 @@ void OpenFolderPickerDialog(HWND hwnd, HWND hEditPath) {
             }
             pFolderDlg->Release();
         }
+
+        CoUninitialize();
     }, hwnd, hEditPath).detach();
 }
 
@@ -342,21 +369,27 @@ static LRESULT CALLBACK _sc_ll_keyboard_proc(int nCode, WPARAM wParam, LPARAM lP
 }
 
 static bool _sc_system_uses_dark_theme() {
-    DWORD val = 1, size = sizeof(val);
-    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &val, &size) == ERROR_SUCCESS) {
-        return val == 0;
+    if (_sc_is_win10_or_greater()) {
+        DWORD val = 1, size = sizeof(val);
+        if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+            L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &val, &size) == ERROR_SUCCESS) {
+            return val == 0;
+        }
     }
-    return true;
+    return false;
 }
 
 static COLORREF _sc_system_accent_color() {
-    try {
-        winrt::Windows::UI::ViewManagement::UISettings settings;
-        auto c = settings.GetColorValue(winrt::Windows::UI::ViewManagement::UIColorType::Accent);
-        return RGB(c.R, c.G, c.B);
-    } catch (...) {
-        return RGB(0, 120, 215);
+    constexpr COLORREF default_accent = RGB(0, 120, 215);
+    if (_sc_is_win10_or_greater()) {
+        DWORD val = 0, size = sizeof(val);
+        if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\DWM", L"ColorizationColor", RRF_RT_REG_DWORD, nullptr, &val, &size) == ERROR_SUCCESS) {
+            return RGB((val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF);
+        } else {
+            return default_accent;
+        }
+    } else {
+        return default_accent;
     }
 }
 
@@ -466,16 +499,35 @@ static float round_rad() { return 6.0f * g_scale; }
 #pragma endregion
 
 static sc_widget make_label(RECT rect, std::wstring label) {
-    return { .kind = SC_W_LABEL, .rect = rect, .label = label };
+    sc_widget w = {};
+    w.kind = SC_W_LABEL;
+    w.rect = rect;
+    w.label = label;
+    return w;
 }
 static sc_widget make_toggle(RECT rect, std::wstring label, bool* value, const char* name) {
-    return { .kind = SC_W_TOGGLE, .rect = rect, .label = label, .value = value, .opt_name = name };
+    sc_widget w = {};
+    w.kind = SC_W_TOGGLE;
+    w.rect = rect;
+    w.label = label;
+    w.value = value;
+    w.opt_name = name;
+    return w;
 }
 static sc_widget make_hotkey(RECT rect, int index) {
-    return { .kind = SC_W_HOTKEY_ROW, .rect = rect, .hotkey = index };
+    sc_widget w = {};
+    w.kind = SC_W_HOTKEY_ROW;
+    w.rect = rect;
+    w.hotkey = index;
+    return w;
 }
 static sc_widget make_gallery_item(RECT rect, std::wstring filename, std::string full_path) {
-    return sc_widget{ .kind = SC_W_GALLERY_ITEM, .rect = rect, .label = filename, .full_path = full_path };
+    sc_widget w = {};
+    w.kind = SC_W_GALLERY_ITEM;
+    w.rect = rect;
+    w.label = filename;
+    w.full_path = full_path;
+    return w;
 }
 static sc_widget make_dropdown(RECT rect, std::wstring label, std::string current_val, std::vector<std::string> options, const char* name) {
     sc_widget w = {};
@@ -893,15 +945,17 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             theme_create(ui.theme);
 
             BOOL dark = ui.theme.dark ? TRUE : FALSE;
-            DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
-            DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
-            DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+            if (_sc_is_win10_or_greater()) {
+                DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+                //DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+                //DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+            }
 
             int editY = scale_i(PATH_FIELD_Y) + (scale_i(PATH_FIELD_H) - scale_i(PATH_EDIT_H)) / 2;
             ui.edit_path = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, scale_i(170), editY, scale_i(260), scale_i(PATH_EDIT_H), hwnd, (HMENU)3001, GetModuleHandle(nullptr), nullptr);
             SendMessageW(ui.edit_path, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
 
-            std::wstring widePath = winrt::to_hstring(sc_get_app().save_path).c_str();
+            std::wstring widePath = _sc_utf8_to_wstring(sc_get_app().save_path);
             SetWindowTextW(ui.edit_path, widePath.c_str());
 
             ui.btn_browse = CreateWindowExW(0, L"BUTTON", sc_get_localized_string("Browse...").c_str(), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, scale_i(430), scale_i(PATH_FIELD_Y), scale_i(100), scale_i(PATH_FIELD_H), hwnd, (HMENU)3002, GetModuleHandle(nullptr), nullptr);
@@ -912,6 +966,17 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             SetWindowSubclass(ui.btn_browse, BrowseButtonSubclassProc, 0, 0);
 
             g_tabs[ui.active_tab].on_activate(ui, true);
+
+            //SendMessageW(ui.edit_path, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
+            //SendMessageW(ui.btn_browse, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
+
+            if (!_sc_is_win10_or_greater()) {
+                SendMessage(hwnd, WM_SIZE, 0, MAKELPARAM(scale_i(MIN_WINDOW_WIDTH), scale_i(MIN_WINDOW_HEIGHT)));
+                InvalidateRect(ui.edit_path, nullptr, TRUE);
+                InvalidateRect(ui.btn_browse, nullptr, TRUE);
+            }
+            InvalidateRect(hwnd, nullptr, TRUE);
+
             return 0;
         }
 
@@ -1030,12 +1095,16 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         }
 
         case WM_COMMAND: {
-            if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) == 3001) {
+            if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) == 3001) { // in WM_CREATE, SetWindowTextW will trigger this condition so we skip if the path is the same
                 int len = GetWindowTextLengthW(ui.edit_path);
                 std::vector<wchar_t> buf(len + 1);
                 GetWindowTextW(ui.edit_path, buf.data(), len + 1);
-                sc_get_app().save_path = winrt::to_string(buf.data());
-                sc_save_config();
+                std::wstring widePath(buf.data(), len);
+                std::wstring savePath16 = _sc_utf8_to_wstring(sc_get_app().save_path);
+                if (widePath != savePath16) {
+                    sc_get_app().save_path = _sc_wstring_to_utf8(widePath); // todo: save_path should be fs::path or std::wstring
+                    sc_save_config();
+                }
             }
 
             if (LOWORD(wParam) == 3002) {
@@ -1390,16 +1459,18 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         }
 
         case WM_SETTINGCHANGE: {
-            if (lParam && wcscmp((const wchar_t*)lParam, L"ImmersiveColorSet") == 0) {
-                theme_destroy(ui.theme);
-                theme_create(ui.theme);
+            if (_sc_is_win10_or_greater()) {
+                if (lParam && wcscmp((const wchar_t*)lParam, L"ImmersiveColorSet") == 0) {
+                    theme_destroy(ui.theme);
+                    theme_create(ui.theme);
 
-                BOOL dark = ui.theme.dark ? TRUE : FALSE;
-                DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+                    BOOL dark = ui.theme.dark ? TRUE : FALSE;
+                    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 
-                SendMessageW(ui.edit_path, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
-                SendMessageW(ui.btn_browse, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
-                InvalidateRect(hwnd, nullptr, TRUE);
+                    SendMessageW(ui.edit_path, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
+                    SendMessageW(ui.btn_browse, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
+                    InvalidateRect(hwnd, nullptr, TRUE);
+                }
             }
             break;
         }

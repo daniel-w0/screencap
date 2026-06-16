@@ -12,6 +12,30 @@
 #include "embed/screenshot_sound.h"
 #include "embed/screenshot_sound_quick.h"
 
+extern "C" HRESULT WINAPI CoIncrementMTAUsage(PVOID* cookie) {
+    // Dynamically look up the function in ole32.dll at runtime
+    typedef HRESULT(WINAPI* CoIncMTAFunc)(PVOID*);
+    static CoIncMTAFunc pCoIncrementMTAUsage = nullptr;
+    static bool checked = false;
+
+    if (!checked) {
+        HMODULE hOle32 = GetModuleHandleW(L"ole32.dll");
+        if (hOle32) {
+            pCoIncrementMTAUsage = (CoIncMTAFunc)GetProcAddress(hOle32, "CoIncrementMTAUsage");
+        }
+        checked = true;
+    }
+
+    if (pCoIncrementMTAUsage) {
+        return pCoIncrementMTAUsage(cookie);
+    }
+
+    if (cookie) {
+        *cookie = (PVOID)1;
+    }
+    return S_OK;
+}
+
 #define WM_TRAYICON (WM_USER + 1)
 
 enum {
@@ -21,13 +45,6 @@ enum {
 };
 
 #pragma region OCR Decl
-using DataWriter = winrt::Windows::Storage::Streams::DataWriter;
-using IBuffer = winrt::Windows::Storage::Streams::IBuffer;
-using SoftwareBitmap = winrt::Windows::Graphics::Imaging::SoftwareBitmap;
-using OcrEngine = winrt::Windows::Media::Ocr::OcrEngine;
-using BitmapPixelFormat = winrt::Windows::Graphics::Imaging::BitmapPixelFormat;
-using BitmapAlphaMode = winrt::Windows::Graphics::Imaging::BitmapAlphaMode;
-using OcrResult = winrt::Windows::Media::Ocr::OcrResult;
 
 struct sc_ocr_line {
     sc_rect rect;
@@ -237,14 +254,9 @@ bool _sc_write_to_clipboard(UINT format, const void* data, size_t size, const vo
 }
 
 void _sc_init_impl() {
-    { // Register hotkeys
-        for (auto& hk : sc_get_app().hotkeys) {
-            hk.registered = RegisterHotKey(nullptr, hk.id, hk.modifiers | MOD_NOREPEAT, hk.key);
-            if (!hk.registered) {
-                fprintf(stderr, "Failed to register hotkey: %s\n", sc_hotkey_id_strings[hk.id]);
-            }
-        }
+    sc_reregister_hotkeys();
 
+    { // Setup console
         HANDLE hInput = GetStdHandle(STD_INPUT_HANDLE);
         DWORD prev_mode;
         if (GetConsoleMode(hInput, &prev_mode)) {
@@ -252,7 +264,10 @@ void _sc_init_impl() {
         }
     }
 
-    winrt::init_apartment();
+    //winrt::init_apartment();
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); // fuck it, we will do it here for now idc.
+    // todo: do this ^^ ONCE in init and close it in shutdown. the filepath browse uses this as well and manages its own
+
     SetProcessDPIAware();
     _sc_get_monitors(g_state.monitors);
 
@@ -302,6 +317,10 @@ void sc_reregister_hotkeys() {
     }
     for (auto& hk : sc_get_app().hotkeys) {
         if (hk.key != 0) {
+            if (hk.id == sc_hotkey_ocr && !_sc_is_win10_or_greater()) {
+                fprintf(stderr, "Skipping OCR hotkey registration on unsupported OS version.\n");
+                continue;
+            }
             hk.registered = RegisterHotKey(nullptr, hk.id, hk.modifiers | MOD_NOREPEAT, hk.key);
             if (!hk.registered) {
                 fprintf(stderr, "Failed to register hotkey: %s\n", sc_hotkey_id_strings[hk.id]);
@@ -331,6 +350,19 @@ void sc_begin_capture(sc_hotkey_id hotkey) {
         return;
     }
 
+    if (hotkey == sc_hotkey_active_window) {
+        g_state.captureMode = sc_capture_mode::window_under_cursor;
+    } else if (hotkey == sc_hotkey_current_monitor) {
+        g_state.captureMode = sc_capture_mode::monitor_under_cursor;
+    } else if (hotkey == sc_hotkey_ocr) {
+        if (!_sc_is_win10_or_greater()) {
+            fprintf(stderr, "OCR capture is only supported on Windows 10 or later.\n");
+            return;
+        }
+        g_state.captureMode = sc_capture_mode::ocr;
+    } else {
+        g_state.captureMode = sc_capture_mode::interactive;
+    }
 
     g_state.capturing = true;
     g_state.shouldSave = hotkey != sc_hotkey_clipboard;
@@ -341,16 +373,6 @@ void sc_begin_capture(sc_hotkey_id hotkey) {
     g_state.captureReady = false;
     g_state.hoveredHwnd = nullptr;
     g_state.finalHwnd = nullptr;
-
-    if (hotkey == sc_hotkey_active_window) {
-        g_state.captureMode = sc_capture_mode::window_under_cursor;
-    } else if (hotkey == sc_hotkey_current_monitor) {
-        g_state.captureMode = sc_capture_mode::monitor_under_cursor;
-    } else if (hotkey == sc_hotkey_ocr) {
-        g_state.captureMode = sc_capture_mode::ocr;
-    } else {
-        g_state.captureMode = sc_capture_mode::interactive;
-    }
 
     int vx, vy, vw, vh;
     _sc_get_display_metrics(vx, vy, vw, vh);
@@ -394,13 +416,15 @@ void sc_begin_capture(sc_hotkey_id hotkey) {
 
     // interactive mode...
 
-    {
-        std::lock_guard<std::mutex> lock(g_state.ocrMutex);
-        g_state.ocrLines.clear();
-    }
+    if (_sc_is_win10_or_greater()) {
+        {
+            std::lock_guard<std::mutex> lock(g_state.ocrMutex);
+            g_state.ocrLines.clear();
+        }
 
-    if (g_state.captureMode == sc_capture_mode::ocr) {
-        _ocr_run_async();
+        if (g_state.captureMode == sc_capture_mode::ocr) {
+            _ocr_run_async();
+        }
     }
 
     if (!g_state.overlayHwnd) {        
@@ -511,7 +535,7 @@ bool sc_capture_update(sc_capture_info& ci) {
     ci.data = new unsigned char[ci.width * ci.height * 4];
     GetDIBits(hMemoryDC, hBitmap, 0, ci.height, ci.data, (BITMAPINFO*)&bih, DIB_RGB_COLORS);
 
-    if (g_state.captureMode == sc_capture_mode::ocr) {
+    if (_sc_is_win10_or_greater() && g_state.captureMode == sc_capture_mode::ocr) {
         try {
             int pad = 24;
             int pw = (int)ci.width + pad * 2;
@@ -540,11 +564,6 @@ bool sc_capture_update(sc_capture_info& ci) {
             fprintf(stderr, "OCR failed: %s\n", e.what());
         }
     }
-    //else if (sc_get_app().opt_copy_to_clipboard && OpenClipboard(nullptr)) {
-    //    EmptyClipboard();
-    //    _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), ci.data, ci.width * ci.height * 4);
-    //    CloseClipboard();
-    //}
 
     DeleteObject(hBitmap);
     DeleteDC(hMemoryDC);
@@ -624,7 +643,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                         std::abs(pt.y - g_state.dragStart.y) 
                     };
                     sc_rect snapped;
-                    if (g_state.snapDrag && _ocr_snap_to_text(dragRect, snapped)) {
+                    if (g_state.snapDrag && _ocr_snap_to_text(dragRect, snapped)) { // snapDrag only true if winver >= 10 and captureMode == ocr
                         g_state.currentRect = snapped;
                     } else {
                         g_state.currentRect = dragRect;
@@ -632,7 +651,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
             } else {
                 sc_rect textRect;
-                if (g_state.captureMode == sc_capture_mode::ocr && _ocr_text_at_point(pt, textRect)) {
+                if (_sc_is_win10_or_greater() && g_state.captureMode == sc_capture_mode::ocr && _ocr_text_at_point(pt, textRect)) {
                     g_state.hoveredHwnd = nullptr;
                     g_state.currentRect = textRect;
                 } else {
@@ -674,7 +693,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g_state.mouseDown = true;
             g_state.dragStart = pt;
             sc_rect textRect;
-            g_state.snapDrag = g_state.captureMode == sc_capture_mode::ocr && _ocr_text_at_point(pt, textRect);
+            g_state.snapDrag = _sc_is_win10_or_greater() && g_state.captureMode == sc_capture_mode::ocr && _ocr_text_at_point(pt, textRect);
             SetCapture(hwnd);
             return 0;
         }
@@ -925,17 +944,17 @@ void RegisterTrayIcon(HWND hwnd) {
 #pragma endregion
 
 #pragma region OCR Impl
-using DataWriter = winrt::Windows::Storage::Streams::DataWriter;
-using IBuffer = winrt::Windows::Storage::Streams::IBuffer;
-using SoftwareBitmap = winrt::Windows::Graphics::Imaging::SoftwareBitmap;
-using OcrEngine = winrt::Windows::Media::Ocr::OcrEngine;
-using BitmapPixelFormat = winrt::Windows::Graphics::Imaging::BitmapPixelFormat;
-using BitmapAlphaMode = winrt::Windows::Graphics::Imaging::BitmapAlphaMode;
-using OcrResult = winrt::Windows::Media::Ocr::OcrResult;
+//using DataWriter = winrt::Windows::Storage::Streams::DataWriter;
+//using IBuffer = winrt::Windows::Storage::Streams::IBuffer;
+//using SoftwareBitmap = winrt::Windows::Graphics::Imaging::SoftwareBitmap;
+//using OcrEngine = winrt::Windows::Media::Ocr::OcrEngine;
+//using BitmapPixelFormat = winrt::Windows::Graphics::Imaging::BitmapPixelFormat;
+//using BitmapAlphaMode = winrt::Windows::Graphics::Imaging::BitmapAlphaMode;
+//using OcrResult = winrt::Windows::Media::Ocr::OcrResult;
 
 sc_internal OcrResult _ocr_get_bitmap_result(const unsigned char* data, int w, int h) {
     DataWriter writer;
-    writer.WriteBytes(winrt::array_view<const uint8_t>(data, w * h * 4));
+    writer.WriteBytes(winrt::array_view<const uint8_t>(data, data + (w * h * 4)));
     
     SoftwareBitmap bitmap = SoftwareBitmap::CreateCopyFromBuffer(
         writer.DetachBuffer(), 

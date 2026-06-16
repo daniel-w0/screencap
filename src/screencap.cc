@@ -4,6 +4,8 @@
 #include "simpleini.h"
 #include <fstream>
 
+typedef LONG(WINAPI* RtlGetVersionPtr)(PRTL_OSVERSIONINFOW);
+
 static sc_app g_app;
 static std::unordered_map<std::string, std::wstring> language_map;
 
@@ -58,15 +60,42 @@ sc_app& sc_get_app() {
 }
 
 std::wstring _sc_utf8_to_wstring(const std::string& str) {
-#if defined(_WIN32) || defined(_WIN64)
     int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), NULL, 0);
     std::wstring wstr(size_needed, 0);
     MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), &wstr[0], size_needed);
     return wstr;
-#else
-// don't think I need to do this on MacOS
-#error "UTF-8 to wstring conversion not implemented for this platform"
-#endif
+}
+
+std::string _sc_wstring_to_utf8(const std::wstring& wstr) {
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), NULL, 0, NULL, NULL);
+    std::string str(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), &str[0], size_needed, NULL, NULL);
+    return str;
+}
+
+bool _sc_is_win10_or_greater() {
+    static bool isGreater = false;
+    static bool isSet = false;
+    if (isSet) {
+        return isGreater;
+    }
+
+    HMODULE hMod = GetModuleHandleA("ntdll.dll");
+    if (hMod) {
+        RtlGetVersionPtr pRtlGetVersion = (RtlGetVersionPtr)GetProcAddress(hMod, "RtlGetVersion");
+        if (pRtlGetVersion) {
+            RTL_OSVERSIONINFOW osInfo = {};
+            osInfo.dwOSVersionInfoSize = sizeof(osInfo);
+            if (pRtlGetVersion(&osInfo) == 0) {
+                isGreater = osInfo.dwMajorVersion >= 10;
+                isSet = true;
+                return isGreater;
+            }
+        }
+    }
+
+    fprintf(stderr, "Failed getting Windows version, defaulting to older API's\n");
+    return false; // just in case this failed
 }
 
 sc_internal void _init_languages() {
@@ -261,9 +290,15 @@ bool sc_save_capture(sc_capture_info& ci) {
         bih.biBitCount = 32;
         bih.biCompression = BI_RGB;
 
+        // swap channels for BGRA
+        size_t pixelCount = ci.width * ci.height;
+        std::vector<uint32_t> dibPixels((uint32_t*)ci.data, (uint32_t*)ci.data + pixelCount);
+        _sc_swap_channels(dibPixels.data(), pixelCount);
+
         EmptyClipboard();
-        // write old-style DIB data for compatibility with apps that don't support PNG
-        _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), ci.data, ci.width * ci.height * 4);
+
+        // write old-style DIB data
+        _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), dibPixels.data(), pixelCount * 4);
 
         // and now png
         _sc_write_to_clipboard(RegisterClipboardFormatA("PNG"), pngData.data(), pngData.size());
