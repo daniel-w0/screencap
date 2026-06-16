@@ -563,10 +563,6 @@ bool sc_capture_update(sc_capture_info& ci) {
         } catch (std::exception& e) {
             fprintf(stderr, "OCR failed: %s\n", e.what());
         }
-    } else if (sc_get_app().opt_copy_to_clipboard && OpenClipboard(nullptr)) {
-        EmptyClipboard();
-        _sc_write_to_clipboard(CF_DIB, &bih, sizeof(BITMAPINFOHEADER), ci.data, ci.width * ci.height * 4);
-        CloseClipboard();
     }
 
     DeleteObject(hBitmap);
