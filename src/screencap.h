@@ -106,6 +106,7 @@ std::string sc_get_date_string();
 fs::path sc_get_save_path();
 
 std::wstring _sc_utf8_to_wstring(const std::string& str);
+std::string _sc_wstring_to_utf8(const std::wstring& wstr);
 
 bool _sc_is_win10_or_greater();
 

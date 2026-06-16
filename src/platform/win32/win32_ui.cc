@@ -955,7 +955,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             ui.edit_path = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, scale_i(170), editY, scale_i(260), scale_i(PATH_EDIT_H), hwnd, (HMENU)3001, GetModuleHandle(nullptr), nullptr);
             SendMessageW(ui.edit_path, WM_SETFONT, (WPARAM)ui.theme.font, TRUE);
 
-            std::wstring widePath = _sc_utf8_to_wstring(sc_get_save_path().string());
+            std::wstring widePath = _sc_utf8_to_wstring(sc_get_app().save_path);
             SetWindowTextW(ui.edit_path, widePath.c_str());
 
             ui.btn_browse = CreateWindowExW(0, L"BUTTON", sc_get_localized_string("Browse...").c_str(), WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, scale_i(430), scale_i(PATH_FIELD_Y), scale_i(100), scale_i(PATH_FIELD_H), hwnd, (HMENU)3002, GetModuleHandle(nullptr), nullptr);
@@ -1095,12 +1095,16 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         }
 
         case WM_COMMAND: {
-            if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) == 3001) {
+            if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) == 3001) { // in WM_CREATE, SetWindowTextW will trigger this condition so we skip if the path is the same
                 int len = GetWindowTextLengthW(ui.edit_path);
                 std::vector<wchar_t> buf(len + 1);
                 GetWindowTextW(ui.edit_path, buf.data(), len + 1);
-                sc_get_app().save_path = std::string(buf.data(), buf.data() + len);
-                sc_save_config();
+                std::wstring widePath(buf.data(), len);
+                std::wstring savePath16 = _sc_utf8_to_wstring(sc_get_app().save_path);
+                if (widePath != savePath16) {
+                    sc_get_app().save_path = _sc_wstring_to_utf8(widePath); // todo: save_path should be fs::path or std::wstring
+                    sc_save_config();
+                }
             }
 
             if (LOWORD(wParam) == 3002) {

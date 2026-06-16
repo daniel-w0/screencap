@@ -60,15 +60,17 @@ sc_app& sc_get_app() {
 }
 
 std::wstring _sc_utf8_to_wstring(const std::string& str) {
-#if defined(_WIN32) || defined(_WIN64)
     int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), NULL, 0);
     std::wstring wstr(size_needed, 0);
     MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), &wstr[0], size_needed);
     return wstr;
-#else
-// don't think I need to do this on MacOS
-#error "UTF-8 to wstring conversion not implemented for this platform"
-#endif
+}
+
+std::string _sc_wstring_to_utf8(const std::wstring& wstr) {
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), NULL, 0, NULL, NULL);
+    std::string str(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(), &str[0], size_needed, NULL, NULL);
+    return str;
 }
 
 bool _sc_is_win10_or_greater() {
