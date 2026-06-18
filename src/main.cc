@@ -34,9 +34,18 @@ int entry(int argc, char** argv) {
 
 #if defined(SC_PLATFORM_WINDOWS)
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd) {
-    if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
+    bool haveConsole = false;
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        haveConsole = true;
+    } else {
 #if defined(SC_DEBUG)
-        AllocConsole();
+        if (AllocConsole()) {
+            haveConsole = true;
+        }
+#endif
+    }
+
+    if (haveConsole) {
         FILE* f;
         freopen_s(&f, "CONOUT$", "w", stdout);
         freopen_s(&f, "CONOUT$", "w", stderr);
