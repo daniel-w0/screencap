@@ -17,6 +17,7 @@ workspace "screencap"
     defines { "SC_DEBUG" }
     runtime "Debug"
     symbols "On"
+    symbols "Full"
 
   filter "configurations:Release"
     defines { "SC_RELEASE" }
