@@ -747,7 +747,11 @@ static void draw_gallery_item(HDC dc, const sc_ui_theme& t, const sc_widget& w, 
     } else {
         RECT iconRect = r;
         iconRect.bottom -= scale_i(30);
-        DrawTextW(dc, L"PNG", -1, &iconRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        //DrawTextW(dc, L"PNG", -1, &iconRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+        size_t dotPos = w.label.find_last_of('.');
+        std::wstring ext = (dotPos != std::string::npos) ? w.label.substr(dotPos + 1) : L"";
+        DrawTextW(dc, ext.c_str(), -1, &iconRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 
     RECT textRect = r;
@@ -831,9 +835,13 @@ bool list_files_in_directory(const std::string& directory, std::vector<std::stri
     for (const auto& entry : fs::directory_iterator(directory, ec)) {
         if (ec) break;
         if (entry.is_regular_file()) {
-            std::string filename = entry.path().filename().string();
-            if (strstr(filename.c_str(), ".png") || strstr(filename.c_str(), ".jpg") || strstr(filename.c_str(), ".jpeg") || strstr(filename.c_str(), ".bmp") || strstr(filename.c_str(), ".gif")) {
-                out_files.push_back(filename);
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+                return std::tolower(c);
+            });
+
+            if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".gif" || ext == ".mp4") {
+                out_files.push_back(entry.path().filename().string());
             }
         }
     }

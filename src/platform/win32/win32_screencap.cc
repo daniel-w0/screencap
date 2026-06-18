@@ -96,6 +96,9 @@ struct {
     std::vector<sc_ocr_line> ocrLines;
     std::mutex               ocrMutex;
 
+    HANDLE ffmpegProcess = nullptr;
+    HANDLE ffmpegStdin   = nullptr;
+
     bool shouldSave   = false;
     bool capturing    = false;
     bool captureReady = false;
@@ -103,6 +106,7 @@ struct {
     bool dragging     = false;
     bool snapDrag     = false;
     bool wasDragging  = false;
+    bool isRecording = false;
 } g_state;
 
 struct FindWindowData {
@@ -252,6 +256,163 @@ bool _sc_write_to_clipboard(UINT format, const void* data, size_t size, const vo
     return true;
 }
 
+static bool sc_find_executable(const char* exeName, char* outPath, size_t outSize) {
+    if (SearchPathA(nullptr, exeName, nullptr, (DWORD)outSize, outPath, nullptr) != 0) {
+        return true;
+    }
+
+    auto probeRegPath = [&](HKEY root, const char* subkey) -> bool {
+        HKEY hKey;
+        if (RegOpenKeyExA(root, subkey, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS)
+            return false;
+
+        bool found = false;
+        DWORD type = 0, size = 0;
+        if (RegQueryValueExA(hKey, "Path", nullptr, &type, nullptr, &size) == ERROR_SUCCESS && size > 0) {
+            std::string raw(size, '\0');
+            if (RegQueryValueExA(hKey, "Path", nullptr, &type, (LPBYTE)raw.data(), &size) == ERROR_SUCCESS) {
+                raw.resize(strlen(raw.c_str()));
+
+                std::string path;
+                if (type == REG_EXPAND_SZ) {
+                    DWORD need = ExpandEnvironmentStringsA(raw.c_str(), nullptr, 0);
+                    path.resize(need ? need - 1 : 0);
+                    if (need) ExpandEnvironmentStringsA(raw.c_str(), path.data(), need);
+                } else {
+                    path = raw;
+                }
+
+                size_t start = 0;
+                while (start <= path.size() && !found) {
+                    size_t end = path.find(';', start);
+                    if (end == std::string::npos) end = path.size();
+                    std::string dir = path.substr(start, end - start);
+                    start = end + 1;
+                    if (dir.empty()) continue;
+                    if (dir.front() == '"' && dir.back() == '"') dir = dir.substr(1, dir.size() - 2);
+
+                    char candidate[MAX_PATH];
+                    const char* sep = (dir.back() == '\\' || dir.back() == '/') ? "" : "\\";
+                    snprintf(candidate, sizeof(candidate), "%s%s%s", dir.c_str(), sep, exeName);
+
+                    DWORD attrs = GetFileAttributesA(candidate);
+                    if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+                        strncpy_s(outPath, outSize, candidate, _TRUNCATE);
+                        found = true;
+                    }
+                }
+            }
+        }
+        RegCloseKey(hKey);
+        return found;
+    };
+
+    if (probeRegPath(HKEY_CURRENT_USER, "Environment")) return true;
+    if (probeRegPath(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment")) return true;
+
+    return false;
+}
+
+void sc_start_recording(const sc_rect& rect) {
+    if (g_state.ffmpegProcess) {
+        return;
+    }
+
+    printf("started recording\n");
+
+    HANDLE hReadPipe, hWritePipe;
+    SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
+
+    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
+        printf("[error] CreatePipe failed: %lu\n", GetLastError());
+        return;
+    }
+
+    SetHandleInformation(hWritePipe, HANDLE_FLAG_INHERIT, 0);
+
+    char ffmpegPath[MAX_PATH];
+    int w = rect.width & ~1;
+    int h = rect.height & ~1;
+
+    if (!sc_find_executable("ffmpeg.exe", ffmpegPath, sizeof(ffmpegPath))) {
+        printf("[error] ffmpeg.exe not found on PATH or registry PATH\n");
+        CloseHandle(hReadPipe);
+        CloseHandle(hWritePipe);
+        return;
+    }
+
+    if (w <= 0 || h <= 0) {
+        printf("[error] invalid capture size %dx%d\n", rect.width, rect.height);
+        CloseHandle(hReadPipe);
+        CloseHandle(hWritePipe);
+        return;
+    }
+
+    fs::path savePath = sc_get_save_path() / (sc_get_filename_timestamp() + ".mp4");
+    std::string savePathStr = savePath.string();
+
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "\"%s\" -y -f gdigrab -framerate 30 -offset_x %d -offset_y %d -video_size %dx%d -i desktop -c:v libx264 -pix_fmt yuv420p \"%s\"", ffmpegPath, rect.x, rect.y, w, h, savePathStr.c_str());
+
+    HANDLE hCon = CreateFileA("CONOUT$", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+    bool haveConsole = (hCon != INVALID_HANDLE_VALUE);
+    HANDLE hOut = haveConsole ? hCon : CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+
+    STARTUPINFOA si = { sizeof(STARTUPINFOA) };
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdInput = hReadPipe;
+    si.hStdOutput = hOut;
+    si.hStdError = hOut;
+
+    PROCESS_INFORMATION pi = {};
+    DWORD flags = haveConsole ? 0 : CREATE_NO_WINDOW;
+
+    if (CreateProcessA(ffmpegPath, cmd, nullptr, nullptr, TRUE, flags, nullptr, nullptr, &si, &pi)) {
+        g_state.ffmpegProcess = pi.hProcess;
+        g_state.ffmpegStdin = hWritePipe;
+        g_state.isRecording = true;
+        CloseHandle(pi.hThread);
+    } else {
+        printf("[error] CreateProcessA failed: %lu\n", GetLastError());
+        CloseHandle(hWritePipe);
+    }
+
+    CloseHandle(hReadPipe);
+}
+
+void sc_stop_recording() {
+    if (g_state.ffmpegProcess && g_state.ffmpegStdin) {
+        printf("stopping recording\n");
+
+        DWORD code = STILL_ACTIVE;
+        if (GetExitCodeProcess(g_state.ffmpegProcess, &code) && code != STILL_ACTIVE) {
+            printf("ffmpeg already exited, code %lu - check ffmpeg_log.txt\n", code);
+        } else {
+            DWORD written;
+            if (!WriteFile(g_state.ffmpegStdin, "q\n", 2, &written, nullptr)) {
+                fprintf(stderr, "WriteFile failed with: %lu\n", GetLastError());
+            }
+
+            if (WaitForSingleObject(g_state.ffmpegProcess, 5000) == WAIT_TIMEOUT) {
+                fprintf(stderr, "ffmpeg did not exit in time; file may be incomplete\n");
+            }
+        }
+
+        CloseHandle(g_state.ffmpegProcess);
+        CloseHandle(g_state.ffmpegStdin);
+
+        g_state.ffmpegProcess = nullptr;
+        g_state.ffmpegStdin   = nullptr;
+        g_state.isRecording   = false;
+
+        if (sc_get_app().opt_play_sound) {
+            PlaySoundA((LPCSTR)screenshot_sound, nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+        }
+        printf("stopped recording\n");
+    }
+}
+
 void _sc_init_impl() {
     sc_reregister_hotkeys();
 
@@ -335,7 +496,12 @@ bool sc_update() {
             sc_shutdown();
             return false;
         } if (msg.message == WM_HOTKEY) {
-            sc_begin_capture(static_cast<sc_hotkey_id>(msg.wParam));
+            auto hotkey = static_cast<sc_hotkey_id>(msg.wParam);
+            if (hotkey == sc_hotkey_record && g_state.isRecording) {
+                sc_stop_recording();
+            } else {
+                sc_begin_capture(hotkey);
+            }
         }
 
         TranslateMessage(&msg);
@@ -359,8 +525,10 @@ void sc_begin_capture(sc_hotkey_id hotkey) {
             return;
         }
         g_state.captureMode = sc_capture_mode::ocr;
-    } else {
-        g_state.captureMode = sc_capture_mode::interactive;
+    } else if (hotkey == sc_hotkey_record) {
+        g_state.captureMode = sc_capture_mode::record;
+    }  else {
+        g_state.captureMode = sc_capture_mode::region;
     }
 
     g_state.capturing = true;
@@ -413,17 +581,17 @@ void sc_begin_capture(sc_hotkey_id hotkey) {
         return;
     }
 
-    // interactive mode...
+#if defined(SC_DEBUG)
+    assert((g_state.captureMode == sc_capture_mode::region || g_state.captureMode == sc_capture_mode::record || g_state.captureMode == sc_capture_mode::ocr) && "Using region select on non-region select mode? Fix it fucker");
+#endif
 
-    if (_sc_is_win10_or_greater()) {
+    if (g_state.captureMode == sc_capture_mode::ocr && _sc_is_win10_or_greater()) {
         {
             std::lock_guard<std::mutex> lock(g_state.ocrMutex);
             g_state.ocrLines.clear();
         }
 
-        if (g_state.captureMode == sc_capture_mode::ocr) {
-            _ocr_run_async();
-        }
+        _ocr_run_async();
     }
 
     if (!g_state.overlayHwnd) {        
@@ -455,11 +623,20 @@ bool sc_capture_update(sc_capture_info& ci) {
         return false;
     }
 
+    if (g_state.captureMode == sc_capture_mode::record) {
+        sc_start_recording(g_state.finalRect);
+        
+        ci.captureMode = g_state.captureMode;
+        ci.data = nullptr;
+        ci.shouldSave = false;
+        return true; // triggers sc_cleanup to close the overlay
+    }
+
     // play as early as possible. this sound is to give feedback that the capture has been triggered, not when it's done/saved.
     // there's still some delay, but it's good enough for now.
     if (sc_get_app().opt_play_sound && g_state.captureMode != sc_capture_mode::ocr) {
         const char* sound = nullptr;
-        if (g_state.captureMode != sc_capture_mode::interactive) {
+        if (g_state.captureMode != sc_capture_mode::region) {
             sound = (const char*)screenshot_sound;
         } else {
             sound = (const char*)screenshot_sound_quick;

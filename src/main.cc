@@ -19,7 +19,7 @@ int entry(int argc, char** argv) {
         if (sc_update()) {
             sc_capture_info ci = {};
             if (sc_capture_update(ci)) {
-                if (ci.captureMode != sc_capture_mode::ocr) {
+                if (ci.captureMode != sc_capture_mode::ocr && ci.captureMode != sc_capture_mode::record) { // wtf is this, need to clean up big time.. I did not design this well at all.
                     sc_save_capture(ci);
                 }
                 sc_cleanup(ci);
@@ -50,7 +50,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         freopen_s(&f, "CONOUT$", "w", stdout);
         freopen_s(&f, "CONOUT$", "w", stderr);
         freopen_s(&f, "CONIN$", "r", stdin);
-#endif
     }
 
 #if defined(SC_DEBUG)

@@ -23,6 +23,7 @@
 #include <chrono>
 #include <filesystem>
 #include <array>
+#include <cctype>
 
 namespace fs = std::filesystem;
 

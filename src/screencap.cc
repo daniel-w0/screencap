@@ -30,7 +30,7 @@ std::string sc_get_date_string() {
     return std::string(buffer);
 }
 
-sc_internal std::string _get_filename_timestamp() {
+std::string sc_get_filename_timestamp() {
     auto now = std::chrono::system_clock::now();
     std::time_t now_time_t = std::chrono::system_clock::to_time_t(now);
     std::tm now_tm;
@@ -215,6 +215,7 @@ void sc_initialize() {
     g_app.hotkeys[sc_hotkey_active_window] = { sc_hotkey_id::sc_hotkey_active_window, MOD_ALT, VK_SNAPSHOT };
     g_app.hotkeys[sc_hotkey_current_monitor] = { sc_hotkey_id::sc_hotkey_current_monitor, MOD_CONTROL, VK_SNAPSHOT };
     g_app.hotkeys[sc_hotkey_fallback_screenshot] = { sc_hotkey_id::sc_hotkey_fallback_screenshot, MOD_CONTROL | MOD_ALT, 'C' };
+    g_app.hotkeys[sc_hotkey_record] = { sc_hotkey_record, MOD_SHIFT, VK_SNAPSHOT };
 
     sc_load_or_create_config();
     _init_languages();
@@ -262,7 +263,7 @@ bool sc_save_capture(sc_capture_info& ci) {
         ci.channels_swapped = true;
     }
 
-    fs::path saveFile = sc_get_save_path() / (_get_filename_timestamp() + ".png");
+    fs::path saveFile = sc_get_save_path() / (sc_get_filename_timestamp() + ".png");
 
     //if (!stbi_write_png(saveFile.string().c_str(), ci.width, ci.height, ci.channels, ci.data, ci.width * ci.channels)) {
     //    fprintf(stderr, "Failed to save capture to %s\n", saveFile.string().c_str());

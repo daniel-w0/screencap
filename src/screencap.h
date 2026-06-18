@@ -14,9 +14,10 @@
 
 enum class sc_capture_mode {
     none = -1,
-    interactive,
+    region,
     window_under_cursor,
     monitor_under_cursor,
+    record,
     ocr
 };
 
@@ -50,6 +51,7 @@ enum sc_hotkey_id {
     sc_hotkey_active_window,
     sc_hotkey_current_monitor,
     sc_hotkey_fallback_screenshot, // Ctrl + Alt + C
+    sc_hotkey_record,
     _sc_hotkey_count
 };
 
@@ -59,7 +61,8 @@ static const char* sc_hotkey_id_strings[sc_hotkey_id::_sc_hotkey_count] = {
     "ocr",
     "active_window",
     "current_monitor",
-    "fallback_screenshot"
+    "fallback_screenshot",
+    "start/stop recording"
 };
 
 struct sc_hotkey {
@@ -103,6 +106,7 @@ void sc_cleanup(sc_capture_info& ci);
 void sc_shutdown();
 
 std::string sc_get_date_string();
+std::string sc_get_filename_timestamp();
 fs::path sc_get_save_path();
 
 std::wstring _sc_utf8_to_wstring(const std::string& str);
