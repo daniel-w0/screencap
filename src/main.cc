@@ -5,7 +5,7 @@
 #  include <Windows.h>
 #endif
 
-#include "platform/platform_screencap.h"
+#include "screencap.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"

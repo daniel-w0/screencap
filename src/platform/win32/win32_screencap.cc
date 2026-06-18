@@ -1,5 +1,4 @@
 #include "pch.h"
-#include "platform/platform_screencap.h"
 #include "screencap.h"
 #include <dwmapi.h>
 #include <shobjidl.h>
