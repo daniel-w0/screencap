@@ -256,8 +256,10 @@ bool _sc_write_to_clipboard(UINT format, const void* data, size_t size, const vo
     return true;
 }
 
-static bool sc_find_executable(const char* exeName, char* outPath, size_t outSize) {
-    if (SearchPathA(nullptr, exeName, nullptr, (DWORD)outSize, outPath, nullptr) != 0) {
+bool _sc_find_executable(const std::string& exeName, std::string& outPath) {
+    char searchBuf[MAX_PATH];
+    if (SearchPathA(nullptr, exeName.c_str(), nullptr, MAX_PATH, searchBuf, nullptr) != 0) {
+        outPath = searchBuf;
         return true;
     }
 
@@ -291,13 +293,12 @@ static bool sc_find_executable(const char* exeName, char* outPath, size_t outSiz
                     if (dir.empty()) continue;
                     if (dir.front() == '"' && dir.back() == '"') dir = dir.substr(1, dir.size() - 2);
 
-                    char candidate[MAX_PATH];
-                    const char* sep = (dir.back() == '\\' || dir.back() == '/') ? "" : "\\";
-                    snprintf(candidate, sizeof(candidate), "%s%s%s", dir.c_str(), sep, exeName);
+                    const std::string sep = (dir.back() == '\\' || dir.back() == '/') ? "" : "\\";
+                    std::string candidate = dir + sep + exeName;
 
-                    DWORD attrs = GetFileAttributesA(candidate);
+                    DWORD attrs = GetFileAttributesA(candidate.c_str());
                     if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-                        strncpy_s(outPath, outSize, candidate, _TRUNCATE);
+                        outPath = candidate;
                         found = true;
                     }
                 }
@@ -318,6 +319,11 @@ void sc_start_recording(const sc_rect& rect) {
         return;
     }
 
+    if (sc_get_app().ffmpeg_path.empty()) {
+        fprintf(stderr, "ffmpeg path is not set. Please configure it in the settings.\n");
+        return;
+    }
+
     printf("started recording\n");
 
     HANDLE hReadPipe, hWritePipe;
@@ -330,16 +336,8 @@ void sc_start_recording(const sc_rect& rect) {
 
     SetHandleInformation(hWritePipe, HANDLE_FLAG_INHERIT, 0);
 
-    char ffmpegPath[MAX_PATH];
     int w = rect.width & ~1;
     int h = rect.height & ~1;
-
-    if (!sc_find_executable("ffmpeg.exe", ffmpegPath, sizeof(ffmpegPath))) {
-        printf("[error] ffmpeg.exe not found on PATH or registry PATH\n");
-        CloseHandle(hReadPipe);
-        CloseHandle(hWritePipe);
-        return;
-    }
 
     if (w <= 0 || h <= 0) {
         printf("[error] invalid capture size %dx%d\n", rect.width, rect.height);
@@ -353,9 +351,9 @@ void sc_start_recording(const sc_rect& rect) {
 
     char cmd[1024];
     if (_sc_is_win10_or_greater()) {
-        snprintf(cmd, sizeof(cmd), "\"%s\" -y -f gdigrab -framerate 30 -offset_x %d -offset_y %d -video_size %dx%d -i desktop -c:v libx264 -pix_fmt yuv420p \"%s\"", ffmpegPath, rect.x, rect.y, w, h, savePathStr.c_str());
+        snprintf(cmd, sizeof(cmd), "\"%s\" -y -f gdigrab -framerate 30 -offset_x %d -offset_y %d -video_size %dx%d -i desktop -c:v libx264 -pix_fmt yuv420p \"%s\"", sc_get_app().ffmpeg_path.c_str(), rect.x, rect.y, w, h, savePathStr.c_str());
     } else {
-        snprintf(cmd, sizeof(cmd), "\"%s\" -y -f gdigrab -framerate 30 -offset_x %d -offset_y %d -video_size %dx%d -i desktop -c:v mpeg4 -qscale:v 4 \"%s\"", ffmpegPath, rect.x, rect.y, w, h, savePathStr.c_str());
+        snprintf(cmd, sizeof(cmd), "\"%s\" -y -f gdigrab -framerate 30 -offset_x %d -offset_y %d -video_size %dx%d -i desktop -c:v mpeg4 -qscale:v 4 \"%s\"", sc_get_app().ffmpeg_path.c_str(), rect.x, rect.y, w, h, savePathStr.c_str());
     }
 
     HANDLE hCon = CreateFileA("CONOUT$", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
@@ -372,7 +370,7 @@ void sc_start_recording(const sc_rect& rect) {
     PROCESS_INFORMATION pi = {};
     DWORD flags = haveConsole ? 0 : CREATE_NO_WINDOW;
 
-    if (CreateProcessA(ffmpegPath, cmd, nullptr, nullptr, TRUE, flags, nullptr, nullptr, &si, &pi)) {
+    if (CreateProcessA(nullptr, cmd, nullptr, nullptr, TRUE, flags, nullptr, nullptr, &si, &pi)) {
         g_state.ffmpegProcess = pi.hProcess;
         g_state.ffmpegStdin = hWritePipe;
         g_state.isRecording = true;
@@ -483,6 +481,10 @@ void sc_reregister_hotkeys() {
         if (hk.key != 0) {
             if (hk.id == sc_hotkey_ocr && !_sc_is_win10_or_greater()) {
                 fprintf(stderr, "Skipping OCR hotkey registration on unsupported OS version.\n");
+                continue;
+            }
+            if (hk.id == sc_hotkey_record && sc_get_app().ffmpeg_path.empty()) {
+                fprintf(stderr, "Skipping recording hotkey registration because ffmpeg path is not set.\n");
                 continue;
             }
             hk.registered = RegisterHotKey(nullptr, hk.id, hk.modifiers | MOD_NOREPEAT, hk.key);

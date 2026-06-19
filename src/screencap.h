@@ -82,6 +82,9 @@ struct sc_app {
     std::string language_code;
     std::vector<std::string> available_languages;
 
+    // other
+    std::string ffmpeg_path;
+
     // state
     bool running;
 };
@@ -119,6 +122,7 @@ void _sc_init_impl();
 void _sc_shutdown_impl();
 void _sc_cleanup_impl(sc_capture_info& ci);
 void _sc_swap_channels(uint32_t* pixels, int totalPixels);
+bool _sc_find_executable(const std::string& exeName, std::string& outPath);
 bool _sc_get_system_language_impl(std::string& out_lang);
 void _sc_set_run_on_startup_impl(bool enable);
 std::string _sc_plat_get_config_path();

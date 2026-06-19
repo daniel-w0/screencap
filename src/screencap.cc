@@ -217,6 +217,12 @@ void sc_initialize() {
     g_app.hotkeys[sc_hotkey_fallback_screenshot] = { sc_hotkey_id::sc_hotkey_fallback_screenshot, MOD_CONTROL | MOD_ALT, 'C' };
     g_app.hotkeys[sc_hotkey_record] = { sc_hotkey_record, MOD_SHIFT, VK_SNAPSHOT };
 
+    if (_sc_find_executable("ffmpeg.exe", g_app.ffmpeg_path)) {
+        printf("Found ffmpeg at: %s\n", g_app.ffmpeg_path.c_str());
+    } else {
+        fprintf(stderr, "ffmpeg.exe not found in PATH\n");
+    }
+
     sc_load_or_create_config();
     _init_languages();
     sc_save_config();
