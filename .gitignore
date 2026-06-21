@@ -2,3 +2,5 @@ build
 bin
 obj
 resource.rc
+old
+*.raddbgproj

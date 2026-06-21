@@ -5,8 +5,8 @@ workspace "screencap"
   platforms { "x64" }
   location "build"
 
-  language "C++"
-  cppdialect "C++17"
+  language "C"
+  cdialect "C11"
   systemversion "10.0.19041.0"
   toolset "v141"
 
@@ -36,22 +36,22 @@ workspace "screencap"
     }
 
     defines { "SC_PLATFORM_WINDOWS", "_CRT_SECURE_NO_WARNINGS" }
-    links { "dwmapi", "winmm", "uxtheme", "comctl32", "gdiplus", "delayimp", "runtimeobject" }
+    links { "dwmapi", "winmm", "uxtheme", "comctl32", "gdiplus", "delayimp", "runtimeobject", "shlwapi" }
 
   filter {}
 
   project "screencap"
     kind "WindowedApp"
-    files { "src/**.cc", "src/**.h", "ext/**.h", "src/resources.rc" }
-    includedirs { "src", "ext" }
+    files { "src/**.c", "include/**.h", "ext/**.h", "src/resources.rc" }
+    includedirs { "include", "ext" }
     defines { "WINVER=0x0601", "_WIN32_WINNT=0x0601" }
 
     pchheader "pch.h"
-    pchsource "src/pch.cc"
+    pchsource "src/pch.c"
 
-    embed_file("res/locales.ini", "src/embed/locales_data.h", "locales_ini")
-    embed_file("res/Shutter_07.wav", "src/embed/screenshot_sound.h", "screenshot_sound")
-    embed_file("res/Shutter_09.wav", "src/embed/screenshot_sound_quick.h", "screenshot_sound_quick")
+    embed_file("res/locales.ini", "include/embed/locales_data.h", "locales_ini")
+    embed_file("res/Shutter_07.wav", "include/embed/screenshot_sound.h", "screenshot_sound")
+    embed_file("res/Shutter_09.wav", "include/embed/screenshot_sound_quick.h", "screenshot_sound_quick")
 
     filter "files:**.rc"
       buildaction "ResourceCompile"
