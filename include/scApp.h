@@ -41,6 +41,10 @@ typedef struct {
 } scRect;
 
 typedef struct {
+  s32 X, Y;
+} scV2I;
+
+typedef struct {
   scHotkeyID eID;
   u32        uModifiers;
   u32        uKey;
@@ -61,6 +65,12 @@ typedef struct {
   HWND    hOverlayWindow;
   HDC     hFrozenDC;
   HBITMAP hFrozenBitmap;
+  bool bMouseDown;
+  bool bDragging;
+  bool bWasDragging;
+  scV2I stDragStart;
+  scRect stFinalRect;
+  HWND hHoveredWindow;
 
   // Public
   scRect stSelectedRect;
@@ -74,12 +84,14 @@ typedef struct scCaptureHandler {
   void (*cbOnHotkeyPressed)(scCaptureContext*    pCtx);
   void (*cbOnAreaSelected)(scCaptureContext*     pCtx);
   void (*cbOnCaptureCancelled)(scCaptureContext* pCtx);
+  bool bCreateFrozenWindow;
 } scCaptureHandler;
 
 typedef struct {
   scAppConfig config;
   scCaptureHandler* aCaptureHandlers[_SC_HOTKEY_COUNT];
   scCaptureContext* pCaptureContext;
+  scCaptureHandler* pActiveHandler;
 } scApp;
 
 //------------------------------------------------------------------------

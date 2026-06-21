@@ -327,11 +327,78 @@ scConfigLoad() {
 // Window Procedure
 //------------------------------------------------------------------------
 LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  scCaptureContext* pCtx = gApp->pCaptureContext;
+  scAssert(pCtx, "pCtx is null in window procedure!");
+  if (!pCtx) {
+    return DefWindowProcA(hWnd, uMsg, wParam, lParam);
+  }
+
   switch (uMsg) {
     case WM_MOUSEMOVE: {
       if (!gApp->pCaptureContext) {
         break;
       }
+      // ...
+      return 0;
+    }
+    case WM_PAINT: {
+
+      return 0;
+    }
+    case WM_MOUSEMOVE: {
+      POINT stPoint;
+      GetCursorPos(&stPoint);
+
+      if (pCtx->bMouseDown) {
+        if (!pCtx->bDragging && (abs(stPoint.x - pCtx->stDragStart.X) > 3 || abs(stPoint.y - pCtx->stDragStart.Y) > 3)) {
+          pCtx->bDragging = true;
+        }
+
+        if (pCtx->bDragging) {
+          scRect stDragRect = {
+            .X = min(pCtx->stDragStart.X, stPoint.x),
+            .Y = min(pCtx->stDragStart.Y, stPoint.y),
+            .W = abs(stPoint.x - pCtx->stDragStart.X),
+            .H = abs(stPoint.y - pCtx->stDragStart.Y),
+          };
+          pCtx->stSelectedRect = stDragRect;
+        }
+      } else {
+        // update hover rect...
+      }
+
+      if (pCtx->hFrozenDC) {
+
+      }
+
+      return 0;
+    }
+    case WM_LBUTTONDOWN: {
+      POINT stPoint;
+      GetCursorPos(&stPoint);
+      pCtx->bMouseDown = true;
+      pCtx->stDragStart = (scV2I){ stPoint.x, stPoint.y };
+      SetCapture(hWnd);
+      return 0;
+    }
+    case WM_LBUTTONUP: {
+      if (pCtx->bMouseDown) {
+        pCtx->bMouseDown = false;
+        //pCtx->stFinalRect = 
+        //pCtx->hHoveredWindow =
+        pCtx->bWasDragging = pCtx->bDragging;
+        ReleaseCapture();
+        ShowWindow(hWnd, SW_HIDE);
+        pCtx->bDragging = false;
+        scAssert(gApp->pActiveHandler, "pActiveHandler is null in WM_LBUTTONUP!");
+        if (gApp->pActiveHandler->cbOnAreaSelected) {
+          gApp->pActiveHandler->cbOnAreaSelected(pCtx);
+        }
+      }
+      return 0;
+    }
+    case WM_ERASEBKGND: {
+      return TRUE;
     }
   }
   return DefWindowProcA(hWnd, uMsg, wParam, lParam);
@@ -384,6 +451,14 @@ _scRegisterOverlayWindowClass() {
 }
 
 scInternal void
+_scGetSystemMetrics(s32* X, s32* Y, s32* W, s32* H) {
+  *X = GetSystemMetrics(SM_XVIRTUALSCREEN);
+  *Y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+  *W = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+  *H = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+}
+
+scInternal void
 _scDestroyCaptureContext() {
   scCaptureContext* pCtx = gApp->pCaptureContext;
   scAssert(pCtx, "What are we trying to destroy? There is no context... Fix it fucker.");
@@ -409,27 +484,44 @@ _scDestroyCaptureContext() {
 }
 
 scInternal bool
-_scBeginCaptureContext() {
-  scCaptureContext* pCtx = gApp->pCaptureContext;
-  scAssert(!pCtx, "Attmempted to create a new context when we already have one");
-  if (pCtx) {
+_scBeginCaptureContext(bool bCreateWindow) {
+  scAssert(!gApp->pCaptureContext, "Attmempted to create a new context when we already have one");
+  if (gApp->pCaptureContext) {
     scLogWarn("Cleaned up capture context, however, this could lead to issues! Fix it fucker!");
     _scDestroyCaptureContext();
   }
-  pCtx = (scCaptureContext*)calloc(1, sizeof(scCaptureContext));
+  gApp->pCaptureContext = (scCaptureContext*)calloc(1, sizeof(scCaptureContext));
+  scCaptureContext* pCtx = gApp->pCaptureContext;
 
-  pCtx->hOverlayWindow = CreateWindowExA(
-    WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-    OVERLAY_CLASS_NAME, "ScreenCapOverlayWindow",
-    WS_POPUP,
-    0, 0, 0, 0,
-    NULL, NULL, GetModuleHandleA(NULL), NULL);
-  if (!pCtx->hOverlayWindow) {
-    scLogError("Failed to create overlay window: %d", GetLastError());
-    return false;
+  if (bCreateWindow) { // recording doesn't do this for example
+    s32 iScreenX, iScreenY, iScreenW, iScreenH;
+    _scGetSystemMetrics(&iScreenX, &iScreenY, &iScreenW, &iScreenH);
+
+    { // Populate FrozenDC/Bitmap
+      HDC hScreenDC = GetDC(NULL);
+      pCtx->hFrozenDC = CreateCompatibleDC(hScreenDC);
+      pCtx->hFrozenBitmap = CreateCompatibleBitmap(hScreenDC, iScreenW, iScreenH);
+      SelectObject(pCtx->hFrozenDC, pCtx->hFrozenBitmap);
+      BitBlt(pCtx->hFrozenDC, 0, 0, iScreenW, iScreenH, hScreenDC, iScreenX, iScreenY, SRCCOPY);
+      ReleaseDC(NULL, hScreenDC);
+    }
+
+    // Create and show overlay window
+    pCtx->hOverlayWindow = CreateWindowExA(
+      WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+      OVERLAY_CLASS_NAME, "ScreenCapOverlayWindow",
+      WS_POPUP,
+      0, 0, 0, 0,
+      NULL, NULL, GetModuleHandleA(NULL), NULL);
+    if (!pCtx->hOverlayWindow) {
+      scLogError("Failed to create overlay window: %d", GetLastError());
+      return false;
+    }
+
+    ShowWindow(pCtx->hOverlayWindow, SW_SHOW);
+    SetForegroundWindow(pCtx->hOverlayWindow);
+    SetFocus(pCtx->hOverlayWindow);
   }
-
-  
 
   return true;
 }
@@ -459,15 +551,16 @@ void scAppUpdate() {
   while (GetMessageA(&msg, NULL, 0, 0) > 0) {
     if (msg.message == WM_HOTKEY) {
       s32 iHotkeyID = (s32)msg.wParam;
-      const scCaptureHandler* pHandler = gApp->aCaptureHandlers[iHotkeyID];
+      scCaptureHandler* pHandler = gApp->aCaptureHandlers[iHotkeyID];
       if (pHandler && pHandler->cbOnHotkeyPressed) {
         bool bHasValidContext = gApp->pCaptureContext != NULL;
         if (!bHasValidContext) {
           // we might want to keep a valid context, recording would be one (and the only) use case for this.
-          bHasValidContext = _scBeginCaptureContext();
+          bHasValidContext = _scBeginCaptureContext(pHandler->bCreateFrozenWindow);
         }
         if (bHasValidContext) {
-          pHandler->cbOnHotkeyPressed(NULL);
+          gApp->pActiveHandler = pHandler;
+          pHandler->cbOnHotkeyPressed(gApp->pCaptureContext);
         } else {
           scLogError("Skipping screen capture due to invalid context!");
         }

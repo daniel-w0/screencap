@@ -17,4 +17,9 @@ cbOnCaptureCancelled(scCaptureContext* pCtx) {
 
 }
 
-const scCaptureHandler scScreenshotHandler = { cbOnHotkeyPressed, cbOnAreaSelected, cbOnCaptureCancelled };
+const scCaptureHandler scScreenshotHandler = {
+  cbOnHotkeyPressed,
+  cbOnAreaSelected,
+  cbOnCaptureCancelled,
+  .bCreateFrozenWindow = true
+};
