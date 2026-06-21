@@ -4,6 +4,7 @@
 #include "scLogging.h"
 
 static scApp* gApp = NULL;
+static const char* OVERLAY_CLASS_NAME = "ScOverlayWindow";
 
 //------------------------------------------------------------------------
 // Util
@@ -323,7 +324,21 @@ scConfigLoad() {
 }
 
 //------------------------------------------------------------------------
-// Other Application
+// Window Procedure
+//------------------------------------------------------------------------
+LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  switch (uMsg) {
+    case WM_MOUSEMOVE: {
+      if (!gApp->pCaptureContext) {
+        break;
+      }
+    }
+  }
+  return DefWindowProcA(hWnd, uMsg, wParam, lParam);
+}
+
+//------------------------------------------------------------------------
+// Application Helpers
 scInternal void
 _scUnregisterHotkeys() {
   for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
@@ -352,6 +367,73 @@ _scRegisterHotkeys() {
   }
 }
 
+scInternal bool
+_scRegisterOverlayWindowClass() {
+  WNDCLASSA stOverlayClass = { 0 };
+  stOverlayClass.lpfnWndProc   = OverlayWndProc;
+  stOverlayClass.hInstance     = GetModuleHandleA(NULL);
+  stOverlayClass.hCursor       = LoadCursorA(NULL, (LPCSTR)IDC_CROSS);
+  stOverlayClass.lpszClassName = OVERLAY_CLASS_NAME;
+
+  ATOM wResult = RegisterClassA(&stOverlayClass);
+  if (!wResult) {
+    scLogError("Failed to register window overlay class: %d", GetLastError());
+  }
+
+  return wResult != 0;
+}
+
+scInternal void
+_scDestroyCaptureContext() {
+  scCaptureContext* pCtx = gApp->pCaptureContext;
+  scAssert(pCtx, "What are we trying to destroy? There is no context... Fix it fucker.");
+  if (!pCtx) {
+    return;
+  }
+
+  if (pCtx->hOverlayWindow) {
+    DestroyWindow(pCtx->hOverlayWindow);
+    scLogDebug("Destroyed overlay window");
+  }
+  if (pCtx->hFrozenDC) {
+    DeleteDC(pCtx->hFrozenDC);
+    scLogDebug("Destroyed frozen dc");
+  }
+  if (pCtx->hFrozenBitmap) {
+    DeleteObject(pCtx->hFrozenBitmap);
+    scLogDebug("Destroyed frozen bitmap");
+  }
+
+  free(pCtx);
+  gApp->pCaptureContext = NULL;
+}
+
+scInternal bool
+_scBeginCaptureContext() {
+  scCaptureContext* pCtx = gApp->pCaptureContext;
+  scAssert(!pCtx, "Attmempted to create a new context when we already have one");
+  if (pCtx) {
+    scLogWarn("Cleaned up capture context, however, this could lead to issues! Fix it fucker!");
+    _scDestroyCaptureContext();
+  }
+  pCtx = (scCaptureContext*)calloc(1, sizeof(scCaptureContext));
+
+  pCtx->hOverlayWindow = CreateWindowExA(
+    WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+    OVERLAY_CLASS_NAME, "ScreenCapOverlayWindow",
+    WS_POPUP,
+    0, 0, 0, 0,
+    NULL, NULL, GetModuleHandleA(NULL), NULL);
+  if (!pCtx->hOverlayWindow) {
+    scLogError("Failed to create overlay window: %d", GetLastError());
+    return false;
+  }
+
+  
+
+  return true;
+}
+
 //------------------------------------------------------------------------
 // Application
 //------------------------------------------------------------------------
@@ -363,7 +445,12 @@ bool scAppInit() {
     return false;
   }
 
+  if (!_scRegisterOverlayWindowClass()) {
+    return false;
+  }
+
   scAppRegisterHotkeys();
+  scAppSetupCallbackHandler();
   return true;
 }
 
@@ -371,7 +458,20 @@ void scAppUpdate() {
   MSG msg = { 0 };
   while (GetMessageA(&msg, NULL, 0, 0) > 0) {
     if (msg.message == WM_HOTKEY) {
-
+      s32 iHotkeyID = (s32)msg.wParam;
+      const scCaptureHandler* pHandler = gApp->aCaptureHandlers[iHotkeyID];
+      if (pHandler && pHandler->cbOnHotkeyPressed) {
+        bool bHasValidContext = gApp->pCaptureContext != NULL;
+        if (!bHasValidContext) {
+          // we might want to keep a valid context, recording would be one (and the only) use case for this.
+          bHasValidContext = _scBeginCaptureContext();
+        }
+        if (bHasValidContext) {
+          pHandler->cbOnHotkeyPressed(NULL);
+        } else {
+          scLogError("Skipping screen capture due to invalid context!");
+        }
+      }
     }
 
     TranslateMessage(&msg);
@@ -384,7 +484,38 @@ void scAppDestroy() {
   free(gApp);
 }
 
+//------------------------------------------------------------------------
+// Other Application
+void scAppCaptureArea() {
+
+}
+
 void scAppRegisterHotkeys() {
   _scUnregisterHotkeys();
   _scRegisterHotkeys();
+}
+
+extern scCaptureHandler scScreenshotHandler;
+scCaptureHandler scClipboardHandler          = { NULL, NULL, NULL };
+scCaptureHandler scOcrHandler                = { NULL, NULL, NULL };
+scCaptureHandler scActiveWindowHandler       = { NULL, NULL, NULL };
+scCaptureHandler scActiveMonitorHandler      = { NULL, NULL, NULL };
+scCaptureHandler scScreenshotFallbackHandler = { NULL, NULL, NULL };
+scCaptureHandler scRecordHandler             = { NULL, NULL, NULL };
+
+void scAppSetupCallbackHandler() {
+  scHotkey* pHotkeys = gApp->config.aHotkeys;
+  #define _scRegisterHandler(eHotkeyID, pHandler)                           \
+    if (pHotkeys[eHotkeyID].bRegistered) {                                  \
+      gApp->aCaptureHandlers[eHotkeyID] = pHandler;                         \
+      scLogInfo("Registered Handler for '%s'", scHotkeyIdNames[eHotkeyID]); \
+    }                                                                       \
+
+  _scRegisterHandler(SC_HOTKEY_SCREENSHOT, &scScreenshotHandler);
+  _scRegisterHandler(SC_HOTKEY_CLIPBOARD, &scClipboardHandler);
+  _scRegisterHandler(SC_HOTKEY_OCR, &scOcrHandler);
+  _scRegisterHandler(SC_HOTKEY_ACTIVE_WINDOW, &scActiveWindowHandler);
+  _scRegisterHandler(SC_HOTKEY_ACTIVE_MONITOR, &scActiveMonitorHandler);
+  _scRegisterHandler(SC_HOTKEY_FALLBACK_SCREENSHOT, &scScreenshotFallbackHandler);
+  _scRegisterHandler(SC_HOTKEY_RECORD, &scRecordHandler);
 }

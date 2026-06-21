@@ -1,6 +1,7 @@
 #ifndef SC_APP_H
 #define SC_APP_H
 
+#include "pch.h"
 #include "scTypes.h"
 
 #define SC_VERSION_MAJOR 1
@@ -35,6 +36,11 @@ static const char* scHotkeyIdNames[_SC_HOTKEY_COUNT] = {
 };
 
 typedef struct {
+  s32 X, Y;
+  s32 W, H;
+} scRect;
+
+typedef struct {
   scHotkeyID eID;
   u32        uModifiers;
   u32        uKey;
@@ -51,7 +57,29 @@ typedef struct {
 } scAppConfig;
 
 typedef struct {
+  // Private
+  HWND    hOverlayWindow;
+  HDC     hFrozenDC;
+  HBITMAP hFrozenBitmap;
+
+  // Public
+  scRect stSelectedRect;
+
+  // Modifiable by handler:
+  bool  bRequstCaptureArea;
+  void* pUser;
+} scCaptureContext;
+
+typedef struct scCaptureHandler {
+  void (*cbOnHotkeyPressed)(scCaptureContext*    pCtx);
+  void (*cbOnAreaSelected)(scCaptureContext*     pCtx);
+  void (*cbOnCaptureCancelled)(scCaptureContext* pCtx);
+} scCaptureHandler;
+
+typedef struct {
   scAppConfig config;
+  scCaptureHandler* aCaptureHandlers[_SC_HOTKEY_COUNT];
+  scCaptureContext* pCaptureContext;
 } scApp;
 
 //------------------------------------------------------------------------
@@ -62,6 +90,9 @@ void scAppDestroy();
 
 //------------------------------------------------------------------------
 // Other Application
+void scAppCaptureArea();
+
 void scAppRegisterHotkeys();
+void scAppSetupCallbackHandler();
 
 #endif // SC_APP_H
