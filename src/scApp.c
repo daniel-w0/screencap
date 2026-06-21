@@ -3,7 +3,7 @@
 #include "scAssert.h"
 #include "scLogging.h"
 
-static scApp* gpApp = NULL;
+static scApp* gApp = NULL;
 
 //------------------------------------------------------------------------
 // Util
@@ -17,7 +17,6 @@ _scFileExists(LPCWSTR szPath) {
   return (dwAttrib != INVALID_FILE_ATTRIBUTES && 
          !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY));
 }
-
 
 scInternal void
 _scGetSystemLanguage(char szLanguageCode[4]) {
@@ -297,26 +296,26 @@ _scConfigMigrateIfNeeded(scAppConfig* pConfig, wchar_t* wszPath, s32 iConfigMajo
 
 scInternal bool
 scConfigLoad() {
-  scAssert(gpApp, "gpApp is NULL!");
+  scAssert(gApp, "gpApp is NULL!");
 
   wchar_t wszConfigPath[SC_PATH_MAX_LEN];
   if (!_scGetConfigFilepath(wszConfigPath)) {
     return false;
   }
 
-  _scConfigCreateDefaults(&gpApp->config); // initialize it with the defaults in case of any issues below
+  _scConfigCreateDefaults(&gApp->config); // initialize it with the defaults in case of any issues below
 
   if (!_scFileExists(wszConfigPath)) {
-    _scWriteConfig(&gpApp->config, wszConfigPath); // it's okay for this to fail because we already have the defaults
+    _scWriteConfig(&gApp->config, wszConfigPath); // it's okay for this to fail because we already have the defaults
     return true;
   } else {
     s32 iMajor, iMinor, iPatch;
     _scConfigGetVersion(wszConfigPath, &iMajor, &iMinor, &iPatch);
-    if (_scConfigMigrateIfNeeded(&gpApp->config, wszConfigPath, iMajor, iMinor, iPatch)) {
+    if (_scConfigMigrateIfNeeded(&gApp->config, wszConfigPath, iMajor, iMinor, iPatch)) {
       scLogInfo("Migrated from %d.%d.%d to %d.%d.%d", iMajor, iMinor, iPatch, SC_VERSION_MAJOR, SC_VERSION_MINOR, SC_VERSION_PATCH);
     } else {
-      _scConfigReadInto(&gpApp->config, wszConfigPath);
-      _scWriteConfig(&gpApp->config, wszConfigPath);
+      _scConfigReadInto(&gApp->config, wszConfigPath);
+      _scWriteConfig(&gApp->config, wszConfigPath);
     }
   }
 
@@ -324,15 +323,68 @@ scConfigLoad() {
 }
 
 //------------------------------------------------------------------------
+// Other Application
+scInternal void
+_scUnregisterHotkeys() {
+  for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
+    scHotkey* pHk = &gApp->config.aHotkeys[i];
+    if (pHk->bRegistered) {
+      if (!UnregisterHotKey(NULL, pHk->eID)) {
+        scLogWarn("Failed to unregister hotkey %s: %d", scHotkeyIdNames[pHk->eID], GetLastError());
+      }
+      pHk->bRegistered = false;
+    }
+  }
+}
+
+scInternal void
+_scRegisterHotkeys() {
+  for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
+    scHotkey* pHk = &gApp->config.aHotkeys[i];
+    if (pHk->bRegistered) {
+      scLogWarn("Tried to reregister hotkey '%s' even though it's already registered", scHotkeyIdNames[pHk->eID]);
+    }
+
+    pHk->bRegistered = RegisterHotKey(NULL, pHk->eID, pHk->uModifiers | MOD_NOREPEAT, pHk->uKey);
+    if (pHk->bRegistered) {
+      scLogInfo("Successfully registered hotkey '%s'", scHotkeyIdNames[pHk->eID]);
+    }
+  }
+}
+
+//------------------------------------------------------------------------
 // Application
 //------------------------------------------------------------------------
 bool scAppInit() {
-  gpApp = (scApp*)malloc(sizeof(scApp));
-  memset(gpApp, 0, sizeof(scApp));
+  gApp = (scApp*)malloc(sizeof(scApp));
+  memset(gApp, 0, sizeof(scApp));
 
-  return scConfigLoad();
+  if (!scConfigLoad()) {
+    return false;
+  }
+
+  scAppRegisterHotkeys();
+  return true;
+}
+
+void scAppUpdate() {
+  MSG msg = { 0 };
+  while (GetMessageA(&msg, NULL, 0, 0) > 0) {
+    if (msg.message == WM_HOTKEY) {
+
+    }
+
+    TranslateMessage(&msg);
+    DispatchMessageA(&msg);
+  }
 }
 
 void scAppDestroy() {
-  free(gpApp);
+  _scUnregisterHotkeys();
+  free(gApp);
+}
+
+void scAppRegisterHotkeys() {
+  _scUnregisterHotkeys();
+  _scRegisterHotkeys();
 }

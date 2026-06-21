@@ -54,7 +54,14 @@ typedef struct {
   scAppConfig config;
 } scApp;
 
+//------------------------------------------------------------------------
+// Core Application
 bool scAppInit();
+void scAppUpdate();
 void scAppDestroy();
+
+//------------------------------------------------------------------------
+// Other Application
+void scAppRegisterHotkeys();
 
 #endif // SC_APP_H
