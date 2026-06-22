@@ -62,15 +62,27 @@ typedef struct {
 
 typedef struct {
   // Private
+  scV2I   vCaptureRegion;
   HWND    hOverlayWindow;
   HDC     hFrozenDC;
   HBITMAP hFrozenBitmap;
+  HDC hOverlayMemDC;
+  HBITMAP hOverlayMemBitmap;
+  s32 iOverlayMemW;
+  s32 iOverlayMemH;
   bool bMouseDown;
   bool bDragging;
   bool bWasDragging;
   scV2I stDragStart;
   scRect stFinalRect;
   HWND hHoveredWindow;
+
+  // Magnifier stuff..
+  HDC     hMagDC;
+  HBITMAP hMagBitmap;
+  s32     iMagDestX;
+  s32     iMagDestY;
+  bool    bMagValid;
 
   // Public
   scRect stSelectedRect;

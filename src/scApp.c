@@ -6,6 +6,9 @@
 static scApp* gApp = NULL;
 static const char* OVERLAY_CLASS_NAME = "ScOverlayWindow";
 
+#define SC_MAG_SIZE 120
+#define SC_MAG_SRC  (SC_MAG_SIZE / 4)   // 4x zoom
+
 //------------------------------------------------------------------------
 // Util
 //------------------------------------------------------------------------
@@ -326,7 +329,119 @@ scConfigLoad() {
 //------------------------------------------------------------------------
 // Window Procedure
 //------------------------------------------------------------------------
-LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+typedef struct {
+  POINT pt;
+  HWND  hOverlay;
+  HWND  hResult;
+} _scHoverHit;
+
+scInternal BOOL CALLBACK
+_scHoverEnumProc(HWND hWnd, LPARAM lParam) {
+  _scHoverHit* pHit = (_scHoverHit*)lParam;
+  if (hWnd == pHit->hOverlay)    return TRUE;
+  if (!IsWindowVisible(hWnd))    return TRUE;
+  if (IsIconic(hWnd))            return TRUE;
+
+  RECT wr;
+  if (DwmGetWindowAttribute(hWnd, DWMWA_EXTENDED_FRAME_BOUNDS, &wr, sizeof(RECT)) != S_OK) {
+    if (!GetWindowRect(hWnd, &wr)) return TRUE;
+  }
+  if (!PtInRect(&wr, pHit->pt))  return TRUE;
+
+  pHit->hResult = hWnd;
+  return FALSE; // stop on first match
+}
+
+scInternal void
+_scUpdateHoverRect(scCaptureContext* pCtx, POINT pt) {
+  _scHoverHit hit = { pt, pCtx->hOverlayWindow, NULL };
+  EnumWindows(_scHoverEnumProc, (LPARAM)&hit);
+  if (!hit.hResult) {
+    return;
+  }
+  RECT wr;
+  if (DwmGetWindowAttribute(hit.hResult, DWMWA_EXTENDED_FRAME_BOUNDS, &wr, sizeof(RECT)) != S_OK) {
+    GetWindowRect(hit.hResult, &wr);
+  }
+  pCtx->hHoveredWindow = hit.hResult;
+  pCtx->stSelectedRect = (scRect){
+    .X = wr.left,
+    .Y = wr.top,
+    .W = wr.right  - wr.left,
+    .H = wr.bottom - wr.top,
+  };
+}
+
+scInternal void
+_scUpdateMagnifier(scCaptureContext* pCtx, POINT pt) {
+  if (!pCtx->hFrozenDC) {
+    return;
+  }
+
+  // Lazily create the magnifier back buffer.
+  if (!pCtx->hMagDC) {
+    HDC hScreenDC = GetDC(NULL);
+    pCtx->hMagDC     = CreateCompatibleDC(hScreenDC);
+    pCtx->hMagBitmap = CreateCompatibleBitmap(hScreenDC, SC_MAG_SIZE, SC_MAG_SIZE);
+    SelectObject(pCtx->hMagDC, pCtx->hMagBitmap);
+    SetStretchBltMode(pCtx->hMagDC, COLORONCOLOR);
+    ReleaseDC(NULL, hScreenDC);
+  }
+
+  s32 vx = pCtx->vCaptureRegion.X;
+  s32 vy = pCtx->vCaptureRegion.Y;
+
+  HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+  MONITORINFO mi = { sizeof(MONITORINFO) };
+  GetMonitorInfo(hMon, &mi);
+
+  pCtx->iMagDestX = (pt.x + SC_MAG_SIZE < mi.rcMonitor.right)
+                  ? pt.x - vx + 20
+                  : pt.x - vx - SC_MAG_SIZE - 20;
+  pCtx->iMagDestY = (pt.y + SC_MAG_SIZE < mi.rcMonitor.bottom)
+                  ? pt.y - vy + 20
+                  : pt.y - vy - SC_MAG_SIZE - 20;
+
+  StretchBlt(pCtx->hMagDC, 0, 0, SC_MAG_SIZE, SC_MAG_SIZE,
+             pCtx->hFrozenDC,
+             pt.x - SC_MAG_SRC / 2 - vx,
+             pt.y - SC_MAG_SRC / 2 - vy,
+             SC_MAG_SRC, SC_MAG_SRC, SRCCOPY);
+
+  pCtx->bMagValid = true;
+}
+
+scInternal void
+_scPaintMagnifier(scCaptureContext* pCtx, HDC hMemDC) {
+  if (!pCtx->bMagValid) {
+    return;
+  }
+
+  s32 destX = pCtx->iMagDestX;
+  s32 destY = pCtx->iMagDestY;
+
+  BitBlt(hMemDC, destX, destY, SC_MAG_SIZE, SC_MAG_SIZE, pCtx->hMagDC, 0, 0, SRCCOPY);
+
+  HPEN hPen    = CreatePen(PS_SOLID, 1, RGB(156, 215, 228));
+  HPEN hOldPen = SelectObject(hMemDC, hPen);
+
+  // Crosshair.
+  MoveToEx(hMemDC, destX + SC_MAG_SIZE / 2, destY, NULL);
+  LineTo  (hMemDC, destX + SC_MAG_SIZE / 2, destY + SC_MAG_SIZE);
+  MoveToEx(hMemDC, destX, destY + SC_MAG_SIZE / 2, NULL);
+  LineTo  (hMemDC, destX + SC_MAG_SIZE, destY + SC_MAG_SIZE / 2);
+
+  // Border.
+  HBRUSH hOldBrush = SelectObject(hMemDC, GetStockObject(NULL_BRUSH));
+  Rectangle(hMemDC, destX, destY, destX + SC_MAG_SIZE, destY + SC_MAG_SIZE);
+
+  SelectObject(hMemDC, hOldBrush);
+  SelectObject(hMemDC, hOldPen);
+  DeleteObject(hPen);
+}
+
+LRESULT CALLBACK
+OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
   scCaptureContext* pCtx = gApp->pCaptureContext;
   scAssert(pCtx, "pCtx is null in window procedure!");
   if (!pCtx) {
@@ -334,17 +449,11 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
   }
 
   switch (uMsg) {
-    case WM_MOUSEMOVE: {
-      if (!gApp->pCaptureContext) {
-        break;
-      }
-      // ...
-      return 0;
+    case WM_SETCURSOR: {
+      SetCursor(LoadCursorA(NULL, (LPCSTR)IDC_CROSS));
+      return TRUE;
     }
-    case WM_PAINT: {
 
-      return 0;
-    }
     case WM_MOUSEMOVE: {
       POINT stPoint;
       GetCursorPos(&stPoint);
@@ -353,50 +462,175 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         if (!pCtx->bDragging && (abs(stPoint.x - pCtx->stDragStart.X) > 3 || abs(stPoint.y - pCtx->stDragStart.Y) > 3)) {
           pCtx->bDragging = true;
         }
-
         if (pCtx->bDragging) {
-          scRect stDragRect = {
+          pCtx->stSelectedRect = (scRect){
             .X = min(pCtx->stDragStart.X, stPoint.x),
             .Y = min(pCtx->stDragStart.Y, stPoint.y),
             .W = abs(stPoint.x - pCtx->stDragStart.X),
             .H = abs(stPoint.y - pCtx->stDragStart.Y),
           };
-          pCtx->stSelectedRect = stDragRect;
         }
       } else {
-        // update hover rect...
+        _scUpdateHoverRect(pCtx, stPoint);
       }
 
-      if (pCtx->hFrozenDC) {
-
-      }
-
+      _scUpdateMagnifier(pCtx, stPoint);
+      InvalidateRect(hWnd, NULL, FALSE);
       return 0;
     }
+
     case WM_LBUTTONDOWN: {
       POINT stPoint;
       GetCursorPos(&stPoint);
-      pCtx->bMouseDown = true;
+      pCtx->bMouseDown  = true;
       pCtx->stDragStart = (scV2I){ stPoint.x, stPoint.y };
       SetCapture(hWnd);
       return 0;
     }
+
     case WM_LBUTTONUP: {
       if (pCtx->bMouseDown) {
-        pCtx->bMouseDown = false;
-        //pCtx->stFinalRect = 
-        //pCtx->hHoveredWindow =
+        pCtx->bMouseDown   = false;
         pCtx->bWasDragging = pCtx->bDragging;
+        pCtx->bDragging    = false;
+        pCtx->stFinalRect  = pCtx->stSelectedRect;
         ReleaseCapture();
         ShowWindow(hWnd, SW_HIDE);
-        pCtx->bDragging = false;
+
         scAssert(gApp->pActiveHandler, "pActiveHandler is null in WM_LBUTTONUP!");
-        if (gApp->pActiveHandler->cbOnAreaSelected) {
+        if (gApp->pActiveHandler && gApp->pActiveHandler->cbOnAreaSelected) {
           gApp->pActiveHandler->cbOnAreaSelected(pCtx);
         }
       }
       return 0;
     }
+
+    case WM_KEYDOWN: {
+      if (wParam == VK_ESCAPE) {
+        if (pCtx->bMouseDown) {
+          // Cancel the in-progress drag, but stay in capture mode.
+          ReleaseCapture();
+          pCtx->bMouseDown = false;
+          pCtx->bDragging  = false;
+          POINT stPoint;
+          GetCursorPos(&stPoint);
+          _scUpdateHoverRect(pCtx, stPoint);
+          InvalidateRect(hWnd, NULL, FALSE);
+        } else {
+          // Cancel the whole capture.
+          ShowWindow(hWnd, SW_HIDE);
+          if (gApp->pActiveHandler && gApp->pActiveHandler->cbOnCaptureCancelled) {
+            gApp->pActiveHandler->cbOnCaptureCancelled(pCtx);
+          }
+        }
+      }
+      return 0;
+    }
+
+    case WM_PAINT: {
+      PAINTSTRUCT stPaint;
+      HDC hDC = BeginPaint(hWnd, &stPaint);
+      RECT cr;
+      GetClientRect(hWnd, &cr);
+
+      // (Re)create the back buffer when missing or resized.
+      if (!pCtx->hOverlayMemDC           ||
+          pCtx->iOverlayMemW != cr.right ||
+          pCtx->iOverlayMemH != cr.bottom)
+      {
+        if (pCtx->hOverlayMemDC)     DeleteDC(pCtx->hOverlayMemDC);
+        if (pCtx->hOverlayMemBitmap) DeleteObject(pCtx->hOverlayMemBitmap);
+
+        pCtx->hOverlayMemDC     = CreateCompatibleDC(hDC);
+        pCtx->hOverlayMemBitmap = CreateCompatibleBitmap(hDC, cr.right, cr.bottom);
+        SelectObject(pCtx->hOverlayMemDC, pCtx->hOverlayMemBitmap); // <- was missing
+        pCtx->iOverlayMemW = cr.right;
+        pCtx->iOverlayMemH = cr.bottom;
+      }
+
+      HDC hMemDC = pCtx->hOverlayMemDC;
+
+      // Frozen screenshot as the background.
+      if (pCtx->hFrozenDC) {
+        BitBlt(hMemDC, 0, 0, cr.right, cr.bottom, pCtx->hFrozenDC, 0, 0, SRCCOPY);
+      }
+
+      const s32 vx = pCtx->vCaptureRegion.X;
+      const s32 vy = pCtx->vCaptureRegion.Y;
+
+      RECT r = {
+        pCtx->stSelectedRect.X - vx,
+        pCtx->stSelectedRect.Y - vy,
+        pCtx->stSelectedRect.X - vx + pCtx->stSelectedRect.W,
+        pCtx->stSelectedRect.Y - vy + pCtx->stSelectedRect.H
+      };
+
+      // Translucent fill over the selection (1x1 source stretched via AlphaBlend).
+      {
+        HDC     hAlphaDC     = CreateCompatibleDC(hMemDC);
+        HBITMAP hAlphaBmp    = CreateCompatibleBitmap(hMemDC, 1, 1);
+        HBITMAP hOldAlphaBmp = SelectObject(hAlphaDC, hAlphaBmp);
+
+        SetPixel(hAlphaDC, 0, 0, RGB(155, 155, 215));
+        BLENDFUNCTION bf = { AC_SRC_OVER, 0, 32, 0 };
+        GdiAlphaBlend(hMemDC, r.left, r.top, r.right - r.left, r.bottom - r.top, hAlphaDC, 0, 0, 1, 1, bf);
+
+        SelectObject(hAlphaDC, hOldAlphaBmp);
+        DeleteObject(hAlphaBmp);
+        DeleteDC(hAlphaDC);
+      }
+
+      // Dotted selection border.
+      {
+        HPEN   hPen      = CreatePen(PS_DOT, 1, RGB(156, 215, 228));
+        HPEN   hOldPen   = SelectObject(hMemDC, hPen);
+        HBRUSH hOldBrush = SelectObject(hMemDC, GetStockObject(NULL_BRUSH));
+
+        SetBkMode(hMemDC, TRANSPARENT);
+        Rectangle(hMemDC, r.left, r.top, r.right, r.bottom);
+
+        SelectObject(hMemDC, hOldBrush);
+        SelectObject(hMemDC, hOldPen);
+        DeleteObject(hPen);
+      }
+
+      // "W x H" size label.
+      if (pCtx->stSelectedRect.W > 0 && pCtx->stSelectedRect.H > 0) {
+        HFONT hOldFont = SelectObject(hMemDC, GetStockObject(DEFAULT_GUI_FONT));
+
+        char szSize[64];
+        snprintf(szSize, sizeof(szSize), "%d x %d", pCtx->stSelectedRect.W, pCtx->stSelectedRect.H);
+
+        SIZE stTextSize;
+        GetTextExtentPoint32A(hMemDC, szSize, (int)strlen(szSize), &stTextSize);
+
+        int iTextX = r.left;
+        int iTextY = r.top - stTextSize.cy - 4;
+        if (iTextY < 0) {
+          iTextY = r.top + 4;
+        }
+
+        RECT stTextBg = {
+          iTextX, iTextY,
+          iTextX + stTextSize.cx + 6,
+          iTextY + stTextSize.cy + 4
+        };
+        FillRect(hMemDC, &stTextBg, (HBRUSH)GetStockObject(BLACK_BRUSH)); // stock: don't delete
+
+        SetTextColor(hMemDC, RGB(255, 255, 255));
+        TextOutA(hMemDC, iTextX + 3, iTextY + 2, szSize, (int)strlen(szSize));
+
+        SelectObject(hMemDC, hOldFont);
+      }
+
+      _scPaintMagnifier(pCtx, hMemDC);
+
+      // Present.
+      BitBlt(hDC, 0, 0, cr.right, cr.bottom, hMemDC, 0, 0, SRCCOPY);
+      EndPaint(hWnd, &stPaint);
+      return 0;
+    }
+
     case WM_ERASEBKGND: {
       return TRUE;
     }
@@ -478,6 +712,14 @@ _scDestroyCaptureContext() {
     DeleteObject(pCtx->hFrozenBitmap);
     scLogDebug("Destroyed frozen bitmap");
   }
+  if (pCtx->hMagDC) {
+    DeleteDC(pCtx->hMagDC);
+    scLogDebug("Destroyed magnifier dc");
+  }
+  if (pCtx->hMagBitmap) {
+    DeleteObject(pCtx->hMagBitmap);
+    scLogDebug("Destroyed magnifier bitmap");
+  }
 
   free(pCtx);
   gApp->pCaptureContext = NULL;
@@ -497,6 +739,9 @@ _scBeginCaptureContext(bool bCreateWindow) {
     s32 iScreenX, iScreenY, iScreenW, iScreenH;
     _scGetSystemMetrics(&iScreenX, &iScreenY, &iScreenW, &iScreenH);
 
+    pCtx->vCaptureRegion.X = iScreenX;
+    pCtx->vCaptureRegion.Y = iScreenY;
+
     { // Populate FrozenDC/Bitmap
       HDC hScreenDC = GetDC(NULL);
       pCtx->hFrozenDC = CreateCompatibleDC(hScreenDC);
@@ -511,7 +756,7 @@ _scBeginCaptureContext(bool bCreateWindow) {
       WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
       OVERLAY_CLASS_NAME, "ScreenCapOverlayWindow",
       WS_POPUP,
-      0, 0, 0, 0,
+      iScreenX, iScreenY, iScreenW, iScreenH,
       NULL, NULL, GetModuleHandleA(NULL), NULL);
     if (!pCtx->hOverlayWindow) {
       scLogError("Failed to create overlay window: %d", GetLastError());
