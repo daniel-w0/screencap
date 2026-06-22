@@ -2,6 +2,8 @@
 #include "scApp.h"
 #include "scAssert.h"
 #include "scLogging.h"
+#include "stb_image_write.h"
+#include "stb_image.h"
 
 static scApp* gApp = NULL;
 static const char* OVERLAY_CLASS_NAME = "ScOverlayWindow";
@@ -733,9 +735,7 @@ _scBeginCaptureContext() {
     _scDestroyCaptureContext();
   }
   gApp->pCaptureContext = (scCaptureContext*)calloc(1, sizeof(scCaptureContext));
-  scCaptureContext* pCtx = gApp->pCaptureContext;
-
-  return true;
+  return gApp->pCaptureContext != NULL;
 }
 
 scInternal bool
@@ -822,6 +822,190 @@ void scAppUpdate() {
 void scAppDestroy() {
   _scUnregisterHotkeys();
   free(gApp);
+}
+
+//------------------------------------------------------------------------
+// Image
+//------------------------------------------------------------------------
+typedef struct {
+  u8*    pData;
+  s32    nSize;
+  s32    nCap;
+  bool   bFailed;
+} _scPngBuffer;
+
+bool scCtxCopyAreaToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect) {
+  *pOutImage = (scImage){ 0 };
+  if (rect.W <= 0 || rect.H <= 0 || !pCtx->hFrozenDC) {
+    return false;
+  }
+
+  BITMAPINFO bi = { 0 };
+  bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth       =  rect.W;
+  bi.bmiHeader.biHeight      = -rect.H;   // negative => top-down rows
+  bi.bmiHeader.biPlanes      = 1;
+  bi.bmiHeader.biBitCount    = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+
+  void* pBits = NULL;
+  HBITMAP hDib = CreateDIBSection(pCtx->hFrozenDC, &bi, DIB_RGB_COLORS, &pBits, NULL, 0);
+  if (!hDib) {
+    return false;
+  }
+
+  HDC     hDibDC = CreateCompatibleDC(pCtx->hFrozenDC);
+  HBITMAP hOld   = SelectObject(hDibDC, hDib);
+
+  s32 srcX = rect.X - pCtx->vCaptureRegion.X;
+  s32 srcY = rect.Y - pCtx->vCaptureRegion.Y;
+  BitBlt(hDibDC, 0, 0, rect.W, rect.H, pCtx->hFrozenDC, srcX, srcY, SRCCOPY);
+  GdiFlush(); // ensure the blit completes before the CPU reads pBits
+
+  SelectObject(hDibDC, hOld);
+  DeleteDC(hDibDC);
+
+  pOutImage->W       = rect.W;
+  pOutImage->H       = rect.H;
+  pOutImage->iStride = rect.W * 4;
+  pOutImage->pPixels = (u8*)pBits;
+  pOutImage->hBitmap = hDib;
+  return true;
+}
+
+scInternal void
+_scPngWriteFunc(void* pContext, void* pData, int nSize) {
+  _scPngBuffer* pBuf = (_scPngBuffer*)pContext;
+  if (pBuf->bFailed) {
+    return;
+  }
+
+  if (pBuf->nSize + nSize > pBuf->nCap) {
+    s32 nNewCap = pBuf->nCap ? pBuf->nCap * 2 : 64 * 1024;
+    while (nNewCap < pBuf->nSize + nSize) {
+      nNewCap *= 2;
+    }
+    u8* pNew = (u8*)realloc(pBuf->pData, (size_t)nNewCap);
+    if (!pNew) {
+      pBuf->bFailed = true; // keep the old buffer so the caller can free it
+      return;
+    }
+    pBuf->pData = pNew;
+    pBuf->nCap  = nNewCap;
+  }
+
+  memcpy(pBuf->pData + pBuf->nSize, pData, (size_t)nSize);
+  pBuf->nSize += nSize;
+}
+
+u8* _scBitmapToPNG(const scImage* pImage, s32* pOutSize) {
+  if (!pImage->pPixels || pImage->W <= 0 || pImage->H <= 0) {
+    return NULL;
+  }
+
+  u32 pixelCount = (u32)pImage->W * (u32)pImage->H;
+  u8* pRGBA = (u8*)malloc((size_t)pixelCount * 4);
+  if (!pRGBA) {
+    return NULL;
+  }
+
+  // BGRA -> RGBA for stb, and force opaque alpha (BitBlt leaves it 0).
+  for (s32 y = 0; y < pImage->H; ++y) {
+    const u8* pSrcRow = pImage->pPixels + (size_t)y * pImage->iStride;
+    u8*       pDstRow = pRGBA           + (size_t)y * pImage->W * 4;
+    for (s32 x = 0; x < pImage->W; ++x) {
+      pDstRow[x*4 + 0] = pSrcRow[x*4 + 2]; // R <- B
+      pDstRow[x*4 + 1] = pSrcRow[x*4 + 1]; // G
+      pDstRow[x*4 + 2] = pSrcRow[x*4 + 0]; // B <- R
+      pDstRow[x*4 + 3] = 0xFF;             // A
+    }
+  }
+
+  _scPngBuffer buf = { 0 };
+  int ok = stbi_write_png_to_func(_scPngWriteFunc, &buf,
+                                  pImage->W, pImage->H, 4,
+                                  pRGBA, pImage->W * 4);
+  free(pRGBA);
+
+  if (!ok || buf.bFailed || !buf.pData) {
+    free(buf.pData);
+    return NULL;
+  }
+
+  *pOutSize = buf.nSize;
+  return buf.pData;
+}
+
+void scImageFree(scImage* pImage) {
+  if (pImage->hBitmap) {
+    DeleteObject(pImage->hBitmap);
+  }
+  *pImage = (scImage){ 0 };
+}
+
+bool scImageToFile(const scImage* pImage) {
+  s32 pngSize = 0;
+  u8* pPng = _scBitmapToPNG(pImage, &pngSize);
+  if (!pPng) {
+    scLogError("Failed to encode capture PNG data");
+    return false;
+  }
+
+  bool ok = scSaveDataToFile(pPng, pngSize, ".png");
+  free(pPng);
+  return ok;
+}
+
+bool scSaveDataToFile(const u8* pData, s32 nSize, const char* sExtension) {
+  if (!pData || nSize <= 0) {
+    return false;
+  }
+
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+
+  // Directory
+  wchar_t wszDir[MAX_PATH];
+  int dn = swprintf(wszDir, MAX_PATH,
+                    L"%ls\\%02d-%02d-%04d",
+                    gApp->config.wszSavePath,
+                    st.wDay, st.wMonth, st.wYear);
+  if (dn < 0 || dn >= MAX_PATH) {
+    return false;
+  }
+
+  int dirResult = SHCreateDirectoryExW(NULL, wszDir, NULL);
+  if (dirResult != ERROR_SUCCESS && dirResult != ERROR_ALREADY_EXISTS) {
+    scLogError("Failed to create directory '%ls': %d", wszDir, dirResult);
+    return false;
+  }
+
+  // Filename
+  wchar_t wszPath[MAX_PATH];
+  int n = swprintf(wszPath, MAX_PATH,
+                   L"%ls\\%02d-%02d-%02d%hs",
+                   wszDir,
+                   st.wHour, st.wMinute, st.wSecond,
+                   sExtension);
+  if (n < 0 || n >= MAX_PATH) {
+    return false;
+  }
+
+  HANDLE hFile = CreateFileW(wszPath, GENERIC_WRITE, 0, NULL,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (hFile == INVALID_HANDLE_VALUE) {
+    scLogError("Failed to open '%ls' for writing: %d", wszPath, GetLastError());
+    return false;
+  }
+
+  DWORD written = 0;
+  bool ok = WriteFile(hFile, pData, (DWORD)nSize, &written, NULL) && written == (DWORD)nSize;
+  CloseHandle(hFile);
+
+  if (ok) {
+    scLogDebug("Saved %d bytes to '%ls'", nSize, wszPath);
+  }
+  return ok;
 }
 
 //------------------------------------------------------------------------

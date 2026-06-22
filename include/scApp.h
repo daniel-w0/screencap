@@ -91,6 +91,14 @@ typedef struct {
   void* pUser;
 } scCaptureContext;
 
+typedef struct {
+  s32     W;
+  s32     H;
+  s32     iStride;
+  u8*     pPixels;
+  HBITMAP hBitmap;
+} scImage;
+
 typedef struct scCaptureHandler {
   void (*cbOnHotkeyPressed)(scCaptureContext*    pCtx);
   void (*cbOnAreaSelected)(scCaptureContext*     pCtx);
@@ -113,6 +121,10 @@ void scAppDestroy();
 //------------------------------------------------------------------------
 // Other Application
 void scCtxCaptureArea(scCaptureContext* pCtx);
+bool scCtxCopyAreaToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect);
+void scImageFree(scImage* pImage);
+bool scImageToFile(const scImage* pImage);
+bool scSaveDataToFile(const u8* pData, s32 nSize, const char* pExtension);
 
 void scAppRegisterHotkeys();
 void scAppSetupCallbackHandler();

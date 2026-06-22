@@ -10,6 +10,13 @@ cbOnHotkeyPressed(scCaptureContext* pCtx) {
 scInternal void
 cbOnAreaSelected(scCaptureContext* pCtx) {
   scLogDebug("Captured Area: { %d, %d, %d, %d }", pCtx->stSelectedRect.X, pCtx->stSelectedRect.Y, pCtx->stSelectedRect.W, pCtx->stSelectedRect.H);
+  scImage stImage = { 0 };
+
+  if (scCtxCopyAreaToImage(pCtx, &stImage, pCtx->stSelectedRect)) {
+    scImageToFile(&stImage);
+  }
+
+  scImageFree(&stImage);
 }
 
 //scInternal void
