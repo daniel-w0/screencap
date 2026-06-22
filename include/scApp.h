@@ -88,7 +88,6 @@ typedef struct {
   scRect stSelectedRect;
 
   // Modifiable by handler:
-  bool  bRequestCaptureArea;
   void* pUser;
 } scCaptureContext;
 
@@ -96,7 +95,6 @@ typedef struct scCaptureHandler {
   void (*cbOnHotkeyPressed)(scCaptureContext*    pCtx);
   void (*cbOnAreaSelected)(scCaptureContext*     pCtx);
   void (*cbOnCaptureCancelled)(scCaptureContext* pCtx);
-  bool bCreateFrozenWindow;
 } scCaptureHandler;
 
 typedef struct {
@@ -114,7 +112,7 @@ void scAppDestroy();
 
 //------------------------------------------------------------------------
 // Other Application
-void scAppCaptureArea();
+void scCtxCaptureArea(scCaptureContext* pCtx);
 
 void scAppRegisterHotkeys();
 void scAppSetupCallbackHandler();

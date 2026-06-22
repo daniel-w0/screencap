@@ -726,7 +726,7 @@ _scDestroyCaptureContext() {
 }
 
 scInternal bool
-_scBeginCaptureContext(bool bCreateWindow) {
+_scBeginCaptureContext() {
   scAssert(!gApp->pCaptureContext, "Attmempted to create a new context when we already have one");
   if (gApp->pCaptureContext) {
     scLogWarn("Cleaned up capture context, however, this could lead to issues! Fix it fucker!");
@@ -735,39 +735,41 @@ _scBeginCaptureContext(bool bCreateWindow) {
   gApp->pCaptureContext = (scCaptureContext*)calloc(1, sizeof(scCaptureContext));
   scCaptureContext* pCtx = gApp->pCaptureContext;
 
-  if (bCreateWindow) { // recording doesn't do this for example
-    s32 iScreenX, iScreenY, iScreenW, iScreenH;
-    _scGetSystemMetrics(&iScreenX, &iScreenY, &iScreenW, &iScreenH);
+  return true;
+}
 
-    pCtx->vCaptureRegion.X = iScreenX;
-    pCtx->vCaptureRegion.Y = iScreenY;
+scInternal bool
+_scCtxCreateCaptureWindow(scCaptureContext* pCtx) {
+  s32 iScreenX, iScreenY, iScreenW, iScreenH;
+  _scGetSystemMetrics(&iScreenX, &iScreenY, &iScreenW, &iScreenH);
 
-    { // Populate FrozenDC/Bitmap
-      HDC hScreenDC = GetDC(NULL);
-      pCtx->hFrozenDC = CreateCompatibleDC(hScreenDC);
-      pCtx->hFrozenBitmap = CreateCompatibleBitmap(hScreenDC, iScreenW, iScreenH);
-      SelectObject(pCtx->hFrozenDC, pCtx->hFrozenBitmap);
-      BitBlt(pCtx->hFrozenDC, 0, 0, iScreenW, iScreenH, hScreenDC, iScreenX, iScreenY, SRCCOPY);
-      ReleaseDC(NULL, hScreenDC);
-    }
+  pCtx->vCaptureRegion.X = iScreenX;
+  pCtx->vCaptureRegion.Y = iScreenY;
 
-    // Create and show overlay window
-    pCtx->hOverlayWindow = CreateWindowExA(
-      WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-      OVERLAY_CLASS_NAME, "ScreenCapOverlayWindow",
-      WS_POPUP,
-      iScreenX, iScreenY, iScreenW, iScreenH,
-      NULL, NULL, GetModuleHandleA(NULL), NULL);
-    if (!pCtx->hOverlayWindow) {
-      scLogError("Failed to create overlay window: %d", GetLastError());
-      return false;
-    }
-
-    ShowWindow(pCtx->hOverlayWindow, SW_SHOW);
-    SetForegroundWindow(pCtx->hOverlayWindow);
-    SetFocus(pCtx->hOverlayWindow);
+  { // Populate FrozenDC/Bitmap
+    HDC hScreenDC = GetDC(NULL);
+    pCtx->hFrozenDC = CreateCompatibleDC(hScreenDC);
+    pCtx->hFrozenBitmap = CreateCompatibleBitmap(hScreenDC, iScreenW, iScreenH);
+    SelectObject(pCtx->hFrozenDC, pCtx->hFrozenBitmap);
+    BitBlt(pCtx->hFrozenDC, 0, 0, iScreenW, iScreenH, hScreenDC, iScreenX, iScreenY, SRCCOPY);
+    ReleaseDC(NULL, hScreenDC);
   }
 
+  // Create and show overlay window
+  pCtx->hOverlayWindow = CreateWindowExA(
+    WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+    OVERLAY_CLASS_NAME, "ScreenCapOverlayWindow",
+    WS_POPUP,
+    iScreenX, iScreenY, iScreenW, iScreenH,
+    NULL, NULL, GetModuleHandleA(NULL), NULL);
+  if (!pCtx->hOverlayWindow) {
+    scLogError("Failed to create overlay window: %d", GetLastError());
+    return false;
+  }
+
+  ShowWindow(pCtx->hOverlayWindow, SW_SHOW);
+  SetForegroundWindow(pCtx->hOverlayWindow);
+  SetFocus(pCtx->hOverlayWindow);
   return true;
 }
 
@@ -801,7 +803,7 @@ void scAppUpdate() {
         bool bHasValidContext = gApp->pCaptureContext != NULL;
         if (!bHasValidContext) {
           // we might want to keep a valid context, recording would be one (and the only) use case for this.
-          bHasValidContext = _scBeginCaptureContext(pHandler->bCreateFrozenWindow);
+          bHasValidContext = _scBeginCaptureContext();
         }
         if (bHasValidContext) {
           gApp->pActiveHandler = pHandler;
@@ -824,8 +826,11 @@ void scAppDestroy() {
 
 //------------------------------------------------------------------------
 // Other Application
-void scAppCaptureArea() {
-
+void scCtxCaptureArea(scCaptureContext* pCtx) {
+  scAssert(pCtx, "pCtx is null!");
+  if (!_scCtxCreateCaptureWindow(gApp->pCaptureContext)) {
+    _scDestroyCaptureContext(pCtx);
+  }
 }
 
 void scAppRegisterHotkeys() {
