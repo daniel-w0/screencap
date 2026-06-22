@@ -905,8 +905,7 @@ u8* _scBitmapToPNG(const scImage* pImage, s32* pOutSize) {
   return buf.pData;
 }
 
-scInternal bool
-_scCopyWindowToImage(HWND hWnd, scImage* pOutImage) {
+bool scCopyWindowToImage(HWND hWnd, scImage* pOutImage) {
   RECT wr;
   if (!GetWindowRect(hWnd, &wr)) {
     return false;
@@ -955,8 +954,7 @@ _scCopyWindowToImage(HWND hWnd, scImage* pOutImage) {
   return true;
 }
 
-scInternal bool
-_scCopyAreaToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect) {
+bool scCopyAreaToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect) {
   if (rect.W <= 0 || rect.H <= 0 || !pCtx->hFrozenDC) {
     return false;
   }
@@ -1078,12 +1076,12 @@ void scCtxRequestCaptureArea(scCaptureContext* pCtx) {
 bool scCtxCopyToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect) {
   *pOutImage = (scImage){ 0 };
   if (pCtx->hHoveredWindow && !pCtx->bWasDragging) {
-    if (_scCopyWindowToImage(pCtx->hHoveredWindow, pOutImage)) {
+    if (scCopyWindowToImage(pCtx->hHoveredWindow, pOutImage)) {
       return true;
     }
   }
 
-  return _scCopyAreaToImage(pCtx, pOutImage, rect);
+  return scCopyAreaToImage(pCtx, pOutImage, rect);
 }
 
 void scAppRegisterHotkeys() {
@@ -1094,9 +1092,8 @@ void scAppRegisterHotkeys() {
 extern scCaptureHandler scScreenshotHandler;
 scCaptureHandler scClipboardHandler          = { NULL, NULL, NULL };
 scCaptureHandler scOcrHandler                = { NULL, NULL, NULL };
-scCaptureHandler scActiveWindowHandler       = { NULL, NULL, NULL };
-scCaptureHandler scActiveMonitorHandler      = { NULL, NULL, NULL };
-scCaptureHandler scScreenshotFallbackHandler = { NULL, NULL, NULL };
+extern scCaptureHandler scActiveWindowHandler;
+extern scCaptureHandler scActiveMonitorHandler;
 scCaptureHandler scRecordHandler             = { NULL, NULL, NULL };
 
 void scAppSetupCallbackHandler() {
@@ -1112,6 +1109,6 @@ void scAppSetupCallbackHandler() {
   _scRegisterHandler(SC_HOTKEY_OCR, &scOcrHandler);
   _scRegisterHandler(SC_HOTKEY_ACTIVE_WINDOW, &scActiveWindowHandler);
   _scRegisterHandler(SC_HOTKEY_ACTIVE_MONITOR, &scActiveMonitorHandler);
-  _scRegisterHandler(SC_HOTKEY_FALLBACK_SCREENSHOT, &scScreenshotFallbackHandler);
+  _scRegisterHandler(SC_HOTKEY_FALLBACK_SCREENSHOT, &scScreenshotHandler);
   _scRegisterHandler(SC_HOTKEY_RECORD, &scRecordHandler);
 }

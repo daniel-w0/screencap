@@ -122,6 +122,10 @@ void scAppDestroy();
 // Other Application
 void scDestroyCaptureContext(scCaptureContext* pCtx);
 void scCtxRequestCaptureArea(scCaptureContext* pCtx);
+
+bool scCopyWindowToImage(HWND hWnd, scImage* pOutImage);
+bool scCopyAreaToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect);
+
 bool scCtxCopyToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect);
 void scImageFree(scImage* pImage);
 bool scImageToFile(const scImage* pImage);
