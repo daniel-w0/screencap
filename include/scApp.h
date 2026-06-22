@@ -88,7 +88,7 @@ typedef struct {
   scRect stSelectedRect;
 
   // Modifiable by handler:
-  bool  bRequstCaptureArea;
+  bool  bRequestCaptureArea;
   void* pUser;
 } scCaptureContext;
 

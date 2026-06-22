@@ -4,7 +4,7 @@
 
 scInternal void
 cbOnHotkeyPressed(scCaptureContext* pCtx) {
-  pCtx->bRequstCaptureArea = true;
+  pCtx->bRequestCaptureArea = true;
 }
 
 scInternal void
