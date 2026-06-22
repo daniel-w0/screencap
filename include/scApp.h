@@ -100,7 +100,7 @@ typedef struct {
 } scImage;
 
 typedef struct scCaptureHandler {
-  void (*cbOnHotkeyPressed)(scCaptureContext*    pCtx);
+  bool (*cbOnHotkeyPressed)(scCaptureContext*    pCtx);
   bool (*cbOnAreaSelected)(scCaptureContext*     pCtx);
   void (*cbOnCaptureCancelled)(scCaptureContext* pCtx);
 } scCaptureHandler;
@@ -120,6 +120,8 @@ void scAppDestroy();
 
 //------------------------------------------------------------------------
 // Other Application
+bool scGetWindowRect(HWND hWnd, RECT* wr);
+
 void scDestroyCaptureContext(scCaptureContext* pCtx);
 void scCtxRequestCaptureArea(scCaptureContext* pCtx);
 

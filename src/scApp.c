@@ -349,9 +349,7 @@ _scHoverEnumProc(HWND hWnd, LPARAM lParam) {
   if (IsIconic(hWnd))            return TRUE;
 
   RECT wr;
-  if (DwmGetWindowAttribute(hWnd, DWMWA_EXTENDED_FRAME_BOUNDS, &wr, sizeof(RECT)) != S_OK) {
-    if (!GetWindowRect(hWnd, &wr)) return TRUE;
-  }
+  if (!scGetWindowRect(hWnd, &wr)) return TRUE;
   if (!PtInRect(&wr, pHit->pt))  return TRUE;
 
   pHit->hResult = hWnd;
@@ -366,9 +364,7 @@ _scUpdateHoverRect(scCaptureContext* pCtx, POINT pt) {
     return;
   }
   RECT wr;
-  if (DwmGetWindowAttribute(hit.hResult, DWMWA_EXTENDED_FRAME_BOUNDS, &wr, sizeof(RECT)) != S_OK) {
-    GetWindowRect(hit.hResult, &wr);
-  }
+  scGetWindowRect(hit.hResult, &wr);
   pCtx->hHoveredWindow = hit.hResult;
   pCtx->stSelectedRect = (scRect){
     .X = wr.left,
@@ -528,9 +524,7 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         } else {
           // Cancel the whole capture.
           ShowWindow(hWnd, SW_HIDE);
-          if (gApp->pActiveHandler && gApp->pActiveHandler->cbOnCaptureCancelled) {
-            gApp->pActiveHandler->cbOnCaptureCancelled(pCtx);
-          }
+          scDestroyCaptureContext(gApp->pCaptureContext);
         }
       }
       return 0;
@@ -701,6 +695,13 @@ _scGetSystemMetrics(s32* X, s32* Y, s32* W, s32* H) {
   *H = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 }
 
+bool scGetWindowRect(HWND hWnd, RECT* wr) {
+  if (DwmGetWindowAttribute(hWnd, DWMWA_EXTENDED_FRAME_BOUNDS, wr, sizeof(RECT)) != S_OK) {
+    if (!GetWindowRect(hWnd, wr)) return false;
+  }
+  return true;
+}
+
 void scDestroyCaptureContext(scCaptureContext* pCtx) {
   scAssert(pCtx, "What are we trying to destroy? There is no context... Fix it fucker.");
   if (!pCtx) {
@@ -813,7 +814,11 @@ void scAppUpdate() {
         }
         if (bHasValidContext) {
           gApp->pActiveHandler = pHandler;
-          pHandler->cbOnHotkeyPressed(gApp->pCaptureContext);
+
+          // returns true if we should destroy
+          if (pHandler->cbOnHotkeyPressed(gApp->pCaptureContext)) {
+            scDestroyCaptureContext(gApp->pCaptureContext);
+          }
         } else {
           scLogError("Skipping screen capture due to invalid context!");
         }
