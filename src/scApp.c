@@ -505,7 +505,10 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
         scAssert(gApp->pActiveHandler, "pActiveHandler is null in WM_LBUTTONUP!");
         if (gApp->pActiveHandler && gApp->pActiveHandler->cbOnAreaSelected) {
-          gApp->pActiveHandler->cbOnAreaSelected(pCtx);
+          // if we return true, then that means we are done
+          if (gApp->pActiveHandler->cbOnAreaSelected(pCtx)) {
+            scDestroyCaptureContext(pCtx);
+          }
         }
       }
       return 0;
@@ -698,9 +701,7 @@ _scGetSystemMetrics(s32* X, s32* Y, s32* W, s32* H) {
   *H = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 }
 
-scInternal void
-_scDestroyCaptureContext() {
-  scCaptureContext* pCtx = gApp->pCaptureContext;
+void scDestroyCaptureContext(scCaptureContext* pCtx) {
   scAssert(pCtx, "What are we trying to destroy? There is no context... Fix it fucker.");
   if (!pCtx) {
     return;
@@ -729,6 +730,7 @@ _scDestroyCaptureContext() {
 
   free(pCtx);
   gApp->pCaptureContext = NULL;
+  scLogDebug("Destroyed capture context!");
 }
 
 scInternal bool
@@ -736,7 +738,7 @@ _scBeginCaptureContext() {
   scAssert(!gApp->pCaptureContext, "Attmempted to create a new context when we already have one");
   if (gApp->pCaptureContext) {
     scLogWarn("Cleaned up capture context, however, this could lead to issues! Fix it fucker!");
-    _scDestroyCaptureContext();
+    scDestroyCaptureContext(gApp->pCaptureContext);
   }
   gApp->pCaptureContext = (scCaptureContext*)calloc(1, sizeof(scCaptureContext));
   return gApp->pCaptureContext != NULL;
@@ -815,6 +817,8 @@ void scAppUpdate() {
         } else {
           scLogError("Skipping screen capture due to invalid context!");
         }
+
+        // avoid using context here because for screen recording, `cbOnHotkeyPressed` can destroy it
       }
     }
 
@@ -1067,7 +1071,7 @@ bool scSaveDataToFile(const u8* pData, s32 nSize, const char* sExtension) {
 void scCtxRequestCaptureArea(scCaptureContext* pCtx) {
   scAssert(pCtx, "pCtx is null!");
   if (!_scCtxCreateCaptureWindow(gApp->pCaptureContext)) {
-    _scDestroyCaptureContext(pCtx);
+    scDestroyCaptureContext(pCtx);
   }
 }
 
