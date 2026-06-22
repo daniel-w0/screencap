@@ -1064,14 +1064,14 @@ bool scSaveDataToFile(const u8* pData, s32 nSize, const char* sExtension) {
 
 //------------------------------------------------------------------------
 // Other Application
-void scCtxCaptureArea(scCaptureContext* pCtx) {
+void scCtxRequestCaptureArea(scCaptureContext* pCtx) {
   scAssert(pCtx, "pCtx is null!");
   if (!_scCtxCreateCaptureWindow(gApp->pCaptureContext)) {
     _scDestroyCaptureContext(pCtx);
   }
 }
 
-bool scCtxCopyAreaToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect) {
+bool scCtxCopyToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect) {
   *pOutImage = (scImage){ 0 };
   if (pCtx->hHoveredWindow && !pCtx->bWasDragging) {
     if (_scCopyWindowToImage(pCtx->hHoveredWindow, pOutImage)) {

@@ -120,8 +120,8 @@ void scAppDestroy();
 
 //------------------------------------------------------------------------
 // Other Application
-void scCtxCaptureArea(scCaptureContext* pCtx);
-bool scCtxCopyAreaToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect);
+void scCtxRequestCaptureArea(scCaptureContext* pCtx);
+bool scCtxCopyToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect);
 void scImageFree(scImage* pImage);
 bool scImageToFile(const scImage* pImage);
 bool scSaveDataToFile(const u8* pData, s32 nSize, const char* pExtension);
