@@ -17,7 +17,12 @@ cbOnAreaSelected(scCaptureContext* pCtx) {
     return true;
   }
 
-  scImageToFile(&stImage);
+  if (pCtx->eHotkeyID == SC_HOTKEY_CLIPBOARD) {
+    scLogInfo("Copying to clipboard... (not implemented!");
+  } else {
+    scImageToFile(&stImage);
+  }
+
   scImageFree(&stImage);
   return true;
 }

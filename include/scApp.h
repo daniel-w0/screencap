@@ -86,6 +86,7 @@ typedef struct {
 
   // Public
   scRect stSelectedRect;
+  scHotkeyID eHotkeyID;
 
   // Modifiable by handler:
   void* pUser;

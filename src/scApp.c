@@ -813,6 +813,7 @@ void scAppUpdate() {
           bHasValidContext = _scBeginCaptureContext();
         }
         if (bHasValidContext) {
+          gApp->pCaptureContext->eHotkeyID = iHotkeyID;
           gApp->pActiveHandler = pHandler;
 
           // returns true if we should destroy
@@ -1095,11 +1096,10 @@ void scAppRegisterHotkeys() {
 }
 
 extern scCaptureHandler scScreenshotHandler;
-scCaptureHandler scClipboardHandler          = { NULL, NULL, NULL };
-scCaptureHandler scOcrHandler                = { NULL, NULL, NULL };
+scCaptureHandler scOcrHandler = { NULL, NULL, NULL };
 extern scCaptureHandler scActiveWindowHandler;
 extern scCaptureHandler scActiveMonitorHandler;
-scCaptureHandler scRecordHandler             = { NULL, NULL, NULL };
+scCaptureHandler scRecordHandler = { NULL, NULL, NULL };
 
 void scAppSetupCallbackHandler() {
   scHotkey* pHotkeys = gApp->config.aHotkeys;
@@ -1110,7 +1110,7 @@ void scAppSetupCallbackHandler() {
     }                                                                       \
 
   _scRegisterHandler(SC_HOTKEY_SCREENSHOT, &scScreenshotHandler);
-  _scRegisterHandler(SC_HOTKEY_CLIPBOARD, &scClipboardHandler);
+  _scRegisterHandler(SC_HOTKEY_CLIPBOARD, &scScreenshotHandler);
   _scRegisterHandler(SC_HOTKEY_OCR, &scOcrHandler);
   _scRegisterHandler(SC_HOTKEY_ACTIVE_WINDOW, &scActiveWindowHandler);
   _scRegisterHandler(SC_HOTKEY_ACTIVE_MONITOR, &scActiveMonitorHandler);
