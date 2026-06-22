@@ -11,6 +11,10 @@ static const char* OVERLAY_CLASS_NAME = "ScOverlayWindow";
 #define SC_MAG_SIZE 120
 #define SC_MAG_SRC  (SC_MAG_SIZE / 4)   // 4x zoom
 
+#ifndef PW_RENDERFULLCONTENT
+#  define PW_RENDERFULLCONTENT 0x00000002
+#endif
+
 //------------------------------------------------------------------------
 // Util
 //------------------------------------------------------------------------
@@ -834,45 +838,6 @@ typedef struct {
   bool   bFailed;
 } _scPngBuffer;
 
-bool scCtxCopyAreaToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect) {
-  *pOutImage = (scImage){ 0 };
-  if (rect.W <= 0 || rect.H <= 0 || !pCtx->hFrozenDC) {
-    return false;
-  }
-
-  BITMAPINFO bi = { 0 };
-  bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
-  bi.bmiHeader.biWidth       =  rect.W;
-  bi.bmiHeader.biHeight      = -rect.H;   // negative => top-down rows
-  bi.bmiHeader.biPlanes      = 1;
-  bi.bmiHeader.biBitCount    = 32;
-  bi.bmiHeader.biCompression = BI_RGB;
-
-  void* pBits = NULL;
-  HBITMAP hDib = CreateDIBSection(pCtx->hFrozenDC, &bi, DIB_RGB_COLORS, &pBits, NULL, 0);
-  if (!hDib) {
-    return false;
-  }
-
-  HDC     hDibDC = CreateCompatibleDC(pCtx->hFrozenDC);
-  HBITMAP hOld   = SelectObject(hDibDC, hDib);
-
-  s32 srcX = rect.X - pCtx->vCaptureRegion.X;
-  s32 srcY = rect.Y - pCtx->vCaptureRegion.Y;
-  BitBlt(hDibDC, 0, 0, rect.W, rect.H, pCtx->hFrozenDC, srcX, srcY, SRCCOPY);
-  GdiFlush(); // ensure the blit completes before the CPU reads pBits
-
-  SelectObject(hDibDC, hOld);
-  DeleteDC(hDibDC);
-
-  pOutImage->W       = rect.W;
-  pOutImage->H       = rect.H;
-  pOutImage->iStride = rect.W * 4;
-  pOutImage->pPixels = (u8*)pBits;
-  pOutImage->hBitmap = hDib;
-  return true;
-}
-
 scInternal void
 _scPngWriteFunc(void* pContext, void* pData, int nSize) {
   _scPngBuffer* pBuf = (_scPngBuffer*)pContext;
@@ -934,6 +899,95 @@ u8* _scBitmapToPNG(const scImage* pImage, s32* pOutSize) {
 
   *pOutSize = buf.nSize;
   return buf.pData;
+}
+
+scInternal bool
+_scCopyWindowToImage(HWND hWnd, scImage* pOutImage) {
+  RECT wr;
+  if (!GetWindowRect(hWnd, &wr)) {
+    return false;
+  }
+  s32 w = wr.right  - wr.left;
+  s32 h = wr.bottom - wr.top;
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+
+  BITMAPINFO bi = { 0 };
+  bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth       =  w;
+  bi.bmiHeader.biHeight      = -h;   // negative => top-down rows
+  bi.bmiHeader.biPlanes      = 1;
+  bi.bmiHeader.biBitCount    = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+
+  HDC     hScreenDC = GetDC(NULL);
+  void*   pBits     = NULL;
+  HBITMAP hDib      = CreateDIBSection(hScreenDC, &bi, DIB_RGB_COLORS, &pBits, NULL, 0);
+  ReleaseDC(NULL, hScreenDC);
+  if (!hDib) {
+    return false;
+  }
+
+  HDC     hDibDC = CreateCompatibleDC(NULL);
+  HBITMAP hOld   = SelectObject(hDibDC, hDib);
+
+  BOOL ok = PrintWindow(hWnd, hDibDC, PW_RENDERFULLCONTENT);
+  GdiFlush();
+
+  SelectObject(hDibDC, hOld);
+  DeleteDC(hDibDC);
+
+  if (!ok) {
+    DeleteObject(hDib);
+    return false;
+  }
+
+  pOutImage->W       = w;
+  pOutImage->H       = h;
+  pOutImage->iStride = w * 4;
+  pOutImage->pPixels = (u8*)pBits;
+  pOutImage->hBitmap = hDib;
+  return true;
+}
+
+scInternal bool
+_scCopyAreaToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect) {
+  if (rect.W <= 0 || rect.H <= 0 || !pCtx->hFrozenDC) {
+    return false;
+  }
+
+  BITMAPINFO bi = { 0 };
+  bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth       =  rect.W;
+  bi.bmiHeader.biHeight      = -rect.H;   // negative => top-down rows
+  bi.bmiHeader.biPlanes      = 1;
+  bi.bmiHeader.biBitCount    = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+
+  void* pBits = NULL;
+  HBITMAP hDib = CreateDIBSection(pCtx->hFrozenDC, &bi, DIB_RGB_COLORS, &pBits, NULL, 0);
+  if (!hDib) {
+    return false;
+  }
+
+  HDC     hDibDC = CreateCompatibleDC(pCtx->hFrozenDC);
+  HBITMAP hOld   = SelectObject(hDibDC, hDib);
+
+  s32 srcX = rect.X - pCtx->vCaptureRegion.X;
+  s32 srcY = rect.Y - pCtx->vCaptureRegion.Y;
+  BitBlt(hDibDC, 0, 0, rect.W, rect.H, pCtx->hFrozenDC, srcX, srcY, SRCCOPY);
+  GdiFlush(); // ensure the blit completes before the CPU reads pBits
+
+  SelectObject(hDibDC, hOld);
+  DeleteDC(hDibDC);
+
+  pOutImage->W       = rect.W;
+  pOutImage->H       = rect.H;
+  pOutImage->iStride = rect.W * 4;
+  pOutImage->pPixels = (u8*)pBits;
+  pOutImage->hBitmap = hDib;
+  return true;
 }
 
 void scImageFree(scImage* pImage) {
@@ -1015,6 +1069,17 @@ void scCtxCaptureArea(scCaptureContext* pCtx) {
   if (!_scCtxCreateCaptureWindow(gApp->pCaptureContext)) {
     _scDestroyCaptureContext(pCtx);
   }
+}
+
+bool scCtxCopyAreaToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect) {
+  *pOutImage = (scImage){ 0 };
+  if (pCtx->hHoveredWindow && !pCtx->bWasDragging) {
+    if (_scCopyWindowToImage(pCtx->hHoveredWindow, pOutImage)) {
+      return true;
+    }
+  }
+
+  return _scCopyAreaToImage(pCtx, pOutImage, rect);
 }
 
 void scAppRegisterHotkeys() {
