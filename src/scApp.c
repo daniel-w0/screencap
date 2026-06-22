@@ -70,6 +70,38 @@ _scGetDefaultSaveRootPath(wchar_t wszPath[SC_PATH_MAX_LEN]) {
   }
 }
 
+bool scGetSavePath(wchar_t* wszOut, s32 nOutCap) {
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+
+  int n = swprintf(wszOut, nOutCap,
+                   L"%ls\\%02d-%02d-%04d",
+                   gApp->config.wszSavePath,
+                   st.wDay, st.wMonth, st.wYear);
+  if (n < 0 || n >= nOutCap) {
+    return false;
+  }
+
+  int dirResult = SHCreateDirectoryExW(NULL, wszOut, NULL);
+  if (dirResult != ERROR_SUCCESS && dirResult != ERROR_ALREADY_EXISTS) {
+    scLogError("Failed to create directory '%ls': %d", wszOut, dirResult);
+    return false;
+  }
+
+  return true;
+}
+
+bool scGetFilename(wchar_t* wszOut, s32 nOutCap, const char* sExtension) {
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+
+  int n = swprintf(wszOut, nOutCap,
+                   L"%02d-%02d-%02d%hs",
+                   st.wHour, st.wMinute, st.wSecond,
+                   sExtension);
+  return (n >= 0 && n < nOutCap);
+}
+
 //------------------------------------------------------------------------
 // Config
 //------------------------------------------------------------------------
@@ -367,10 +399,10 @@ _scUpdateHoverRect(scCaptureContext* pCtx, POINT pt) {
   scGetWindowRect(hit.hResult, &wr);
   pCtx->hHoveredWindow = hit.hResult;
   pCtx->stSelectedRect = (scRect){
-    .X = wr.left,
-    .Y = wr.top,
-    .W = wr.right  - wr.left,
-    .H = wr.bottom - wr.top,
+    .x = wr.left,
+    .y = wr.top,
+    .w = wr.right  - wr.left,
+    .h = wr.bottom - wr.top,
   };
 }
 
@@ -390,8 +422,8 @@ _scUpdateMagnifier(scCaptureContext* pCtx, POINT pt) {
     ReleaseDC(NULL, hScreenDC);
   }
 
-  s32 vx = pCtx->vCaptureRegion.X;
-  s32 vy = pCtx->vCaptureRegion.Y;
+  s32 vx = pCtx->vCaptureRegion.x;
+  s32 vy = pCtx->vCaptureRegion.y;
 
   HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
   MONITORINFO mi = { sizeof(MONITORINFO) };
@@ -461,15 +493,15 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       GetCursorPos(&stPoint);
 
       if (pCtx->bMouseDown) {
-        if (!pCtx->bDragging && (abs(stPoint.x - pCtx->stDragStart.X) > 3 || abs(stPoint.y - pCtx->stDragStart.Y) > 3)) {
+        if (!pCtx->bDragging && (abs(stPoint.x - pCtx->stDragStart.x) > 3 || abs(stPoint.y - pCtx->stDragStart.y) > 3)) {
           pCtx->bDragging = true;
         }
         if (pCtx->bDragging) {
           pCtx->stSelectedRect = (scRect){
-            .X = min(pCtx->stDragStart.X, stPoint.x),
-            .Y = min(pCtx->stDragStart.Y, stPoint.y),
-            .W = abs(stPoint.x - pCtx->stDragStart.X),
-            .H = abs(stPoint.y - pCtx->stDragStart.Y),
+            .x = min(pCtx->stDragStart.x, stPoint.x),
+            .y = min(pCtx->stDragStart.y, stPoint.y),
+            .w = abs(stPoint.x - pCtx->stDragStart.x),
+            .h = abs(stPoint.y - pCtx->stDragStart.y),
           };
         }
       } else {
@@ -558,14 +590,14 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         BitBlt(hMemDC, 0, 0, cr.right, cr.bottom, pCtx->hFrozenDC, 0, 0, SRCCOPY);
       }
 
-      const s32 vx = pCtx->vCaptureRegion.X;
-      const s32 vy = pCtx->vCaptureRegion.Y;
+      const s32 vx = pCtx->vCaptureRegion.x;
+      const s32 vy = pCtx->vCaptureRegion.y;
 
       RECT r = {
-        pCtx->stSelectedRect.X - vx,
-        pCtx->stSelectedRect.Y - vy,
-        pCtx->stSelectedRect.X - vx + pCtx->stSelectedRect.W,
-        pCtx->stSelectedRect.Y - vy + pCtx->stSelectedRect.H
+        pCtx->stSelectedRect.x - vx,
+        pCtx->stSelectedRect.y - vy,
+        pCtx->stSelectedRect.x - vx + pCtx->stSelectedRect.w,
+        pCtx->stSelectedRect.y - vy + pCtx->stSelectedRect.h
       };
 
       // Translucent fill over the selection (1x1 source stretched via AlphaBlend).
@@ -598,11 +630,11 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       }
 
       // "W x H" size label.
-      if (pCtx->stSelectedRect.W > 0 && pCtx->stSelectedRect.H > 0) {
+      if (pCtx->stSelectedRect.w > 0 && pCtx->stSelectedRect.h > 0) {
         HFONT hOldFont = SelectObject(hMemDC, GetStockObject(DEFAULT_GUI_FONT));
 
         char szSize[64];
-        snprintf(szSize, sizeof(szSize), "%d x %d", pCtx->stSelectedRect.W, pCtx->stSelectedRect.H);
+        snprintf(szSize, sizeof(szSize), "%d x %d", pCtx->stSelectedRect.w, pCtx->stSelectedRect.h);
 
         SIZE stTextSize;
         GetTextExtentPoint32A(hMemDC, szSize, (int)strlen(szSize), &stTextSize);
@@ -728,6 +760,11 @@ void scDestroyCaptureContext(scCaptureContext* pCtx) {
     DeleteObject(pCtx->hMagBitmap);
     scLogDebug("Destroyed magnifier bitmap");
   }
+  if (pCtx->pUser) {
+    scLogDebug("Freeing user data");
+    free(pCtx->pUser);
+    pCtx->pUser = NULL;
+  }
 
   free(pCtx);
   gApp->pCaptureContext = NULL;
@@ -750,8 +787,8 @@ _scCtxCreateCaptureWindow(scCaptureContext* pCtx) {
   s32 iScreenX, iScreenY, iScreenW, iScreenH;
   _scGetSystemMetrics(&iScreenX, &iScreenY, &iScreenW, &iScreenH);
 
-  pCtx->vCaptureRegion.X = iScreenX;
-  pCtx->vCaptureRegion.Y = iScreenY;
+  pCtx->vCaptureRegion.x = iScreenX;
+  pCtx->vCaptureRegion.y = iScreenY;
 
   { // Populate FrozenDC/Bitmap
     HDC hScreenDC = GetDC(NULL);
@@ -961,14 +998,14 @@ bool scCopyWindowToImage(HWND hWnd, scImage* pOutImage) {
 }
 
 bool scCopyAreaToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect) {
-  if (rect.W <= 0 || rect.H <= 0 || !pCtx->hFrozenDC) {
+  if (rect.w <= 0 || rect.h <= 0 || !pCtx->hFrozenDC) {
     return false;
   }
 
   BITMAPINFO bi = { 0 };
   bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
-  bi.bmiHeader.biWidth       =  rect.W;
-  bi.bmiHeader.biHeight      = -rect.H;   // negative => top-down rows
+  bi.bmiHeader.biWidth       =  rect.w;
+  bi.bmiHeader.biHeight      = -rect.h;   // negative => top-down rows
   bi.bmiHeader.biPlanes      = 1;
   bi.bmiHeader.biBitCount    = 32;
   bi.bmiHeader.biCompression = BI_RGB;
@@ -982,17 +1019,17 @@ bool scCopyAreaToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect) 
   HDC     hDibDC = CreateCompatibleDC(pCtx->hFrozenDC);
   HBITMAP hOld   = SelectObject(hDibDC, hDib);
 
-  s32 srcX = rect.X - pCtx->vCaptureRegion.X;
-  s32 srcY = rect.Y - pCtx->vCaptureRegion.Y;
-  BitBlt(hDibDC, 0, 0, rect.W, rect.H, pCtx->hFrozenDC, srcX, srcY, SRCCOPY);
+  s32 srcX = rect.x - pCtx->vCaptureRegion.x;
+  s32 srcY = rect.y - pCtx->vCaptureRegion.y;
+  BitBlt(hDibDC, 0, 0, rect.w, rect.h, pCtx->hFrozenDC, srcX, srcY, SRCCOPY);
   GdiFlush(); // ensure the blit completes before the CPU reads pBits
 
   SelectObject(hDibDC, hOld);
   DeleteDC(hDibDC);
 
-  pOutImage->W       = rect.W;
-  pOutImage->H       = rect.H;
-  pOutImage->iStride = rect.W * 4;
+  pOutImage->W       = rect.w;
+  pOutImage->H       = rect.h;
+  pOutImage->iStride = rect.w * 4;
   pOutImage->pPixels = (u8*)pBits;
   pOutImage->hBitmap = hDib;
   return true;
@@ -1023,38 +1060,19 @@ bool scSaveDataToFile(const u8* pData, s32 nSize, const char* sExtension) {
     return false;
   }
 
-  SYSTEMTIME st;
-  GetLocalTime(&st);
-
-  // Directory
   wchar_t wszDir[MAX_PATH];
-  int dn = swprintf(wszDir, MAX_PATH,
-                    L"%ls\\%02d-%02d-%04d",
-                    gApp->config.wszSavePath,
-                    st.wDay, st.wMonth, st.wYear);
-  if (dn < 0 || dn >= MAX_PATH) {
+  wchar_t wszName[MAX_PATH];
+  if (!scGetSavePath(wszDir, MAX_PATH) || !scGetFilename(wszName, MAX_PATH, sExtension)) {
     return false;
   }
 
-  int dirResult = SHCreateDirectoryExW(NULL, wszDir, NULL);
-  if (dirResult != ERROR_SUCCESS && dirResult != ERROR_ALREADY_EXISTS) {
-    scLogError("Failed to create directory '%ls': %d", wszDir, dirResult);
-    return false;
-  }
-
-  // Filename
   wchar_t wszPath[MAX_PATH];
-  int n = swprintf(wszPath, MAX_PATH,
-                   L"%ls\\%02d-%02d-%02d%hs",
-                   wszDir,
-                   st.wHour, st.wMinute, st.wSecond,
-                   sExtension);
+  int n = swprintf(wszPath, MAX_PATH, L"%ls\\%ls", wszDir, wszName);
   if (n < 0 || n >= MAX_PATH) {
     return false;
   }
 
-  HANDLE hFile = CreateFileW(wszPath, GENERIC_WRITE, 0, NULL,
-                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  HANDLE hFile = CreateFileW(wszPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
   if (hFile == INVALID_HANDLE_VALUE) {
     scLogError("Failed to open '%ls' for writing: %d", wszPath, GetLastError());
     return false;
@@ -1099,7 +1117,7 @@ extern scCaptureHandler scScreenshotHandler;
 scCaptureHandler scOcrHandler = { NULL, NULL, NULL };
 extern scCaptureHandler scActiveWindowHandler;
 extern scCaptureHandler scActiveMonitorHandler;
-scCaptureHandler scRecordHandler = { NULL, NULL, NULL };
+extern scCaptureHandler scRecordHandler;
 
 void scAppSetupCallbackHandler() {
   scHotkey* pHotkeys = gApp->config.aHotkeys;

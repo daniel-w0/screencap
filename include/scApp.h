@@ -36,12 +36,12 @@ static const char* scHotkeyIdNames[_SC_HOTKEY_COUNT] = {
 };
 
 typedef struct {
-  s32 X, Y;
-  s32 W, H;
+  s32 x, y;
+  s32 w, h;
 } scRect;
 
 typedef struct {
-  s32 X, Y;
+  s32 x, y;
 } scV2I;
 
 typedef struct {
@@ -118,6 +118,11 @@ typedef struct {
 bool scAppInit();
 void scAppUpdate();
 void scAppDestroy();
+
+//------------------------------------------------------------------------
+// Utils
+bool scGetSavePath(wchar_t* wszOut, s32 nOutCap);
+bool scGetFilename(wchar_t* wszOut, s32 nOutCap, const char* sExtension);
 
 //------------------------------------------------------------------------
 // Other Application
