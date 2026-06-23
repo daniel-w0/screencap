@@ -1,10 +1,9 @@
 #include "pch.h"
 #include "scTray.h"
 #include "scApp.h"
+#include "scUI.h"
 #include "scLogging.h"
 #include "scAssert.h"
-
-#define IDI_APP_ICON 101
 
 #define WM_TRAYICON (WM_USER + 1)
 static scTrayMenu gTray;
@@ -57,13 +56,14 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
           scAppRunHandlerFromActionID(hkID);
           break;
         case TRAY_MENU_SETTINGS: {
-          scLogInfo("ehhh, nahhh. I don't feel like opening the settings rn");
+          scUIOpenWindow();
+          break;
         }
         case TRAY_MENU_EXIT: {
           NOTIFYICONDATAA nid = {0};
           nid.cbSize = sizeof(NOTIFYICONDATAA);
-          nid.hWnd = hWnd;
-          nid.uID = 1;
+          nid.hWnd   = hWnd;
+          nid.uID    = 1;
           Shell_NotifyIconA(NIM_DELETE, &nid);
           PostQuitMessage(0);
         }
