@@ -102,11 +102,11 @@ void scTrayInitialize() {
   scLogInfo("Successfully created tray window");
 
   // Register tray icon
-  NOTIFYICONDATAA nid = { 0 };
-  nid.cbSize = sizeof(NOTIFYICONDATAA);
-  nid.hWnd = gTray.hWindow;
-  nid.uID = 1;
-  nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+  NOTIFYICONDATAA nid  = { 0 };
+  nid.cbSize           = sizeof(NOTIFYICONDATAA);
+  nid.hWnd             = gTray.hWindow;
+  nid.uID              = 1;
+  nid.uFlags           = NIF_MESSAGE | NIF_ICON | NIF_TIP;
   nid.uCallbackMessage = WM_TRAYICON;
 
   nid.hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_APP_ICON));
