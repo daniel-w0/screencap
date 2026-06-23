@@ -16,6 +16,15 @@ typedef signed char        s8;
 typedef double f64;
 typedef float  f32;
 
+typedef struct {
+  s32 x, y;
+  s32 w, h;
+} scRect;
+
+typedef struct {
+  s32 x, y;
+} scV2I;
+
 #define scInternal static
 #define scGlobal   static
 

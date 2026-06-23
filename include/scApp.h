@@ -46,15 +46,6 @@ static const char* scCaptureActionNames[_SC_HOTKEY_COUNT] = {
 };
 
 typedef struct {
-  s32 x, y;
-  s32 w, h;
-} scRect;
-
-typedef struct {
-  s32 x, y;
-} scV2I;
-
-typedef struct {
   scHotkeyID eID;
   u32        uModifiers;
   u32        uKey;
@@ -121,6 +112,7 @@ typedef struct {
   scCaptureHandler* aCaptureHandlers[_SC_HOTKEY_COUNT];
   scCaptureContext* pCaptureContext;
   scCaptureHandler* pActiveHandler;
+  bool bIsGeWin10;
 } scApp;
 
 extern scApp* gApp;

@@ -19,6 +19,8 @@ static const char* OVERLAY_CLASS_NAME = "ScOverlayWindow";
 //------------------------------------------------------------------------
 // Util
 //------------------------------------------------------------------------
+typedef LONG(WINAPI* RtlGetVersionPtr)(PRTL_OSVERSIONINFOW);
+
 // Source - https://stackoverflow.com/a/6218957
 // Posted by Zach Burlingame, modified by community. See post 'Timeline' for change history
 // Retrieved 2026-06-21, License - CC BY-SA 3.0
@@ -818,12 +820,40 @@ _scCtxCreateCaptureWindow(scCaptureContext* pCtx) {
   return true;
 }
 
+scInternal bool
+_scIsGeWin10() {
+  static bool bIsGreater = false;
+  static bool bIsSet = false;
+  if (bIsSet) {
+    return bIsGreater;
+  }
+
+  HMODULE hMod = GetModuleHandleA("ntdll.dll");
+  if (hMod) {
+    RtlGetVersionPtr pRtlGetVersion = (RtlGetVersionPtr)GetProcAddress(hMod, "RtlGetVersion");
+    if (pRtlGetVersion) {
+      RTL_OSVERSIONINFOW osInfo = { 0 };
+      osInfo.dwOSVersionInfoSize = sizeof(osInfo);
+      if (pRtlGetVersion(&osInfo) == 0) {
+        bIsGreater = osInfo.dwMajorVersion >= 10;
+        bIsSet = true;
+        return bIsGreater;
+      }
+    }
+  }
+
+  scLogError("Failed to get windows version");
+  return false; // just in case this failed
+}
+
 //------------------------------------------------------------------------
 // Application
 //------------------------------------------------------------------------
 bool scAppInit() {
   gApp = (scApp*)malloc(sizeof(scApp));
   memset(gApp, 0, sizeof(scApp));
+
+  gApp->bIsGeWin10 = _scIsGeWin10();
 
   if (!scConfigLoad()) {
     return false;
