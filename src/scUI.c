@@ -15,10 +15,43 @@ static scUI gUI;
 #define WINDOW_MIN_WIDTH  ((s32)550)
 #define WINDOW_MIN_HEIGHT ((s32)328)
 
+//------------------------------------------------------------------------
+// Utility
+//------------------------------------------------------------------------
 scInternal s32 _scScale(s32 nVal)   { return (s32)(nVal * gUI.fUIScale); }
 scInternal s32 _scUnscale(s32 nVal) { return (s32)(nVal / gUI.fUIScale); }
+scInternal f32 _scGetDPIScale() {
+  HDC hDC = GetDC(gUI.hWindow);
+  if (hDC) {
+    const s32 iDPI = GetDeviceCaps(hDC, LOGPIXELSY);
+    ReleaseDC(gUI.hWindow, hDC);
+    return iDPI / 96.0f;
+  }
+  return 1.0f;
+}
 
-LRESULT CALLBACK UIWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  switch (uMsg) {
+    case WM_GETMINMAXINFO: {
+      MINMAXINFO* pMmi = (MINMAXINFO*)lParam;
+      pMmi->ptMinTrackSize.x = _scScale(WINDOW_MIN_WIDTH);
+      pMmi->ptMinTrackSize.y = _scScale(WINDOW_MIN_HEIGHT);
+      return 0;
+    }
+    case WM_SIZE: {
+      InvalidateRect(hWnd, NULL, TRUE);
+      return 0;
+    }
+    case WM_SETTINGCHANGE: {
+      return 0;
+    }
+    case WM_DESTROY: {
+      scUICloseWindow();
+      return 0;
+    }
+  }
+  return DefWindowProcW(hWnd, uMsg, wParam, lParam);
+}
 
 void scUIOpenWindow() {
   static ULONG_PTR pGdiPlusToken = 0;
@@ -26,7 +59,7 @@ void scUIOpenWindow() {
     // die
   }
 
-  gUI.fUIScale = 1.0f;
+  gUI.fUIScale = _scGetDPIScale();
 
   if (!gUI.bRegisteredClass) {
     WNDCLASSEXW wc   = { 0 };
@@ -55,9 +88,11 @@ void scUIOpenWindow() {
       scLogError("Failed to create main window: %d", GetLastError());
       return;
     }
+    scLogDebug("Created main window");
   } else {
     BringWindowToTop(gUI.hWindow);
     SetForegroundWindow(gUI.hWindow);
+    scLogDebug("Focused main window");
   }
   ShowWindow(gUI.hWindow, SW_SHOW);
   UpdateWindow(gUI.hWindow);
@@ -66,28 +101,6 @@ void scUIOpenWindow() {
 void scUICloseWindow() {
   if (gUI.hWindow) {
     gUI.hWindow = NULL;
+    scLogDebug("Destroyed main window");
   }
-}
-
-LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-  switch (uMsg) {
-    case WM_GETMINMAXINFO: {
-      MINMAXINFO* pMmi = (MINMAXINFO*)lParam;
-      pMmi->ptMinTrackSize.x = _scScale(WINDOW_MIN_WIDTH);
-      pMmi->ptMinTrackSize.y = _scScale(WINDOW_MIN_HEIGHT);
-      return 0;
-    }
-    case WM_SIZE: {
-      InvalidateRect(hWnd, NULL, TRUE);
-      return 0;
-    }
-    case WM_SETTINGCHANGE: {
-      return 0;
-    }
-    case WM_DESTROY: {
-      scUICloseWindow();
-      return 0;
-    }
-  }
-  return DefWindowProcW(hWnd, uMsg, wParam, lParam);
 }
