@@ -35,6 +35,16 @@ static const char* scHotkeyIdNames[_SC_HOTKEY_COUNT] = {
   "record"
 };
 
+static const char* scCaptureActionNames[_SC_HOTKEY_COUNT] = {
+  "Take Screenshot",
+  "Take Screenshot (Clipboard)",
+  "OCR Capture",
+  "Take Screenshot (Window)",
+  "Take Screenshot (Desktop)",
+  "Take Screenshot (Alt)",
+  "Start/Stop Recording"
+};
+
 typedef struct {
   s32 x, y;
   s32 w, h;
@@ -113,11 +123,15 @@ typedef struct {
   scCaptureHandler* pActiveHandler;
 } scApp;
 
+extern scApp* gApp;
+
 //------------------------------------------------------------------------
 // Core Application
 bool scAppInit();
 void scAppUpdate();
 void scAppDestroy();
+
+void scAppRunHandlerFromActionID(scHotkeyID iHotkeyID);
 
 //------------------------------------------------------------------------
 // Utils

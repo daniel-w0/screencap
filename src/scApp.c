@@ -2,10 +2,11 @@
 #include "scApp.h"
 #include "scAssert.h"
 #include "scLogging.h"
+#include "scTray.h"
 #include "stb_image_write.h"
 #include "stb_image.h"
 
-static scApp* gApp = NULL;
+scApp* gApp = NULL;
 static const char* OVERLAY_CLASS_NAME = "ScOverlayWindow";
 
 #define SC_MAG_SIZE 120
@@ -832,37 +833,42 @@ bool scAppInit() {
     return false;
   }
 
+  scTrayInitialize();
+
   scAppRegisterHotkeys();
   scAppSetupCallbackHandler();
   return true;
+}
+
+void scAppRunHandlerFromActionID(scHotkeyID iHotkeyID) {
+  scCaptureHandler* pHandler = gApp->aCaptureHandlers[iHotkeyID];
+  if (pHandler && pHandler->cbOnHotkeyPressed) {
+    bool bHasValidContext = gApp->pCaptureContext != NULL;
+    if (!bHasValidContext) {
+      // we might want to keep a valid context, recording would be one (and the only) use case for this.
+      bHasValidContext = _scBeginCaptureContext();
+    }
+    if (bHasValidContext) {
+      gApp->pCaptureContext->eHotkeyID = iHotkeyID;
+      gApp->pActiveHandler = pHandler;
+
+      // returns true if we should destroy
+      if (pHandler->cbOnHotkeyPressed(gApp->pCaptureContext)) {
+        scDestroyCaptureContext(gApp->pCaptureContext);
+      }
+    } else {
+      scLogError("Skipping screen capture due to invalid context!");
+    }
+
+    // avoid using context here because for screen recording, `cbOnHotkeyPressed` can destroy it
+  }
 }
 
 void scAppUpdate() {
   MSG msg = { 0 };
   while (GetMessageA(&msg, NULL, 0, 0) > 0) {
     if (msg.message == WM_HOTKEY) {
-      s32 iHotkeyID = (s32)msg.wParam;
-      scCaptureHandler* pHandler = gApp->aCaptureHandlers[iHotkeyID];
-      if (pHandler && pHandler->cbOnHotkeyPressed) {
-        bool bHasValidContext = gApp->pCaptureContext != NULL;
-        if (!bHasValidContext) {
-          // we might want to keep a valid context, recording would be one (and the only) use case for this.
-          bHasValidContext = _scBeginCaptureContext();
-        }
-        if (bHasValidContext) {
-          gApp->pCaptureContext->eHotkeyID = iHotkeyID;
-          gApp->pActiveHandler = pHandler;
-
-          // returns true if we should destroy
-          if (pHandler->cbOnHotkeyPressed(gApp->pCaptureContext)) {
-            scDestroyCaptureContext(gApp->pCaptureContext);
-          }
-        } else {
-          scLogError("Skipping screen capture due to invalid context!");
-        }
-
-        // avoid using context here because for screen recording, `cbOnHotkeyPressed` can destroy it
-      }
+      scAppRunHandlerFromActionID((s32)msg.wParam);
     }
 
     TranslateMessage(&msg);
