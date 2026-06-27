@@ -3,6 +3,7 @@
 #include "scAssert.h"
 #include "scLogging.h"
 #include "scTray.h"
+#include "scUI.h"
 #include "stb_image_write.h"
 #include "stb_image.h"
 
@@ -867,6 +868,9 @@ bool scAppInit() {
 
   scAppRegisterHotkeys();
   scAppSetupCallbackHandler();
+
+  scUIOpenWindow();
+
   return true;
 }
 

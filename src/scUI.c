@@ -4,6 +4,7 @@
 #include "scApp.h"
 #include "scAssert.h"
 #include "scLogging.h"
+#include "scGdiPlus.h"
 
 typedef enum {
   SC_WIDGET_TOGGLE,
@@ -34,14 +35,6 @@ typedef struct {
   scWidget base;
 } scImageWidget;
 
-typedef enum {
-  SC_PAGE_NONE,
-  SC_PAGE_GENERAL,
-  SC_PAGE_SETTINGS,
-  SC_PAGE_GALLERY,
-  _SC_PAGE_COUNT
-} scPageID;
-
 typedef struct {
   wchar_t wszName[64];
   scWidget* aWidgets;
@@ -64,7 +57,7 @@ typedef struct {
   COLORREF dwText;
   COLORREF dwTextDim;
   COLORREF dwTextFaint;
-  COLORREF accent;
+  COLORREF dwAccent;
   COLORREF dwAccentHover;
   COLORREF dwPillOff;
   COLORREF dwOk;
@@ -83,6 +76,7 @@ typedef struct {
 
   scPage aPages[_SC_PAGE_COUNT];
   scPageID eCurrentPage;
+  scPageID eHoveredTab;
 } scUI;
 
 static scUI gUI;
@@ -158,10 +152,6 @@ _scWidgetRenderButton(scButtonWidget* pButton) {
 //------------------------------------------------------------------------
 scInternal void
 _scUpdateCurrentPage() {
-  if (gUI.eCurrentPage == SC_PAGE_NONE) {
-    return;
-  }
-
   scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
   for (s32 i = 0; i < pPage->nWidgetCount; ++i) {
     scWidget* pWidget = &pPage->aWidgets[i];
@@ -177,10 +167,6 @@ _scUpdateCurrentPage() {
 
 scInternal void
 _scRenderCurrentPage() {
-  if (gUI.eCurrentPage == SC_PAGE_NONE) {
-    return;
-  }
-
   scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
   for (s32 i = 0; i < pPage->nWidgetCount; ++i) {
     scWidget* pWidget = &pPage->aWidgets[i];
@@ -192,6 +178,81 @@ _scRenderCurrentPage() {
         break;
     }
   }
+}
+
+//------------------------------------------------------------------------
+// UI
+//------------------------------------------------------------------------
+//scInternal RECT
+//_scEnsureLayout() {
+  
+//}
+
+scInternal RECT
+_scSidebarRect(int i) {
+    int top = 20 + i * 35;
+    return (RECT){ _scScale(10), _scScale(top), _scScale(140), _scScale(top + 30) };
+}
+
+scInternal void
+_scRender(HDC hDC) {
+  RECT cr;
+  GetClientRect(gUI.hWindow, &cr);
+
+  HDC hMemDC = CreateCompatibleDC(hDC);
+  HBITMAP hMemBmp = CreateCompatibleBitmap(hDC, cr.right, cr.bottom);
+  HBITMAP hOldBmp = (HBITMAP)SelectObject(hMemDC, hMemBmp);
+
+  FillRect(hMemDC, &cr, gUI.theme.hBackgroundBrush);
+
+  { // Main Rendering
+    { // Sidebar
+      { // Background
+        GpGraphics* pGraphics = gpGraphicsBegin(hMemDC);
+        gpFillRectI(pGraphics, 0, 0, _scScale(150), cr.bottom, gpColor(gUI.theme.dwSidebar, 255));
+
+        for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
+          scPage* pPage = &gUI.aPages[i];
+          RECT tabRect = _scSidebarRect(i);
+          bool bActive = i == (int)gUI.eCurrentPage;
+          bool bHot = bActive || (i == (int)gUI.eHoveredTab);
+
+          if (bHot) {
+            gpFillRound(pGraphics, tabRect, 5.0f * gUI.fUIScale, gpColor(gUI.theme.dwCardHover, 255));
+          }
+          if (bActive) {
+            int cy = (tabRect.top - tabRect.bottom) / 2;
+            RECT ind = { tabRect.left + _scScale(3), cy - _scScale(8), tabRect.left + _scScale(6), cy + _scScale(8) };
+            gpFillRound(pGraphics, ind, 1.5f * gUI.fUIScale, gpColor(gUI.theme.dwAccent, 255));
+          }
+        }
+
+        gpGraphicsEnd(pGraphics);
+      }
+
+      SetBkMode(hMemDC, TRANSPARENT);
+
+      { // Text
+        for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
+          scPage* pPage = &gUI.aPages[i];
+          RECT tabRect = _scSidebarRect(i);
+          bool bActive = i == (int)gUI.eCurrentPage;
+
+          SelectObject(hMemDC, bActive ? gUI.theme.pBoldFont : gUI.theme.pFont);
+          SetTextColor(hMemDC, bActive ? gUI.theme.dwText : gUI.theme.dwTextDim);
+
+          TextOutW(hMemDC, tabRect.left + _scScale(15), tabRect.top + _scScale(7), pPage->wszName, lstrlen(pPage->wszName));
+        }
+      }
+    }
+
+    _scRenderCurrentPage();
+  }
+
+  BitBlt(hDC, 0, 0, cr.right, cr.bottom, hMemDC, 0, 0, SRCCOPY);
+  SelectObject(hDC, hOldBmp);
+  DeleteObject(hMemBmp);
+  DeleteDC(hMemDC);
 }
 
 //------------------------------------------------------------------------
@@ -212,6 +273,57 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     case WM_SETTINGCHANGE: {
       return 0;
     }
+    case WM_MOUSEMOVE: {
+      POINT pt = { LOWORD(lParam), HIWORD(lParam) };
+      bool bShouldInvalidate = false;
+
+      { // Update tab hover
+        // note: we will always get `SC_PAGE_NONE` when moving from tab to tab.
+        // maybe I can increase the size
+
+        scPageID ePrevTab = gUI.eHoveredTab;
+        bool bHovered = false;
+        for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
+          RECT tabRect = _scSidebarRect(i);
+          if (PtInRect(&tabRect, pt)) {
+            bHovered = true;
+            if (i != ePrevTab) {
+              gUI.eHoveredTab = i;
+              bShouldInvalidate = true;
+              break;
+            }
+          }
+        }
+        if (ePrevTab != SC_PAGE_NONE && !bHovered) {
+          gUI.eHoveredTab = SC_PAGE_NONE;
+          bShouldInvalidate = true;
+        }
+      }
+
+      if (bShouldInvalidate) {
+        InvalidateRect(hWnd, NULL, FALSE);
+        TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hWnd, HOVER_DEFAULT };
+        TrackMouseEvent(&tme);
+      }
+      return 0;
+    }
+    case WM_LBUTTONDOWN: {
+      POINT pt = { LOWORD(lParam), HIWORD(lParam) };
+      for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
+        RECT tabRect = _scSidebarRect(i);
+        if (PtInRect(&tabRect, pt)) {
+          scUISetCurrentPage((scPageID)i);
+        }
+      }
+      return 0;
+    }
+    case WM_PAINT: {
+      PAINTSTRUCT ps;
+      HDC hDC = BeginPaint(hWnd, &ps);
+      _scRender(hDC);
+      EndPaint(hWnd, &ps);
+      return 0;
+    }
     case WM_DESTROY: {
       scUICloseWindow();
       return 0;
@@ -224,13 +336,26 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 // SC UI
 //------------------------------------------------------------------------
 scInternal void
-_scUILoadTheme() {
+_scUIDestroyTheme() {
+  #define _DESTROY_OBJ(x) if (x) { DeleteObject(x); }
+  _DESTROY_OBJ(gUI.theme.pFont)
+  _DESTROY_OBJ(gUI.theme.pBoldFont)
+  _DESTROY_OBJ(gUI.theme.hBackgroundBrush)
+  _DESTROY_OBJ(gUI.theme.hCardBrush)
+  scLogDebug("Destroyed theme");
+}
+
+scInternal void
+_scUISetupThemeTheme() {
   scUITheme* pTheme = &gUI.theme;
+  if (pTheme->hBackgroundBrush) {
+    _scUIDestroyTheme();
+  }
 
   pTheme->pFont     = CreateFontA(_scScale(15), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
   pTheme->pBoldFont = CreateFontA(_scScale(15), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
 
-  pTheme->accent = _scGetSystemAccentColor();
+  pTheme->dwAccent = _scGetSystemAccentColor();
   pTheme->bDark  = _scIsWindowsDarkTheme();
 
   if (pTheme->bDark) {
@@ -249,7 +374,7 @@ _scUILoadTheme() {
     pTheme->dwOk          = RGB(108, 203, 95);
     pTheme->dwError       = RGB(255, 99, 97);
     pTheme->dwScrollThumb = RGB(170, 170, 170);
-    pTheme->dwAccentHover = _scBlendColor(pTheme->accent, RGB(255, 255, 255), 0.15f);
+    pTheme->dwAccentHover = _scBlendColor(pTheme->dwAccent, RGB(255, 255, 255), 0.15f);
   } else {
     pTheme->dwBackground  = RGB(243, 243, 243);
     pTheme->dwSidebar     = RGB(236, 236, 236);
@@ -266,33 +391,50 @@ _scUILoadTheme() {
     pTheme->dwOk          = RGB(15, 123, 15);
     pTheme->dwError       = RGB(196, 43, 28);
     pTheme->dwScrollThumb = RGB(120, 120, 120);
-    pTheme->dwAccentHover = _scBlendColor(pTheme->accent, RGB(0, 0, 0), 0.15f);
+    pTheme->dwAccentHover = _scBlendColor(pTheme->dwAccent, RGB(0, 0, 0), 0.15f);
   }
 
   pTheme->hBackgroundBrush = CreateSolidBrush(pTheme->dwBackground);
   pTheme->hCardBrush = CreateSolidBrush(pTheme->dwCard);
+
+  scLogDebug("Created theme, dark mode: %s", pTheme->bDark ? "true" : "false");
 }
 
 scInternal void
-_scUIDestroyTheme() {
-  #define _DESTROY_OBJ(x) if (x) { DeleteObject(x); }
-  _DESTROY_OBJ(gUI.theme.pFont)
-  _DESTROY_OBJ(gUI.theme.pBoldFont)
-  _DESTROY_OBJ(gUI.theme.hBackgroundBrush)
-  _DESTROY_OBJ(gUI.theme.hCardBrush)
+_scSetupPages() {
+  { // General
+    scPage* pPage = &gUI.aPages[SC_PAGE_GENERAL];
+    wcscpy(pPage->wszName, L"General");
+  }
+
+  { // General
+    scPage* pPage = &gUI.aPages[SC_PAGE_SETTINGS];
+    wcscpy(pPage->wszName, L"Settings");
+  }
+
+  { // General
+    scPage* pPage = &gUI.aPages[SC_PAGE_GALLERY];
+    wcscpy(pPage->wszName, L"Gallery");
+  }
 }
 
 void scUIOpenWindow() {
   static ULONG_PTR pGdiPlusToken = 0;
   if (!pGdiPlusToken) {
-    // kys
+    gp_startup(&pGdiPlusToken);
+    scLogDebug("pGdiPlusToken: %p", pGdiPlusToken);
+    if (!pGdiPlusToken) {
+      scLogError("Failed to get gdiplus token, unable to show UI");
+      return;
+    }
+
+    scUISetCurrentPage(SC_PAGE_GENERAL);
   }
 
-  if (gUI.eCurrentPage == SC_PAGE_NONE) {
-    gUI.eCurrentPage = SC_PAGE_GENERAL;
-  }
+  _scSetupPages();
 
   gUI.fUIScale = _scGetDPIScale();
+  _scUISetupThemeTheme();
 
   if (!gUI.bRegisteredClass) {
     WNDCLASSEXW wc   = { 0 };
@@ -337,4 +479,12 @@ void scUICloseWindow() {
     scLogDebug("Destroyed main window");
   }
   // todo: maybe free the pages
+}
+
+void scUISetCurrentPage(scPageID ePageID) {
+  scLogDebug("Changing current page from %d to %d", (int)gUI.eCurrentPage, (int)ePageID);
+  gUI.eCurrentPage = ePageID;
+  if (gUI.hWindow) {
+    InvalidateRect(gUI.hWindow, NULL, true);
+  }
 }

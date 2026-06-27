@@ -10,6 +10,8 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shlwapi.h>
+#include <wingdi.h>
+#include <objidl.h>
 
 #include <stdbool.h>
 #include <stdint.h>
