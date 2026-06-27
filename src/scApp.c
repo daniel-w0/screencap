@@ -1037,11 +1037,32 @@ bool scCopyWindowToImage(HWND hWnd, scImage* pOutImage) {
   if (!GetWindowRect(hWnd, &wr)) {
     return false;
   }
-  s32 w = wr.right  - wr.left;
-  s32 h = wr.bottom - wr.top;
-  if (w <= 0 || h <= 0) {
+  s32 wFull = wr.right  - wr.left;
+  s32 hFull = wr.bottom - wr.top;
+  if (wFull <= 0 || hFull <= 0) {
     return false;
   }
+
+  // Crop out the invisible DWM resize border / shadow that PrintWindow renders black.
+  RECT vr;
+  if (!scGetWindowRect(hWnd, &vr)) {
+    vr = wr;
+  }
+  s32 iOffX = vr.left - wr.left;
+  s32 iOffY = vr.top  - wr.top;
+  s32 w     = vr.right  - vr.left;
+  s32 h     = vr.bottom - vr.top;
+  if (w <= 0 || h <= 0 || iOffX < 0 || iOffY < 0 || iOffX + w > wFull || iOffY + h > hFull) {
+    iOffX = 0; iOffY = 0; w = wFull; h = hFull;
+  }
+
+  HDC hScreenDC = GetDC(NULL);
+
+  // Render the whole window (border included) into a temp bitmap.
+  HDC     hTempDC  = CreateCompatibleDC(hScreenDC);
+  HBITMAP hTempBmp = CreateCompatibleBitmap(hScreenDC, wFull, hFull);
+  HBITMAP hTempOld = SelectObject(hTempDC, hTempBmp);
+  BOOL    ok       = PrintWindow(hWnd, hTempDC, PW_RENDERFULLCONTENT);
 
   BITMAPINFO bi = { 0 };
   bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
@@ -1051,25 +1072,25 @@ bool scCopyWindowToImage(HWND hWnd, scImage* pOutImage) {
   bi.bmiHeader.biBitCount    = 32;
   bi.bmiHeader.biCompression = BI_RGB;
 
-  HDC     hScreenDC = GetDC(NULL);
-  void*   pBits     = NULL;
-  HBITMAP hDib      = CreateDIBSection(hScreenDC, &bi, DIB_RGB_COLORS, &pBits, NULL, 0);
+  void*   pBits = NULL;
+  HBITMAP hDib  = CreateDIBSection(hScreenDC, &bi, DIB_RGB_COLORS, &pBits, NULL, 0);
   ReleaseDC(NULL, hScreenDC);
-  if (!hDib) {
-    return false;
+
+  if (ok && hDib) {
+    HDC     hDibDC  = CreateCompatibleDC(NULL);
+    HBITMAP hDibOld = SelectObject(hDibDC, hDib);
+    BitBlt(hDibDC, 0, 0, w, h, hTempDC, iOffX, iOffY, SRCCOPY);
+    GdiFlush(); // ensure the blit completes before the CPU reads pBits
+    SelectObject(hDibDC, hDibOld);
+    DeleteDC(hDibDC);
   }
 
-  HDC     hDibDC = CreateCompatibleDC(NULL);
-  HBITMAP hOld   = SelectObject(hDibDC, hDib);
+  SelectObject(hTempDC, hTempOld);
+  DeleteObject(hTempBmp);
+  DeleteDC(hTempDC);
 
-  BOOL ok = PrintWindow(hWnd, hDibDC, PW_RENDERFULLCONTENT);
-  GdiFlush();
-
-  SelectObject(hDibDC, hOld);
-  DeleteDC(hDibDC);
-
-  if (!ok) {
-    DeleteObject(hDib);
+  if (!ok || !hDib) {
+    if (hDib) DeleteObject(hDib);
     return false;
   }
 
