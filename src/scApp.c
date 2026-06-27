@@ -147,6 +147,7 @@ _scConfigCreateDefaults(scAppConfig* pOutConfig) {
   pOutConfig->aHotkeys[SC_HOTKEY_FALLBACK_SCREENSHOT] = (scHotkey){ .eID = SC_HOTKEY_FALLBACK_SCREENSHOT, .uModifiers = MOD_CONTROL | MOD_ALT,   .uKey = 'C',         .bRegistered = false };
   pOutConfig->aHotkeys[SC_HOTKEY_RECORD]              = (scHotkey){ .eID = SC_HOTKEY_RECORD              , .uModifiers = MOD_SHIFT,              .uKey = VK_SNAPSHOT, .bRegistered = false };
 
+  pOutConfig->iFFmpegFramerate = 24;
   _scGetDefaultSaveRootPath(pOutConfig->wszSavePath); // defaults to current directory if fails
   _scGetSystemLanguage(pOutConfig->sLanguageCode); // defaults to en if fails
     
@@ -186,6 +187,10 @@ _scWriteConfig(scAppConfig* pConfig, wchar_t* wszPath) {
   WritePrivateProfileStringW(L"options", L"copy_to_clipboard", pConfig->bCopyToClipboard ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"run_on_startup",    pConfig->bRunAtStartup ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction ? L"1" : L"0", wszActualPath);
+
+  wchar_t wszFramerate[16];
+  _snwprintf_s(wszFramerate, 16, _TRUNCATE, L"%d", pConfig->iFFmpegFramerate);
+  WritePrivateProfileStringW(L"options", L"record_framerate", wszFramerate, wszActualPath);
 
   wchar_t wszLang[16];
   MultiByteToWideChar(CP_UTF8, 0, pConfig->sLanguageCode, -1, wszLang, 16);
@@ -232,6 +237,7 @@ _scConfigReadInto(scAppConfig* pConfig, wchar_t* wszPath) {
   pConfig->bCopyToClipboard   = GetPrivateProfileIntW(L"options", L"copy_to_clipboard", pConfig->bCopyToClipboard, wszActualPath) != 0;
   pConfig->bRunAtStartup      = GetPrivateProfileIntW(L"options", L"run_on_startup",    pConfig->bRunAtStartup, wszActualPath) != 0;
   pConfig->bPlaySoundOnAction = GetPrivateProfileIntW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction, wszActualPath) != 0;
+  pConfig->iFFmpegFramerate   = GetPrivateProfileIntW(L"options", L"record_framerate",  pConfig->iFFmpegFramerate, wszActualPath);
 
   wchar_t wszDefaultLang[16];
   MultiByteToWideChar(CP_UTF8, 0, pConfig->sLanguageCode, -1, wszDefaultLang, 16);

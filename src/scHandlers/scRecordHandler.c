@@ -157,9 +157,9 @@ _startRecording(scRecordContext* pCtx, scRect rect) {
   wchar_t wszCmd[1024];
   //if (_sc_is_win10_or_greater()) {
     swprintf(wszCmd, ARRAYSIZE(wszCmd),
-             L"\"%ls\" -y -f gdigrab -framerate 30 -offset_x %d -offset_y %d "
+             L"\"%ls\" -y -f gdigrab -framerate %d -offset_x %d -offset_y %d "
              L"-video_size %dx%d -i desktop -c:v libx264 -pix_fmt yuv420p \"%ls\"",
-             pCtx->wszFFmpegPath, rect.x, rect.y, w, h, pCtx->wszSavePath);
+             pCtx->wszFFmpegPath, gApp->config.iFFmpegFramerate, rect.x, rect.y, w, h, pCtx->wszSavePath);
   //} else {
     //swprintf(wszCmd, ARRAYSIZE(wszCmd),
     //         L"\"%ls\" -y -f gdigrab -framerate 30 -offset_x %d -offset_y %d "

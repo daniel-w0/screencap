@@ -38,9 +38,9 @@ typedef struct {
     struct { bool bBold; }             label;
     struct { bool* pValue; }           toggle;
     struct {
-      wchar_t            wszValue[64];
       const char* const* aOptions;
       s32                nOptionCount;
+      s32                iSelected;
       void (*pfnSelect)(s32 iIndex);
     } dropdown;
     struct { void (*pfnClick)(s32 iParam); s32 iParam; } button;
@@ -397,15 +397,15 @@ _scMakeImage(RECT rcLayout, const wchar_t* wszName, const char* szPath) {
 }
 
 scInternal scWidget
-_scMakeDropdown(RECT rcLayout, const wchar_t* wszLabel, const wchar_t* wszValue, const char* const* aOptions, s32 nOptionCount, void (*pfnSelect)(s32 iIndex)) {
+_scMakeDropdown(RECT rcLayout, const wchar_t* wszLabel, const char* const* aOptions, s32 nOptionCount, s32 iSelected, void (*pfnSelect)(s32 iIndex)) {
   scWidget w = { 0 };
   w.eType                 = SC_WIDGET_DROPDOWN;
   w.rcLayout              = rcLayout;
   w.u.dropdown.aOptions     = aOptions;
   w.u.dropdown.nOptionCount = nOptionCount;
+  w.u.dropdown.iSelected    = iSelected;
   w.u.dropdown.pfnSelect    = pfnSelect;
   wcscpy_s(w.wszText, 128, wszLabel);
-  wcscpy_s(w.u.dropdown.wszValue, 64, wszValue);
   return w;
 }
 
@@ -516,7 +516,13 @@ _scDrawDropdown(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
   SelectObject(hDC, t->pFont);
   SetTextColor(hDC, t->dwText);
   TextOutW(hDC, r.left + _scScale(15), r.top + _scScale(10), pWidget->wszText, lstrlenW(pWidget->wszText));
-  TextOutW(hDC, box.left + _scScale(10), box.top + _scScale(5), pWidget->u.dropdown.wszValue, lstrlenW(pWidget->u.dropdown.wszValue));
+
+  s32 iSelected = pWidget->u.dropdown.iSelected;
+  if (iSelected >= 0 && iSelected < pWidget->u.dropdown.nOptionCount) {
+    wchar_t wszValue[64];
+    MultiByteToWideChar(CP_UTF8, 0, pWidget->u.dropdown.aOptions[iSelected], -1, wszValue, 64);
+    TextOutW(hDC, box.left + _scScale(10), box.top + _scScale(5), wszValue, lstrlenW(wszValue));
+  }
 
   SetTextColor(hDC, t->dwTextDim);
   TextOutW(hDC, box.right - _scScale(20), box.top + _scScale(5), L"\x25BC", 1);
@@ -765,7 +771,7 @@ _scRenderDropdownPopup(HDC hDC, RECT cr) {
       RECT rcItem = { dg.rcBox.left + _scScale(3), iTop + _scScale(1), dg.rcBox.right - _scScale(dg.bHasScroll ? 11 : 3), iBottom - _scScale(1) };
       gpFillRound(pGraphics, rcItem, 4.0f * gUI.fUIScale, gpColor(t->dwCardHover, 255));
     }
-    if (strcmp(pWidget->u.dropdown.aOptions[i], scLocaleCurrent()) == 0) {
+    if (pWidget->u.dropdown.iSelected == i) {
       s32 iCy = (iTop + iBottom) / 2;
       RECT rcInd = { dg.rcBox.left + _scScale(3), iCy - _scScale(7), dg.rcBox.left + _scScale(6), iCy + _scScale(7) };
       gpFillRound(pGraphics, rcInd, 1.5f * gUI.fUIScale, gpColor(t->dwAccent, 255));
@@ -843,6 +849,21 @@ _scOnLanguageSelected(s32 iIndex) {
   InvalidateRect(gUI.hWindow, NULL, TRUE);
 }
 
+static const char* const kFramerateOptions[] = { "24", "30", "60" };
+static const s32         kFramerateValues[]  = { 24, 30, 60 };
+#define SC_FRAMERATE_COUNT 3
+
+scInternal void
+_scOnFramerateSet(s32 iIndex) {
+  if (iIndex >= 0 && iIndex < SC_FRAMERATE_COUNT) {
+    gApp->config.iFFmpegFramerate = kFramerateValues[iIndex];
+    scSaveConfig();
+  }
+  gUI.iExpandedDropdown = -1;
+  gUI.bNeedsLayout = true;
+  InvalidateRect(gUI.hWindow, NULL, TRUE);
+}
+
 scInternal void
 _scLayoutGeneral(scPage* pPage, RECT rc) {
   pPage->nWidgetCount = 0;
@@ -871,11 +892,31 @@ _scLayoutSettings(scPage* pPage, RECT rc) {
 
   s32 iY = 90;
 
-  wchar_t wszLang[64];
-  MultiByteToWideChar(CP_UTF8, 0, scLocaleCurrent(), -1, wszLang, 64);
-  _scPagePush(pPage, _scMakeDropdown((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Language"), wszLang, scLocaleCodes(), scLocaleCount(), _scOnLanguageSelected));
-  iY += 45;
+  { // Language
+    s32 iSelected = 0;
+    for (s32 i = 0; i < scLocaleCount(); ++i) {
+      if (strcmp(scLocaleCode(i), scLocaleCurrent()) == 0) {
+        iSelected = i;
+        break;
+      }
+    }
+    _scPagePush(pPage, _scMakeDropdown((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Language"), scLocaleCodes(), scLocaleCount(), iSelected, _scOnLanguageSelected));
+    iY += 45;
+  }
 
+  { // Framerate
+    s32 iSelected = 0;
+    for (s32 i = 0; i < SC_FRAMERATE_COUNT; ++i) {
+      if (kFramerateValues[i] == gApp->config.iFFmpegFramerate) {
+        iSelected = i;
+        break;
+      }
+    }
+    _scPagePush(pPage, _scMakeDropdown((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Recording Framerate"), kFramerateOptions, SC_FRAMERATE_COUNT, iSelected, _scOnFramerateSet));
+    iY += 45;
+  }
+
+  // Rest of the options
   _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Copy screenshot to Clipboard"), &gApp->config.bCopyToClipboard));
   iY += 45;
   _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Run on Startup"), &gApp->config.bRunAtStartup));
