@@ -190,8 +190,11 @@ _scGetSystemAccentColor() {
   const COLORREF dwDefaultAccent = RGB(0, 120, 215);
   if (gApp->bIsGeWin10) {
     DWORD val = 0, size = sizeof(val);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\DWM", L"AccentColor", RRF_RT_REG_DWORD, NULL, &val, &size) == ERROR_SUCCESS) {
+      return RGB(val & 0xFF, (val >> 8) & 0xFF, (val >> 16) & 0xFF); // stored as ABGR
+    }
     if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\DWM", L"ColorizationColor", RRF_RT_REG_DWORD, NULL, &val, &size) == ERROR_SUCCESS) {
-      return RGB((val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF);
+      return RGB((val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF); // stored as ARGB
     }
   }
   return dwDefaultAccent;
@@ -1286,10 +1289,12 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     }
     case WM_SETTINGCHANGE: {
       if (gApp->bIsGeWin10 && lParam && wcscmp((const wchar_t*)lParam, L"ImmersiveColorSet") == 0) {
-        _scUISetupTheme();
-        BOOL bDark = gUI.theme.bDark;
-        DwmSetWindowAttribute(hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &bDark, sizeof(bDark));
-        InvalidateRect(hWnd, NULL, TRUE);
+        if (_scIsWindowsDarkTheme() != gUI.theme.bDark || _scGetSystemAccentColor() != gUI.theme.dwAccent) {
+          _scUISetupTheme();
+          BOOL bDark = gUI.theme.bDark;
+          DwmSetWindowAttribute(hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &bDark, sizeof(bDark));
+          InvalidateRect(hWnd, NULL, TRUE);
+        }
       }
       return 0;
     }
