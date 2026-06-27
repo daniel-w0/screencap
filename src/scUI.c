@@ -1791,8 +1791,6 @@ void scUICloseWindow() {
 }
 
 void scUISetCurrentPage(scPageID ePageID) {
-  scLogDebug("Changing current page from %d to %d", (int)gUI.eCurrentPage, (int)ePageID);
-
   if (gUI.iEditingHotkey != -1) {
     _scCancelHotkeyRecording();
   }
