@@ -501,7 +501,11 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
   switch (uMsg) {
     case WM_SETCURSOR: {
-      SetCursor(LoadCursorA(NULL, (LPCSTR)IDC_CROSS));
+      HCURSOR hCursor = NULL;
+      if (gApp->pActiveHandler && gApp->pActiveHandler->cbOverlayCursor) {
+        hCursor = gApp->pActiveHandler->cbOverlayCursor(pCtx);
+      }
+      SetCursor(hCursor ? hCursor : LoadCursorA(NULL, (LPCSTR)IDC_CROSS));
       return TRUE;
     }
 
@@ -509,20 +513,35 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       POINT stPoint;
       GetCursorPos(&stPoint);
 
+      scCaptureHandler* pHandler = gApp->pActiveHandler;
+
       if (pCtx->bMouseDown) {
         if (!pCtx->bDragging && (abs(stPoint.x - pCtx->stDragStart.x) > 3 || abs(stPoint.y - pCtx->stDragStart.y) > 3)) {
           pCtx->bDragging = true;
         }
         if (pCtx->bDragging) {
-          pCtx->stSelectedRect = (scRect){
+          scRect rcDrag = {
             .x = min(pCtx->stDragStart.x, stPoint.x),
             .y = min(pCtx->stDragStart.y, stPoint.y),
             .w = abs(stPoint.x - pCtx->stDragStart.x),
             .h = abs(stPoint.y - pCtx->stDragStart.y),
           };
+          scRect rcSnapped;
+          if (pHandler && pHandler->cbSnapSelection && pHandler->cbSnapSelection(pCtx, rcDrag, true, &rcSnapped)) {
+            pCtx->stSelectedRect = rcSnapped;
+          } else {
+            pCtx->stSelectedRect = rcDrag;
+          }
         }
       } else {
-        _scUpdateHoverRect(pCtx, stPoint);
+        scRect rcSnapped;
+        scRect rcPoint = { stPoint.x, stPoint.y, 0, 0 };
+        if (pHandler && pHandler->cbSnapSelection && pHandler->cbSnapSelection(pCtx, rcPoint, false, &rcSnapped)) {
+          pCtx->hHoveredWindow = NULL;
+          pCtx->stSelectedRect = rcSnapped;
+        } else {
+          _scUpdateHoverRect(pCtx, stPoint);
+        }
       }
 
       _scUpdateMagnifier(pCtx, stPoint);
@@ -711,6 +730,11 @@ _scRegisterHotkeys() {
     scHotkey* pHk = &gApp->config.aHotkeys[i];
     if (pHk->bRegistered) {
       scLogWarn("Tried to reregister hotkey '%s' even though it's already registered", scHotkeyIdNames[pHk->eID]);
+    }
+
+    if (pHk->eID == SC_HOTKEY_OCR && !gApp->bIsGeWin10) {
+      scLogInfo("Skipping OCR hotkey registration, requires Windows 10 or greater");
+      continue;
     }
 
     pHk->bRegistered = RegisterHotKey(NULL, pHk->eID, pHk->uModifiers | MOD_NOREPEAT, pHk->uKey);
@@ -1421,7 +1445,7 @@ void scAppRegisterHotkeys() {
 }
 
 extern scCaptureHandler scScreenshotHandler;
-scCaptureHandler scOcrHandler = { NULL, NULL, NULL };
+extern scCaptureHandler scOcrHandler;
 extern scCaptureHandler scActiveWindowHandler;
 extern scCaptureHandler scActiveMonitorHandler;
 extern scCaptureHandler scRecordHandler;

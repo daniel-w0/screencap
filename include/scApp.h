@@ -119,6 +119,10 @@ typedef struct scCaptureHandler {
   bool (*cbOnHotkeyPressed)(scCaptureContext*    pCtx);
   bool (*cbOnAreaSelected)(scCaptureContext*     pCtx);
   void (*cbOnCaptureCancelled)(scCaptureContext* pCtx);
+
+  // Optional overlay hooks (may be NULL).
+  HCURSOR (*cbOverlayCursor)(scCaptureContext* pCtx);
+  bool    (*cbSnapSelection)(scCaptureContext* pCtx, scRect rcInput, bool bDragging, scRect* pOut);
 } scCaptureHandler;
 
 typedef struct {

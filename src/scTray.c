@@ -28,9 +28,13 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 
         HMENU hActionMenu = CreatePopupMenu();
         for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
-          if (i != SC_HOTKEY_ACTIVE_WINDOW && i != SC_HOTKEY_ACTIVE_MONITOR) {
-            AppendMenuA(hActionMenu, MF_STRING, TRAY_ACTION_ID(i), scCaptureActionNames[i]);
+          if (i == SC_HOTKEY_ACTIVE_WINDOW || i == SC_HOTKEY_ACTIVE_MONITOR) {
+            continue;
           }
+          if (i == SC_HOTKEY_OCR && !gApp->bIsGeWin10) {
+            continue;
+          }
+          AppendMenuA(hActionMenu, MF_STRING, TRAY_ACTION_ID(i), scCaptureActionNames[i]);
         }
 
         HMENU hMenu = CreatePopupMenu();

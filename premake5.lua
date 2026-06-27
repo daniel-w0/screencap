@@ -16,7 +16,6 @@ workspace "screencap"
   filter "configurations:Debug"
     defines { "SC_DEBUG" }
     runtime "Debug"
-    symbols "On"
     symbols "Full"
 
   filter "configurations:Release"
@@ -42,9 +41,12 @@ workspace "screencap"
 
   project "screencap"
     kind "WindowedApp"
-    files { "src/**.c", "include/**.h", "ext/**.h", "src/resources.rc" }
+    files { "src/**.c", "src/**.cc", "include/**.h", "ext/**.h", "src/resources.rc" }
     includedirs { "include", "ext" }
     defines { "WINVER=0x0601", "_WIN32_WINNT=0x0601" }
+
+    cppdialect "C++17"
+    exceptionhandling "On"
 
     pchheader "pch.h"
     pchsource "src/pch.c"
@@ -55,3 +57,6 @@ workspace "screencap"
 
     filter "files:**.rc"
       buildaction "ResourceCompile"
+
+    filter "files:**.cc"
+      flags { "NoPCH" }
