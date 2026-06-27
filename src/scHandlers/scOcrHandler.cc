@@ -34,6 +34,7 @@ struct scOcrLine {
 static std::mutex            gOcrMutex;
 static std::vector<scOcrLine> gOcrLines;
 static std::atomic<uint32_t> gOcrGeneration{ 0 };
+static bool                  gSnapArmed = false;
 
 //------------------------------------------------------------------------
 // Helpers
@@ -68,6 +69,50 @@ _scGrabScaled(HDC hFrozenDC, int srcX, int srcY, int srcW, int srcH, int dstW, i
   DeleteObject(hBitmap);
   DeleteDC(hMemDC);
   return pBuf;
+}
+
+static uint8_t*
+_scScaleBuffer(const uint8_t* pSrc, int srcW, int srcH, int dstW, int dstH) {
+  HDC hScreenDC = GetDC(NULL);
+
+  BITMAPINFO bi = {};
+  bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth       =  srcW;
+  bi.bmiHeader.biHeight      = -srcH;
+  bi.bmiHeader.biPlanes      = 1;
+  bi.bmiHeader.biBitCount    = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+
+  void*   pSrcBits = nullptr;
+  HBITMAP hSrcBmp  = CreateDIBSection(hScreenDC, &bi, DIB_RGB_COLORS, &pSrcBits, NULL, 0);
+  HDC     hSrcDC   = CreateCompatibleDC(hScreenDC);
+  SelectObject(hSrcDC, hSrcBmp);
+  if (pSrcBits) {
+    memcpy(pSrcBits, pSrc, (size_t)srcW * srcH * 4);
+  }
+
+  BITMAPINFO bo = bi;
+  bo.bmiHeader.biWidth  =  dstW;
+  bo.bmiHeader.biHeight = -dstH;
+  void*   pDstBits = nullptr;
+  HBITMAP hDstBmp  = CreateDIBSection(hScreenDC, &bo, DIB_RGB_COLORS, &pDstBits, NULL, 0);
+  HDC     hDstDC   = CreateCompatibleDC(hScreenDC);
+  SelectObject(hDstDC, hDstBmp);
+  SetStretchBltMode(hDstDC, HALFTONE);
+  StretchBlt(hDstDC, 0, 0, dstW, dstH, hSrcDC, 0, 0, srcW, srcH, SRCCOPY);
+  GdiFlush();
+
+  uint8_t* pOut = (uint8_t*)malloc((size_t)dstW * dstH * 4);
+  if (pOut && pDstBits) {
+    memcpy(pOut, pDstBits, (size_t)dstW * dstH * 4);
+  }
+
+  DeleteDC(hSrcDC);
+  DeleteObject(hSrcBmp);
+  DeleteDC(hDstDC);
+  DeleteObject(hDstBmp);
+  ReleaseDC(NULL, hScreenDC);
+  return pOut;
 }
 
 static OcrResult
@@ -116,29 +161,43 @@ _scOcrBeginScan(scCaptureContext* pCtx) {
   int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
   int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
-  const int kMaxDim = 4096;
-  int scale = 2;
-  while (scale > 1 && (vw * scale > kMaxDim || vh * scale > kMaxDim)) {
-    --scale;
-  }
-
-  int sw = vw * scale;
-  int sh = vh * scale;
-  uint8_t* pBits = _scGrabScaled(pCtx->hFrozenDC, 0, 0, vw, vh, sw, sh);
-  if (!pBits) {
+  uint8_t* pNative = _scGrabScaled(pCtx->hFrozenDC, 0, 0, vw, vh, vw, vh);
+  if (!pNative) {
     return;
   }
 
+  gSnapArmed = false;
   uint32_t generation = ++gOcrGeneration;
   {
     std::lock_guard<std::mutex> lock(gOcrMutex);
     gOcrLines.clear();
   }
 
-  std::thread([pBits, sw, sh, scale, vx, vy, generation]() {
+  std::thread([pNative, vw, vh, vx, vy, generation]() {
     init_apartment(apartment_type::multi_threaded);
+    uint8_t* pScaled = nullptr;
     try {
-      if (OcrResult result = _scOcrRecognize(pBits, sw, sh)) {
+      int scale = 2;
+      if (OcrEngine probe = OcrEngine::TryCreateFromUserProfileLanguages()) {
+        uint32_t maxDim = probe.MaxImageDimension();
+        while (scale > 1 && ((uint32_t)(vw * scale) > maxDim || (uint32_t)(vh * scale) > maxDim)) {
+          --scale;
+        }
+      }
+
+      int sw = vw * scale;
+      int sh = vh * scale;
+      const uint8_t* pImage = pNative;
+      if (scale > 1) {
+        pScaled = _scScaleBuffer(pNative, vw, vh, sw, sh);
+        if (pScaled) {
+          pImage = pScaled;
+        } else {
+          sw = vw; sh = vh; scale = 1;
+        }
+      }
+
+      if (OcrResult result = _scOcrRecognize(pImage, sw, sh)) {
         std::vector<scOcrLine> lines;
         for (auto const& line : result.Lines()) {
           scOcrLine ol;
@@ -184,7 +243,8 @@ _scOcrBeginScan(scCaptureContext* pCtx) {
     } catch (...) {
       scLogError("OCR screen scan failed");
     }
-    free(pBits);
+    free(pScaled);
+    free(pNative);
   }).detach();
 }
 
@@ -277,6 +337,9 @@ _scOcrSnapSelection(scCaptureContext* pCtx, scRect rcInput, bool bDragging, scRe
   std::lock_guard<std::mutex> lock(gOcrMutex);
 
   if (bDragging) {
+    if (!gSnapArmed) {
+      return false; // drag began off-text, never snap so any region can be selected
+    }
     bool found = false;
     int minx = 0, miny = 0, maxx = 0, maxy = 0;
     for (auto const& line : gOcrLines) {
@@ -303,9 +366,11 @@ _scOcrSnapSelection(scCaptureContext* pCtx, scRect rcInput, bool bDragging, scRe
     if (rcInput.x >= line.rect.x && rcInput.x < line.rect.x + line.rect.w &&
         rcInput.y >= line.rect.y && rcInput.y < line.rect.y + line.rect.h) {
       *pOut = line.rect;
+      gSnapArmed = true;
       return true;
     }
   }
+  gSnapArmed = false;
   return false;
 }
 
