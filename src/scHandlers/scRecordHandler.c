@@ -7,6 +7,7 @@ typedef struct {
   HANDLE hFFmpegProcess;
   HANDLE hFFmpegStdin;
   wchar_t wszFFmpegPath[SC_PATH_MAX_LEN];
+  wchar_t wszSavePath[SC_PATH_MAX_LEN];
 } scRecordContext;
 
 scInternal bool
@@ -149,15 +150,14 @@ _startRecording(scRecordContext* pCtx, scRect rect) {
     return false;
   }
 
-  wchar_t wszSavePath[MAX_PATH];
-  swprintf(wszSavePath, MAX_PATH, L"%ls\\%ls", wszDir, wszName);
+  swprintf(pCtx->wszSavePath, MAX_PATH, L"%ls\\%ls", wszDir, wszName);
 
   wchar_t wszCmd[1024];
   //if (_sc_is_win10_or_greater()) {
     swprintf(wszCmd, ARRAYSIZE(wszCmd),
              L"\"%ls\" -y -f gdigrab -framerate 30 -offset_x %d -offset_y %d "
              L"-video_size %dx%d -i desktop -c:v libx264 -pix_fmt yuv420p \"%ls\"",
-             pCtx->wszFFmpegPath, rect.x, rect.y, w, h, wszSavePath);
+             pCtx->wszFFmpegPath, rect.x, rect.y, w, h, pCtx->wszSavePath);
   //} else {
     //swprintf(wszCmd, ARRAYSIZE(wszCmd),
     //         L"\"%ls\" -y -f gdigrab -framerate 30 -offset_x %d -offset_y %d "

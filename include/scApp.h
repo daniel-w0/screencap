@@ -101,6 +101,20 @@ typedef struct {
   HBITMAP hBitmap;
 } scImage;
 
+typedef enum {
+  SC_CLIP_NONE,
+  SC_CLIP_FILE,
+  SC_CLIP_MEMORY
+} scClipboardSource;
+
+typedef struct {
+  HWND hWnd;
+  UINT cfPng;
+  scClipboardSource eSource;
+  wchar_t wszPath[SC_PATH_MAX_LEN];
+  scImage img;
+} scClipboard;
+
 typedef struct scCaptureHandler {
   bool (*cbOnHotkeyPressed)(scCaptureContext*    pCtx);
   bool (*cbOnAreaSelected)(scCaptureContext*     pCtx);
@@ -112,6 +126,7 @@ typedef struct {
   scCaptureHandler* aCaptureHandlers[_SC_HOTKEY_COUNT];
   scCaptureContext* pCaptureContext;
   scCaptureHandler* pActiveHandler;
+  scClipboard stClipboard;
   bool bIsGeWin10;
 } scApp;
 
@@ -133,6 +148,12 @@ bool scGetSavePath(wchar_t* wszOut, s32 nOutCap);
 bool scGetFilename(wchar_t* wszOut, s32 nOutCap, const char* sExtension);
 
 //------------------------------------------------------------------------
+// Clipboard
+//------------------------------------------------------------------------
+bool scClipboardSetFile(scClipboard* pCb, const wchar_t* wszPath);
+bool scClipboardSetImage(scClipboard* pCb, scImage* pImg);
+
+//------------------------------------------------------------------------
 // Other Application
 bool scGetWindowRect(HWND hWnd, RECT* wr);
 
@@ -144,8 +165,9 @@ bool scCopyAreaToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect);
 
 bool scCtxCopyToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect);
 void scImageFree(scImage* pImage);
-bool scImageToFile(const scImage* pImage);
-bool scSaveDataToFile(const u8* pData, s32 nSize, const char* pExtension);
+bool scImageToFile(const scImage* pImage, wchar_t* wszOutPath, s32 nOutCap);
+bool scSaveDataToFile(const u8* pData, s32 nSize, const char* sExtension, wchar_t* wszOutPath, s32 nOutCap);
+void scSaveImage(scImage* pImage, bool bWriteToDisk);
 
 void scAppRegisterHotkeys();
 void scAppSetupCallbackHandler();

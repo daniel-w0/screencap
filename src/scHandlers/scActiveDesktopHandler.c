@@ -64,9 +64,7 @@ cbOnHotkeyPressed(scCaptureContext* pCtx) {
   if (!_copyScreenRectToImage(x, y, w, h, &stImage)) {
     return true;
   }
-
-  scImageToFile(&stImage);
-  scImageFree(&stImage);
+  scSaveImage(&stImage, true);
   return true;
 }
 

@@ -18,6 +18,11 @@ static const char* OVERLAY_CLASS_NAME = "ScOverlayWindow";
 #endif
 
 //------------------------------------------------------------------------
+// Forward Declarations
+//------------------------------------------------------------------------
+scInternal bool _scClipboardInit(scClipboard* pCb);
+
+//------------------------------------------------------------------------
 // Util
 //------------------------------------------------------------------------
 typedef LONG(WINAPI* RtlGetVersionPtr)(PRTL_OSVERSIONINFOW);
@@ -874,6 +879,8 @@ bool scAppInit() {
 
   scTrayInitialize();
 
+  _scClipboardInit(&gApp->stClipboard);
+
   scAppRegisterHotkeys();
   scAppSetupCallbackHandler();
 
@@ -1090,20 +1097,18 @@ void scImageFree(scImage* pImage) {
   *pImage = (scImage){ 0 };
 }
 
-bool scImageToFile(const scImage* pImage) {
+bool scImageToFile(const scImage* pImage, wchar_t* wszOutPath, s32 nOutCap) {
   s32 pngSize = 0;
   u8* pPng = _scBitmapToPNG(pImage, &pngSize);
   if (!pPng) {
-    scLogError("Failed to encode capture PNG data");
     return false;
   }
-
-  bool ok = scSaveDataToFile(pPng, pngSize, ".png");
+  bool ok = scSaveDataToFile(pPng, pngSize, ".png", wszOutPath, nOutCap);
   free(pPng);
   return ok;
 }
 
-bool scSaveDataToFile(const u8* pData, s32 nSize, const char* sExtension) {
+bool scSaveDataToFile(const u8* pData, s32 nSize, const char* sExtension, wchar_t* wszOutPath, s32 nOutCap) {
   if (!pData || nSize <= 0) {
     return false;
   }
@@ -1130,11 +1135,264 @@ bool scSaveDataToFile(const u8* pData, s32 nSize, const char* sExtension) {
   bool ok = WriteFile(hFile, pData, (DWORD)nSize, &written, NULL) && written == (DWORD)nSize;
   CloseHandle(hFile);
 
+  if (ok && wszOutPath && nOutCap > 0) {
+    wcsncpy(wszOutPath, wszPath, nOutCap - 1);
+    wszOutPath[nOutCap - 1] = L'\0';
+  }
   if (ok) {
     scLogDebug("Saved %d bytes to '%ls'", nSize, wszPath);
     scUIOnCaptureSaved(wszPath);
   }
   return ok;
+}
+
+void scSaveImage(scImage* pImage, bool bWriteToDisk) {
+  wchar_t wszSaved[MAX_PATH];
+  bool bSaved = bWriteToDisk && scImageToFile(pImage, wszSaved, MAX_PATH);
+
+  bool bToClipboard = gApp->config.bCopyToClipboard || !bWriteToDisk;
+
+  if (bToClipboard) {
+    if (bSaved) {
+      scClipboardSetFile(&gApp->stClipboard, wszSaved);
+      scImageFree(pImage);                                   // file is the source now
+    } else if (!scClipboardSetImage(&gApp->stClipboard, pImage)) {
+      scImageFree(pImage); // set failed -> we still own it
+    }
+    // bSaved+set succeeded, or image set succeeded => img already freed/owned
+  } else {
+    scImageFree(pImage);
+  }
+}
+
+//------------------------------------------------------------------------
+// Clipboard
+//------------------------------------------------------------------------
+scInternal u8*
+_scReadFileBytes(const wchar_t* wszPath, s32* pOutSize) {
+  HANDLE hFile = CreateFileW(wszPath, GENERIC_READ, FILE_SHARE_READ, NULL,
+                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (hFile == INVALID_HANDLE_VALUE) {
+    return NULL;
+  }
+
+  LARGE_INTEGER liSize;
+  if (!GetFileSizeEx(hFile, &liSize) || liSize.QuadPart <= 0 || liSize.QuadPart > INT_MAX) {
+    CloseHandle(hFile);
+    return NULL;
+  }
+
+  s32 nSize = (s32)liSize.QuadPart;
+  u8* pBuf  = (u8*)malloc(nSize);
+  if (!pBuf) {
+    CloseHandle(hFile);
+    return NULL;
+  }
+
+  DWORD dwRead = 0;
+  bool ok = ReadFile(hFile, pBuf, (DWORD)nSize, &dwRead, NULL) && dwRead == (DWORD)nSize;
+  CloseHandle(hFile);
+
+  if (!ok) {
+    free(pBuf);
+    return NULL;
+  }
+  *pOutSize = nSize;
+  return pBuf;
+}
+
+scInternal HGLOBAL
+_scHGlobalFromBytes(const void* pData, s32 nSize) {
+  HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, nSize);
+  if (!hMem) {
+    return NULL;
+  }
+  void* p = GlobalLock(hMem);
+  memcpy(p, pData, nSize);
+  GlobalUnlock(hMem);
+  return hMem;
+}
+
+scInternal HGLOBAL
+_scBuildDibPacked(const u8* pBGRA, s32 w, s32 h) {
+  u32 pixelBytes = (u32)(w * 4) * (u32)h;
+
+  HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, sizeof(BITMAPINFOHEADER) + pixelBytes);
+  if (!hMem) {
+    return NULL;
+  }
+
+  u8* p = (u8*)GlobalLock(hMem);
+  BITMAPINFOHEADER* bih = (BITMAPINFOHEADER*)p;
+  *bih = (BITMAPINFOHEADER){ 0 };
+  bih->biSize        = sizeof(BITMAPINFOHEADER);
+  bih->biWidth       =  w;
+  bih->biHeight      = -h;   // top-down
+  bih->biPlanes      = 1;
+  bih->biBitCount    = 32;
+  bih->biCompression = BI_RGB;
+  bih->biSizeImage   = pixelBytes;
+
+  u8* pDst = p + sizeof(BITMAPINFOHEADER);
+  memcpy(pDst, pBGRA, pixelBytes);
+  for (u32 i = 3; i < pixelBytes; i += 4) {
+    pDst[i] = 0xFF;
+  }
+
+  GlobalUnlock(hMem);
+  return hMem;
+}
+
+scInternal HGLOBAL
+_scRenderPng(scClipboard* pCb) {
+  if (pCb->eSource == SC_CLIP_FILE) {
+    s32 n;
+    u8* pBytes = _scReadFileBytes(pCb->wszPath, &n); // file IS already PNG
+    if (!pBytes) {
+      return NULL;
+    }
+    HGLOBAL h = _scHGlobalFromBytes(pBytes, n);
+    free(pBytes);
+    return h;
+  }
+  if (pCb->eSource == SC_CLIP_MEMORY) {
+    s32 n;
+    u8* pPng = _scBitmapToPNG(&pCb->img, &n);
+    if (!pPng) {
+      return NULL;
+    }
+    HGLOBAL h = _scHGlobalFromBytes(pPng, n);
+    free(pPng);
+    return h;
+  }
+  return NULL;
+}
+
+scInternal HGLOBAL
+_scRenderDib(scClipboard* pCb) {
+  if (pCb->eSource == SC_CLIP_FILE) {
+    s32 n;
+    u8* pBytes = _scReadFileBytes(pCb->wszPath, &n);
+    if (!pBytes) {
+      return NULL;
+    }
+    int w, h, comp;
+    u8* pRgba = stbi_load_from_memory(pBytes, n, &w, &h, &comp, 4); // top-down RGBA
+    free(pBytes);
+    if (!pRgba) {
+      return NULL;
+    }
+    for (int i = 0; i < w * h; ++i) {  // RGBA -> BGRA in place
+      u8 t = pRgba[i*4 + 0];
+      pRgba[i*4 + 0] = pRgba[i*4 + 2];
+      pRgba[i*4 + 2] = t;
+    }
+    HGLOBAL h2 = _scBuildDibPacked(pRgba, w, h);
+    stbi_image_free(pRgba);
+    return h2;
+  }
+  if (pCb->eSource == SC_CLIP_MEMORY) {
+    // iStride is always W*4 for scImage, so it's already packed.
+    return _scBuildDibPacked(pCb->img.pPixels, pCb->img.W, pCb->img.H);
+  }
+  return NULL;
+}
+
+scInternal void
+_scClipboardRenderFormat(scClipboard* pCb, UINT fmt) {
+  HGLOBAL h = NULL;
+  if      (fmt == CF_DIB)     h = _scRenderDib(pCb);
+  else if (fmt == pCb->cfPng) h = _scRenderPng(pCb);
+  if (h) {
+    SetClipboardData(fmt, h); // clipboard takes ownership
+  }
+}
+
+scInternal LRESULT CALLBACK
+_scClipboardWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  scClipboard* pCb = &gApp->stClipboard;
+
+  switch (uMsg) {
+    case WM_RENDERFORMAT:
+      _scClipboardRenderFormat(pCb, (UINT)wParam);
+      return 0;
+
+    case WM_RENDERALLFORMATS:
+      if (pCb->eSource != SC_CLIP_NONE && OpenClipboard(hWnd)) {
+        if (GetClipboardOwner() == hWnd) {
+          _scClipboardRenderFormat(pCb, CF_DIB);
+          _scClipboardRenderFormat(pCb, pCb->cfPng);
+        }
+        CloseClipboard();
+      }
+      return 0;
+
+    case WM_DESTROYCLIPBOARD:
+      if (pCb->eSource == SC_CLIP_MEMORY) {
+        scImageFree(&pCb->img); // only the in-memory source owns anything
+      }
+      pCb->eSource = SC_CLIP_NONE;
+      return 0;
+  }
+  return DefWindowProcW(hWnd, uMsg, wParam, lParam);
+}
+
+scInternal bool
+_scClipboardInit(scClipboard* pCb) {
+  WNDCLASSW wc = { 0 };
+  wc.lpfnWndProc   = _scClipboardWndProc;
+  wc.hInstance     = GetModuleHandleW(NULL);
+  wc.lpszClassName = L"scClipboardWnd";
+  RegisterClassW(&wc);
+
+  pCb->hWnd = CreateWindowExW(0, L"scClipboardWnd", NULL, 0,
+                              0, 0, 0, 0, HWND_MESSAGE, NULL,
+                              GetModuleHandleW(NULL), NULL);
+  if (!pCb->hWnd) {
+    scLogError("Failed to create clipboard window: %lu", GetLastError());
+    return false;
+  }
+
+  pCb->cfPng = RegisterClipboardFormatW(L"PNG");
+  return true;
+}
+
+bool scClipboardSetFile(scClipboard* pCb, const wchar_t* wszPath) {
+  if (!OpenClipboard(pCb->hWnd)) {
+    return false;
+  }
+  EmptyClipboard(); // frees a prior IMAGE source via WM_DESTROYCLIPBOARD
+
+  pCb->eSource = SC_CLIP_FILE;
+  wcsncpy(pCb->wszPath, wszPath, ARRAYSIZE(pCb->wszPath) - 1);
+  pCb->wszPath[ARRAYSIZE(pCb->wszPath) - 1] = L'\0';
+
+  SetClipboardData(CF_DIB,     NULL);
+  SetClipboardData(pCb->cfPng, NULL);
+  CloseClipboard();
+  return true;
+}
+
+// Takes ownership of *pImg on success.
+bool scClipboardSetImage(scClipboard* pCb, scImage* pImg) {
+  if (!pImg->pPixels || pImg->W <= 0 || pImg->H <= 0) {
+    scLogError("scClipboardSetImage failed, pixels %p, width: %d, height: %d", pImg->pPixels, pImg->W, pImg->H);
+    return false;
+  }
+  if (!OpenClipboard(pCb->hWnd)) {
+    scLogError("scClipboardSetImage failed, could not open clipboard: %lu", GetLastError());
+    return false;
+  }
+  EmptyClipboard();
+
+  pCb->eSource = SC_CLIP_MEMORY;
+  pCb->img     = *pImg;
+  *pImg        = (scImage){ 0 };
+
+  SetClipboardData(CF_DIB,     NULL);
+  SetClipboardData(pCb->cfPng, NULL);
+  CloseClipboard();
+  return true;
 }
 
 //------------------------------------------------------------------------

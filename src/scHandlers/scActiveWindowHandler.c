@@ -14,9 +14,7 @@ cbOnHotkeyPressed(scCaptureContext* pCtx) {
   if (!scCopyWindowToImage(hActiveWindow, &stImage)) {
     return true;
   }
-
-  scImageToFile(&stImage);
-  scImageFree(&stImage);
+  scSaveImage(&stImage, true);
   return true;
 }
 

@@ -12,25 +12,13 @@ scInternal bool
 cbOnAreaSelected(scCaptureContext* pCtx) {
   scLogDebug("Captured Area: { %d, %d, %d, %d }", pCtx->stSelectedRect.x, pCtx->stSelectedRect.y, pCtx->stSelectedRect.w, pCtx->stSelectedRect.h);
   scImage stImage = { 0 };
-
   if (!scCtxCopyToImage(pCtx, &stImage, pCtx->stSelectedRect)) {
     return true;
   }
 
-  if (pCtx->eHotkeyID == SC_HOTKEY_CLIPBOARD) {
-    scLogInfo("Copying to clipboard... (not implemented!");
-  } else {
-    scImageToFile(&stImage);
-  }
-
-  scImageFree(&stImage);
+  scSaveImage(&stImage, !(pCtx->eHotkeyID == SC_HOTKEY_CLIPBOARD));
   return true;
 }
-
-//scInternal void
-//cbOnCaptureCancelled(scCaptureContext* pCtx) {
-
-//}
 
 const scCaptureHandler scScreenshotHandler = {
   cbOnHotkeyPressed,

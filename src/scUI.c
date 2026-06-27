@@ -648,6 +648,8 @@ _scLayoutGeneral(scPage* pPage, RECT rc) {
   _scPagePush(pPage, _scMakeButton((RECT){ rc.right - 120, 42, rc.right - 20, 72 }, L"Browse...", _scOnBrowseClicked));
 
   s32 iY = 90;
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, L"Copy screenshot to Clipboard", &gApp->config.bCopyToClipboard));
+  iY += 45;
   _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, L"Run on Startup", &gApp->config.bRunAtStartup));
   iY += 45;
   _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, L"Play sound on capture", &gApp->config.bPlaySoundOnAction));
@@ -1012,6 +1014,59 @@ _scHandleLeftDown(POINT pt, RECT cr) {
   }
 }
 
+scInternal void
+_scGalleryContextMenu(HWND hWnd, scWidget* pImage, POINT pt) {
+  char szPath[MAX_PATH];
+  strcpy_s(szPath, MAX_PATH, pImage->szPath);
+
+  HMENU hMenu = CreatePopupMenu();
+
+  MENUINFO mi = { sizeof(MENUINFO) };
+  mi.fMask   = MIM_BACKGROUND | MIM_STYLE;
+  mi.dwStyle = MNS_NOCHECK;
+  mi.hbrBack = gUI.theme.hBackgroundBrush;
+  SetMenuInfo(hMenu, &mi);
+
+  AppendMenuW(hMenu, MF_OWNERDRAW, 1, (LPCWSTR)L"Copy to Clipboard");
+  AppendMenuW(hMenu, MF_OWNERDRAW, 2, (LPCWSTR)L"Open Containing Folder");
+  AppendMenuW(hMenu, MF_OWNERDRAW, 3, (LPCWSTR)L"Open");
+  AppendMenuW(hMenu, MF_OWNERDRAW, 4, (LPCWSTR)L"Delete");
+
+  POINT ptScreen = pt;
+  ClientToScreen(hWnd, &ptScreen);
+  int iCmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, ptScreen.x, ptScreen.y, 0, hWnd, NULL);
+  DestroyMenu(hMenu);
+
+  switch (iCmd) {
+    case 1: {
+      wchar_t wszPath[MAX_PATH];
+      MultiByteToWideChar(CP_ACP, 0, szPath, -1, wszPath, MAX_PATH);
+      scClipboardSetFile(&gApp->stClipboard, wszPath);
+      break;
+    }
+    case 2: {
+      char szArg[MAX_PATH + 16];
+      _snprintf_s(szArg, sizeof(szArg), _TRUNCATE, "/select,\"%s\"", szPath);
+      ShellExecuteA(NULL, "open", "explorer.exe", szArg, NULL, SW_SHOWNORMAL);
+      break;
+    }
+    case 3: {
+      ShellExecuteA(NULL, "open", szPath, NULL, NULL, SW_SHOWNORMAL);
+      break;
+    }
+    case 4: {
+      if (MessageBoxW(hWnd, L"Are you sure you want to delete this screenshot?", L"Confirm Delete", MB_ICONWARNING | MB_YESNO) == IDYES) {
+        wchar_t wszPath[MAX_PATH];
+        MultiByteToWideChar(CP_ACP, 0, szPath, -1, wszPath, MAX_PATH);
+        DeleteFileW(wszPath);
+        gUI.bNeedsLayout = true;
+        InvalidateRect(hWnd, NULL, TRUE);
+      }
+      break;
+    }
+  }
+}
+
 //------------------------------------------------------------------------
 // Hotkey recording
 //------------------------------------------------------------------------
@@ -1135,9 +1190,67 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       }
       return 0;
     }
+    case WM_RBUTTONUP: {
+      if (gUI.eCurrentPage == SC_PAGE_GALLERY) {
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        scPage* pPage = &gUI.aPages[SC_PAGE_GALLERY];
+        _scEnsureLayout();
+        s32 iHit = _scWidgetAt(pPage, pt);
+        if (iHit >= 0 && pPage->aWidgets[iHit].eType == SC_WIDGET_IMAGE) {
+          _scGalleryContextMenu(hWnd, &pPage->aWidgets[iHit], pt);
+        }
+      }
+      return 0;
+    }
     case WM_CAPTURECHANGED: {
       gUI.bDraggingScroll = false;
       return 0;
+    }
+    case WM_DRAWITEM: {
+      LPDRAWITEMSTRUCT pDIS = (LPDRAWITEMSTRUCT)lParam;
+      if (pDIS->CtlType == ODT_MENU) {
+        FillRect(pDIS->hDC, &pDIS->rcItem, gUI.theme.hBackgroundBrush);
+        if (pDIS->itemState & ODS_SELECTED) {
+          RECT rcSel = pDIS->rcItem;
+          InflateRect(&rcSel, -_scScale(3), -_scScale(2));
+          GpGraphics* pGraphics = gpGraphicsBegin(pDIS->hDC);
+          gpFillRound(pGraphics, rcSel, 4.0f * gUI.fUIScale, gpColor(gUI.theme.dwCardHover, 255));
+          gpGraphicsEnd(pGraphics);
+        }
+        if (pDIS->itemData) {
+          SetBkMode(pDIS->hDC, TRANSPARENT);
+          SetTextColor(pDIS->hDC, gUI.theme.dwText);
+          SelectObject(pDIS->hDC, gUI.theme.pFont);
+          RECT rcText = pDIS->rcItem;
+          rcText.left += _scScale(12);
+          DrawTextW(pDIS->hDC, (const wchar_t*)pDIS->itemData, -1, &rcText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        }
+        return TRUE;
+      }
+      break;
+    }
+    case WM_MEASUREITEM: {
+      LPMEASUREITEMSTRUCT pMIS = (LPMEASUREITEMSTRUCT)lParam;
+      if (pMIS->CtlType == ODT_MENU) {
+        UINT uTextWidth = 0;
+        if (pMIS->itemData) {
+          const wchar_t* wszText = (const wchar_t*)pMIS->itemData;
+          HDC hDC = GetDC(gUI.hWindow);
+          HFONT hOldFont = (HFONT)SelectObject(hDC, gUI.theme.pFont);
+          SIZE stSize;
+          if (GetTextExtentPoint32W(hDC, wszText, lstrlenW(wszText), &stSize)) {
+            uTextWidth = (UINT)stSize.cx;
+          }
+          SelectObject(hDC, hOldFont);
+          ReleaseDC(gUI.hWindow, hDC);
+        }
+        UINT uMinWidth = _scScale(150);
+        UINT uWidth    = uTextWidth + _scScale(30);
+        pMIS->itemWidth  = uWidth > uMinWidth ? uWidth : uMinWidth;
+        pMIS->itemHeight = _scScale(24);
+        return TRUE;
+      }
+      break;
     }
     case WM_HOTKEY_RECORDED: {
       if (gUI.iEditingHotkey == -1) {
