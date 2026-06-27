@@ -123,6 +123,8 @@ _scFindExecutable(const wchar_t* wszExeName, wchar_t* wszOutPath, s32 nOutCap) {
 
 scInternal bool
 _startRecording(scRecordContext* pCtx, scRect rect) {
+  scPlaySoundOrSkip(SC_SOUND_SCREENSHOT_QUICK);
+
   HANDLE hReadPipe, hWritePipe;
   SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
   if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
@@ -224,6 +226,8 @@ _stopRecording(scRecordContext* pCtx) {
   } else {
     scLogError("Failed to stop recording normally??????? I have no idea what to do here. Sorry. Maybe force close screencap or any ffmpeg.exe instances");
   }
+
+  scPlaySoundOrSkip(SC_SOUND_SCREENSHOT);
 }
 
 scInternal bool

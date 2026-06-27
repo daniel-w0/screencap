@@ -12,6 +12,7 @@
 #include <shlwapi.h>
 #include <wingdi.h>
 #include <objidl.h>
+#include <mmsystem.h>
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -19,5 +20,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <time.h>
+
+#include "embed/screenshot_sound.h"
+#include "embed/screenshot_sound_quick.h"
 
 #endif // PCH_H

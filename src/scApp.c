@@ -1215,6 +1215,23 @@ void scSaveImage(scImage* pImage, bool bWriteToDisk) {
   }
 }
 
+void scPlaySoundOrSkip(scSoundID eSoundID) {
+  if (!gApp->config.bPlaySoundOnAction) {
+    return;
+  }
+
+  const char* pSound = NULL;
+  if (eSoundID == SC_SOUND_SCREENSHOT) {
+    pSound = screenshot_sound;
+  } else if (eSoundID == SC_SOUND_SCREENSHOT_QUICK) {
+    pSound = screenshot_sound_quick;
+  } else {
+    scLogError("Attempted to play invalid sound %d", (int)eSoundID);
+  }
+
+  PlaySoundA((LPCSTR)pSound, NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+}
+
 //------------------------------------------------------------------------
 // Clipboard
 //------------------------------------------------------------------------

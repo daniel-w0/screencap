@@ -17,6 +17,7 @@ cbOnAreaSelected(scCaptureContext* pCtx) {
   }
 
   scSaveImage(&stImage, !(pCtx->eHotkeyID == SC_HOTKEY_CLIPBOARD));
+  scPlaySoundOrSkip(SC_SOUND_SCREENSHOT_QUICK);
   return true;
 }
 

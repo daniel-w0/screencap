@@ -25,6 +25,11 @@ typedef enum {
   _SC_HOTKEY_COUNT
 } scHotkeyID;
 
+typedef enum {
+  SC_SOUND_SCREENSHOT,
+  SC_SOUND_SCREENSHOT_QUICK,
+} scSoundID;
+
 static const char* scHotkeyIdNames[_SC_HOTKEY_COUNT] = {
   "screenshot",
   "clipboard",
@@ -172,6 +177,8 @@ void scImageFree(scImage* pImage);
 bool scImageToFile(const scImage* pImage, wchar_t* wszOutPath, s32 nOutCap);
 bool scSaveDataToFile(const u8* pData, s32 nSize, const char* sExtension, wchar_t* wszOutPath, s32 nOutCap);
 void scSaveImage(scImage* pImage, bool bWriteToDisk);
+
+void scPlaySoundOrSkip(scSoundID eSoundID);
 
 void scAppRegisterHotkeys();
 void scAppSetupCallbackHandler();

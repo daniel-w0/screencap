@@ -15,6 +15,7 @@ cbOnHotkeyPressed(scCaptureContext* pCtx) {
     return true;
   }
   scSaveImage(&stImage, true);
+  scPlaySoundOrSkip(SC_SOUND_SCREENSHOT);
   return true;
 }
 
