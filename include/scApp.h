@@ -125,6 +125,8 @@ void scAppDestroy();
 
 void scAppRunHandlerFromActionID(scHotkeyID iHotkeyID);
 
+void scSaveConfig();
+
 //------------------------------------------------------------------------
 // Utils
 bool scGetSavePath(wchar_t* wszOut, s32 nOutCap);

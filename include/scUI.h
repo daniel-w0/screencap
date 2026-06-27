@@ -14,5 +14,6 @@ typedef enum {
 void scUIOpenWindow();
 void scUICloseWindow();
 void scUISetCurrentPage(scPageID ePageID);
+void scUIOnCaptureSaved(const wchar_t* wszPath);
 
 #endif // SC_UI_H

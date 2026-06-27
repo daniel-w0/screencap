@@ -8,6 +8,7 @@
 #include "stb_image.h"
 
 #include <windowsx.h>
+#include <shobjidl.h>
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -608,27 +609,36 @@ _scGalleryScrollbar(RECT cr) {
 //------------------------------------------------------------------------
 scInternal void
 _scOnBrowseClicked() {
-  CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+  bool bComInit = SUCCEEDED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED));
 
-  BROWSEINFOW bi = { 0 };
-  bi.hwndOwner = gUI.hWindow;
-  bi.lpszTitle = L"Select screenshot destination";
-  bi.ulFlags   = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+  IFileOpenDialog* pDialog = NULL;
+  if (SUCCEEDED(CoCreateInstance(&CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, &IID_IFileOpenDialog, (void**)&pDialog))) {
+    FILEOPENDIALOGOPTIONS dwOptions = 0;
+    pDialog->lpVtbl->GetOptions(pDialog, &dwOptions);
+    pDialog->lpVtbl->SetOptions(pDialog, dwOptions | FOS_PICKFOLDERS);
 
-  LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
-  if (pidl) {
-    wchar_t wszPath[MAX_PATH];
-    if (SHGetPathFromIDListW(pidl, wszPath)) {
-      wcscpy_s(gApp->config.wszSavePath, SC_PATH_MAX_LEN, wszPath);
-      gUI.aPages[SC_PAGE_GALLERY].scroll.nScrollY = 0;
-      gUI.bNeedsLayout = true;
-      InvalidateRect(gUI.hWindow, NULL, TRUE);
-      // todo: persist the new save path to the config file
+    if (SUCCEEDED(pDialog->lpVtbl->Show(pDialog, gUI.hWindow))) {
+      IShellItem* pItem = NULL;
+      if (SUCCEEDED(pDialog->lpVtbl->GetResult(pDialog, &pItem))) {
+        PWSTR pszPath = NULL;
+        if (SUCCEEDED(pItem->lpVtbl->GetDisplayName(pItem, SIGDN_FILESYSPATH, &pszPath))) {
+          wcscpy_s(gApp->config.wszSavePath, SC_PATH_MAX_LEN, pszPath);
+          scSaveConfig();
+          CoTaskMemFree(pszPath);
+
+          gUI.aPages[SC_PAGE_GALLERY].scroll.nScrollY = 0;
+          gUI.bNeedsLayout = true;
+          InvalidateRect(gUI.hWindow, NULL, TRUE);
+        }
+        pItem->lpVtbl->Release(pItem);
+      }
     }
-    CoTaskMemFree(pidl);
+    pDialog->lpVtbl->Release(pDialog);
   }
 
-  CoUninitialize();
+  if (bComInit) {
+    CoUninitialize();
+  }
 }
 
 scInternal void
@@ -683,7 +693,12 @@ scInternal void
 _scLayoutGallery(scPage* pPage, RECT rc) {
   pPage->nWidgetCount = 0;
 
-  const wchar_t* wszDir = gApp->config.wszSavePath;
+  wchar_t wszDir[MAX_PATH];
+  if (!scGetSavePath(wszDir, MAX_PATH)) {
+    pPage->scroll.nContentH   = 0;
+    pPage->scroll.nMaxScrollY = 0;
+    return;
+  }
 
   _scFileEntry* aFiles = NULL;
   s32 nFiles = 0, nFileCap = 0;
@@ -889,8 +904,8 @@ _scOnWidgetClicked(scWidget* pWidget) {
   switch (pWidget->eType) {
     case SC_WIDGET_TOGGLE: {
       *pWidget->u.toggle.pValue = !*pWidget->u.toggle.pValue;
+      scSaveConfig();
       InvalidateRect(gUI.hWindow, NULL, FALSE);
-      // todo: persist option changes to the config file
       break;
     }
     case SC_WIDGET_BUTTON: {
@@ -1136,9 +1151,11 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       if (vk == VK_DELETE) {
         pHk->uKey       = 0;
         pHk->uModifiers = 0;
+        scSaveConfig();
       } else if (vk != VK_ESCAPE) {
         pHk->uKey       = vk;
         pHk->uModifiers = uMods;
+        scSaveConfig();
       }
 
       gUI.iEditingHotkey = -1;
@@ -1360,5 +1377,13 @@ void scUISetCurrentPage(scPageID ePageID) {
 
   if (gUI.hWindow) {
     InvalidateRect(gUI.hWindow, NULL, TRUE);
+  }
+}
+
+void scUIOnCaptureSaved(const wchar_t* wszPath) {
+  (void)wszPath;
+  if (gUI.hWindow && gUI.eCurrentPage == SC_PAGE_GALLERY) {
+    gUI.bNeedsLayout = true;
+    InvalidateRect(gUI.hWindow, NULL, FALSE);
   }
 }

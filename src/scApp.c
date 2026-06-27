@@ -368,6 +368,14 @@ scConfigLoad() {
   return true;
 }
 
+void scSaveConfig() {
+  scAssert(gApp, "gApp is NULL!");
+  if (!_scWriteConfig(&gApp->config, NULL)) {
+    scLogError("Failed to save config");
+  }
+  scLogInfo("Config saved");
+}
+
 //------------------------------------------------------------------------
 // Window Procedure
 //------------------------------------------------------------------------
@@ -1124,6 +1132,7 @@ bool scSaveDataToFile(const u8* pData, s32 nSize, const char* sExtension) {
 
   if (ok) {
     scLogDebug("Saved %d bytes to '%ls'", nSize, wszPath);
+    scUIOnCaptureSaved(wszPath);
   }
   return ok;
 }
