@@ -5,6 +5,7 @@
 #include "scTray.h"
 #include "scUI.h"
 #include "scLocale.h"
+#include "scNotification.h"
 #include "stb_image_write.h"
 #include "stb_image.h"
 
@@ -154,6 +155,7 @@ _scConfigCreateDefaults(scAppConfig* pOutConfig) {
   pOutConfig->bCopyToClipboard   = true;
   pOutConfig->bRunAtStartup      = false;
   pOutConfig->bPlaySoundOnAction = true;
+  pOutConfig->bShowNotification  = true;
 }
 
 scInternal void
@@ -187,6 +189,7 @@ _scWriteConfig(scAppConfig* pConfig, wchar_t* wszPath) {
   WritePrivateProfileStringW(L"options", L"copy_to_clipboard", pConfig->bCopyToClipboard ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"run_on_startup",    pConfig->bRunAtStartup ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction ? L"1" : L"0", wszActualPath);
+  WritePrivateProfileStringW(L"options", L"show_notification",  pConfig->bShowNotification ? L"1" : L"0", wszActualPath);
 
   wchar_t wszFramerate[16];
   _snwprintf_s(wszFramerate, 16, _TRUNCATE, L"%d", pConfig->iFFmpegFramerate);
@@ -237,6 +240,7 @@ _scConfigReadInto(scAppConfig* pConfig, wchar_t* wszPath) {
   pConfig->bCopyToClipboard   = GetPrivateProfileIntW(L"options", L"copy_to_clipboard", pConfig->bCopyToClipboard, wszActualPath) != 0;
   pConfig->bRunAtStartup      = GetPrivateProfileIntW(L"options", L"run_on_startup",    pConfig->bRunAtStartup, wszActualPath) != 0;
   pConfig->bPlaySoundOnAction = GetPrivateProfileIntW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction, wszActualPath) != 0;
+  pConfig->bShowNotification  = GetPrivateProfileIntW(L"options", L"show_notification",  pConfig->bShowNotification, wszActualPath) != 0;
   pConfig->iFFmpegFramerate   = GetPrivateProfileIntW(L"options", L"record_framerate",  pConfig->iFFmpegFramerate, wszActualPath);
 
   wchar_t wszDefaultLang[16];
@@ -908,6 +912,10 @@ bool scAppInit() {
 
   scLocaleInit();
 
+  if (gApp->bIsGeWin10) {
+    scNotificationInit();
+  }
+
   if (!_scRegisterOverlayWindowClass()) {
     return false;
   }
@@ -1205,6 +1213,10 @@ bool scSaveDataToFile(const u8* pData, s32 nSize, const char* sExtension, wchar_
 void scSaveImage(scImage* pImage, bool bWriteToDisk) {
   wchar_t wszSaved[MAX_PATH];
   bool bSaved = bWriteToDisk && scImageToFile(pImage, wszSaved, MAX_PATH);
+
+  if (bSaved && gApp->config.bShowNotification && gApp->bIsGeWin10) {
+    scNotificationShowCapture(wszSaved, scLocaleGet("Screenshot saved"));
+  }
 
   bool bToClipboard = gApp->config.bCopyToClipboard || !bWriteToDisk;
 

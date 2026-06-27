@@ -65,6 +65,7 @@ typedef struct {
   bool     bCopyToClipboard;
   bool     bRunAtStartup;
   bool     bPlaySoundOnAction;
+  bool     bShowNotification;
 } scAppConfig;
 
 typedef struct {
