@@ -29,7 +29,7 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 
         HMENU hActionMenu = CreatePopupMenu();
         for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
-          if (i == SC_HOTKEY_ACTIVE_WINDOW || i == SC_HOTKEY_ACTIVE_MONITOR) {
+          if (i == SC_HOTKEY_ACTIVE_WINDOW) {
             continue;
           }
           if (i == SC_HOTKEY_OCR && !gApp->bIsGeWin10) {
@@ -56,13 +56,13 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
         case TRAY_ACTION_ID(SC_HOTKEY_CLIPBOARD):
         case TRAY_ACTION_ID(SC_HOTKEY_OCR):
         //case TRAY_ACTION_ID(SC_HOTKEY_ACTIVE_WINDOW):
-        //case TRAY_ACTION_ID(SC_HOTKEY_ACTIVE_MONITOR):
+        case TRAY_ACTION_ID(SC_HOTKEY_ACTIVE_MONITOR):
         case TRAY_ACTION_ID(SC_HOTKEY_FALLBACK_SCREENSHOT):
-        case TRAY_ACTION_ID(SC_HOTKEY_RECORD):
+        case TRAY_ACTION_ID(SC_HOTKEY_RECORD): {
           scHotkeyID hkID = (scHotkeyID)(LOWORD(wParam) - _TRAY_MENU_LAST_ACTION_IDX);
           scAppRunHandlerFromActionID(hkID);
           break;
-        case TRAY_MENU_SETTINGS: {
+        } case TRAY_MENU_SETTINGS: {
           scUIOpenWindow();
           break;
         }
