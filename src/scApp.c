@@ -156,6 +156,7 @@ _scConfigCreateDefaults(scAppConfig* pOutConfig) {
   pOutConfig->bRunAtStartup      = false;
   pOutConfig->bPlaySoundOnAction = true;
   pOutConfig->bShowNotification  = true;
+  pOutConfig->bStartMinimized    = true;
 }
 
 scInternal void
@@ -190,6 +191,7 @@ _scWriteConfig(scAppConfig* pConfig, wchar_t* wszPath) {
   WritePrivateProfileStringW(L"options", L"run_on_startup",    pConfig->bRunAtStartup ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"show_notification",  pConfig->bShowNotification ? L"1" : L"0", wszActualPath);
+  WritePrivateProfileStringW(L"options", L"start_minimized",    pConfig->bStartMinimized ? L"1" : L"0", wszActualPath);
 
   wchar_t wszFramerate[16];
   _snwprintf_s(wszFramerate, 16, _TRUNCATE, L"%d", pConfig->iFFmpegFramerate);
@@ -241,6 +243,7 @@ _scConfigReadInto(scAppConfig* pConfig, wchar_t* wszPath) {
   pConfig->bRunAtStartup      = GetPrivateProfileIntW(L"options", L"run_on_startup",    pConfig->bRunAtStartup, wszActualPath) != 0;
   pConfig->bPlaySoundOnAction = GetPrivateProfileIntW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction, wszActualPath) != 0;
   pConfig->bShowNotification  = GetPrivateProfileIntW(L"options", L"show_notification",  pConfig->bShowNotification, wszActualPath) != 0;
+  pConfig->bStartMinimized    = GetPrivateProfileIntW(L"options", L"start_minimized",    pConfig->bStartMinimized, wszActualPath) != 0;
   pConfig->iFFmpegFramerate   = GetPrivateProfileIntW(L"options", L"record_framerate",  pConfig->iFFmpegFramerate, wszActualPath);
 
   wchar_t wszDefaultLang[16];
@@ -927,7 +930,9 @@ bool scAppInit() {
   scAppRegisterHotkeys();
   scAppSetupCallbackHandler();
 
-  scUIOpenWindow();
+  if (!gApp->config.bStartMinimized) {
+    scUIOpenWindow();
+  }
 
   return true;
 }

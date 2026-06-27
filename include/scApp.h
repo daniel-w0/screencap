@@ -66,6 +66,7 @@ typedef struct {
   bool     bRunAtStartup;
   bool     bPlaySoundOnAction;
   bool     bShowNotification;
+  bool     bStartMinimized;
 } scAppConfig;
 
 typedef struct {
