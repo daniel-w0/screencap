@@ -4,6 +4,7 @@
 #include "scLogging.h"
 #include "scTray.h"
 #include "scUI.h"
+#include "scLocale.h"
 #include "stb_image_write.h"
 #include "stb_image.h"
 
@@ -38,7 +39,7 @@ _scFileExists(LPCWSTR szPath) {
 }
 
 scInternal void
-_scGetSystemLanguage(char szLanguageCode[4]) {
+_scGetSystemLanguage(char szLanguageCode[16]) {
   szLanguageCode[0] = '\0';
 
   wchar_t wszFullLocale[LOCALE_NAME_MAX_LENGTH];
@@ -50,11 +51,11 @@ _scGetSystemLanguage(char szLanguageCode[4]) {
     if (pszHyphen) {
         *pszHyphen = '\0';
     }
-    strcpy_s(szLanguageCode, 4, szFullLocale);
+    strcpy_s(szLanguageCode, 16, szFullLocale);
   }
 
   if (szLanguageCode[0] == '\0') {
-    strcpy_s(szLanguageCode, 4, "en");
+    strcpy_s(szLanguageCode, 16, "en");
   }
 }
 
@@ -186,8 +187,8 @@ _scWriteConfig(scAppConfig* pConfig, wchar_t* wszPath) {
   WritePrivateProfileStringW(L"options", L"run_on_startup",    pConfig->bRunAtStartup ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction ? L"1" : L"0", wszActualPath);
 
-  wchar_t wszLang[4];
-  MultiByteToWideChar(CP_UTF8, 0, pConfig->sLanguageCode, -1, wszLang, 4);
+  wchar_t wszLang[16];
+  MultiByteToWideChar(CP_UTF8, 0, pConfig->sLanguageCode, -1, wszLang, 16);
   WritePrivateProfileStringW(L"options", L"language", wszLang, wszActualPath);
   WritePrivateProfileStringW(L"options", L"save_path", pConfig->wszSavePath, wszActualPath);
 
@@ -232,11 +233,11 @@ _scConfigReadInto(scAppConfig* pConfig, wchar_t* wszPath) {
   pConfig->bRunAtStartup      = GetPrivateProfileIntW(L"options", L"run_on_startup",    pConfig->bRunAtStartup, wszActualPath) != 0;
   pConfig->bPlaySoundOnAction = GetPrivateProfileIntW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction, wszActualPath) != 0;
 
-  wchar_t wszDefaultLang[4];
-  MultiByteToWideChar(CP_UTF8, 0, pConfig->sLanguageCode, -1, wszDefaultLang, 4);
+  wchar_t wszDefaultLang[16];
+  MultiByteToWideChar(CP_UTF8, 0, pConfig->sLanguageCode, -1, wszDefaultLang, 16);
 
-  wchar_t wszLang[4];
-  GetPrivateProfileStringW(L"options", L"language", wszDefaultLang, wszLang, 4, wszActualPath);
+  wchar_t wszLang[16];
+  GetPrivateProfileStringW(L"options", L"language", wszDefaultLang, wszLang, 16, wszActualPath);
   WideCharToMultiByte(CP_UTF8, 0, wszLang, -1, pConfig->sLanguageCode, sizeof(pConfig->sLanguageCode), NULL, NULL);
 
   GetPrivateProfileStringW(L"options", L"save_path", pConfig->wszSavePath, pConfig->wszSavePath, SC_PATH_MAX_LEN, wszActualPath);
@@ -896,6 +897,8 @@ bool scAppInit() {
   if (!scConfigLoad()) {
     return false;
   }
+
+  scLocaleInit();
 
   if (!_scRegisterOverlayWindowClass()) {
     return false;

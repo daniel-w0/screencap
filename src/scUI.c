@@ -5,6 +5,7 @@
 #include "scAssert.h"
 #include "scLogging.h"
 #include "scGdiPlus.h"
+#include "scLocale.h"
 #include "stb_image.h"
 
 #include <windowsx.h>
@@ -36,7 +37,12 @@ typedef struct {
   union {
     struct { bool bBold; }             label;
     struct { bool* pValue; }           toggle;
-    struct { wchar_t wszValue[64]; }   dropdown;
+    struct {
+      wchar_t            wszValue[64];
+      const char* const* aOptions;
+      s32                nOptionCount;
+      void (*pfnSelect)(s32 iIndex);
+    } dropdown;
     struct { void (*pfnClick)(void); } button;
     struct { scHotkeyID eHotkey; }     hotkey;
   } u;
@@ -48,8 +54,17 @@ typedef struct {
   s32 nContentH;
 } scScrollContext;
 
+typedef struct {
+  bool bActive;
+  s32* pValue;
+  s32  iStartY;
+  s32  iStartScroll;
+  s32  iTrackRange;
+  s32  iMaxScroll;
+} scScrollDrag;
+
 typedef struct scPage {
-  wchar_t         wszName[64];
+  const char*     szKey;
   scWidget*       aWidgets;
   s32             nWidgetCount;
   s32             nWidgetCap;
@@ -107,17 +122,17 @@ typedef struct {
   scPageID eHoveredTab;
   s32      iHoveredWidget;
 
+  s32 iExpandedDropdown;
+  s32 iDropdownHover;
+  s32 iDropdownScrollY;
+
   bool bNeedsLayout;
   RECT rcLastClient;
 
   s32 iEditingHotkey;
 
-  bool bDraggingScroll;
-  bool bHoveredScroll;
-  s32  iDragStartY;
-  s32  iDragStartScroll;
-  s32  iDragTrackRange;
-  s32  iDragMaxScroll;
+  bool         bHoveredScroll;
+  scScrollDrag drag;
 
   scThumb* aThumbs;
   s32      nThumbCount;
@@ -378,6 +393,19 @@ _scMakeImage(RECT rcLayout, const wchar_t* wszName, const char* szPath) {
   return w;
 }
 
+scInternal scWidget
+_scMakeDropdown(RECT rcLayout, const wchar_t* wszLabel, const wchar_t* wszValue, const char* const* aOptions, s32 nOptionCount, void (*pfnSelect)(s32 iIndex)) {
+  scWidget w = { 0 };
+  w.eType                 = SC_WIDGET_DROPDOWN;
+  w.rcLayout              = rcLayout;
+  w.u.dropdown.aOptions     = aOptions;
+  w.u.dropdown.nOptionCount = nOptionCount;
+  w.u.dropdown.pfnSelect    = pfnSelect;
+  wcscpy_s(w.wszText, 128, wszLabel);
+  wcscpy_s(w.u.dropdown.wszValue, 64, wszValue);
+  return w;
+}
+
 scInternal RECT
 _scWidgetScaledRect(scPage* pPage, scWidget* pWidget) {
   RECT r = pWidget->rcLayout;
@@ -393,7 +421,8 @@ _scWidgetScaledRect(scPage* pPage, scWidget* pWidget) {
 scInternal bool
 _scWidgetIsInteractive(scWidgetType eType) {
   return eType == SC_WIDGET_TOGGLE || eType == SC_WIDGET_BUTTON ||
-         eType == SC_WIDGET_HOTKEY || eType == SC_WIDGET_IMAGE;
+         eType == SC_WIDGET_HOTKEY || eType == SC_WIDGET_IMAGE ||
+         eType == SC_WIDGET_DROPDOWN;
 }
 
 scInternal s32
@@ -461,6 +490,34 @@ _scDrawButton(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
   SetTextColor(hDC, t->dwText);
   RECT rText = r;
   DrawTextW(hDC, pWidget->wszText, -1, &rText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
+scInternal void
+_scDrawDropdown(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
+  scUITheme* t = &gUI.theme;
+  scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
+  bool bExpanded = gUI.iExpandedDropdown >= 0 && gUI.iExpandedDropdown < pPage->nWidgetCount &&
+                   &pPage->aWidgets[gUI.iExpandedDropdown] == pWidget;
+
+  RECT lr = pWidget->rcLayout;
+  RECT box = { _scScale(lr.right - 165), _scScale(lr.top + 6), _scScale(lr.right - 15), _scScale(lr.bottom - 6) };
+
+  GpGraphics* pGraphics = gpGraphicsBegin(hDC);
+  gpFillRound(pGraphics, r, _scRoundRad(), gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
+  gp_stroke_round(pGraphics, r, _scRoundRad(), gpColor(t->dwStrokeSoft, 255), 1.0f);
+
+  f32 fBoxRad = 4.0f * gUI.fUIScale;
+  gpFillRound(pGraphics, box, fBoxRad, gpColor(t->dwBackground, 255));
+  gp_stroke_round(pGraphics, box, fBoxRad, gpColor((bExpanded || bHovered) ? t->dwAccent : t->dwStroke, 255), bExpanded ? 1.5f : 1.0f);
+  gpGraphicsEnd(pGraphics);
+
+  SelectObject(hDC, t->pFont);
+  SetTextColor(hDC, t->dwText);
+  TextOutW(hDC, r.left + _scScale(15), r.top + _scScale(10), pWidget->wszText, lstrlenW(pWidget->wszText));
+  TextOutW(hDC, box.left + _scScale(10), box.top + _scScale(5), pWidget->u.dropdown.wszValue, lstrlenW(pWidget->u.dropdown.wszValue));
+
+  SetTextColor(hDC, t->dwTextDim);
+  TextOutW(hDC, box.right - _scScale(20), box.top + _scScale(5), L"\x25BC", 1);
 }
 
 scInternal void
@@ -565,12 +622,12 @@ _scDrawImage(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
 scInternal void
 _scDrawWidget(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
   switch (pWidget->eType) {
-    case SC_WIDGET_LABEL:  _scDrawLabel (hDC, pWidget, r);           break;
-    case SC_WIDGET_TOGGLE: _scDrawToggle(hDC, pWidget, r, bHovered); break;
-    case SC_WIDGET_BUTTON: _scDrawButton(hDC, pWidget, r, bHovered); break;
-    case SC_WIDGET_HOTKEY: _scDrawHotkey(hDC, pWidget, r, bHovered); break;
-    case SC_WIDGET_IMAGE:  _scDrawImage (hDC, pWidget, r, bHovered); break;
-    case SC_WIDGET_DROPDOWN: // todo: expandable popup (needs localization options)
+    case SC_WIDGET_LABEL:    _scDrawLabel   (hDC, pWidget, r);           break;
+    case SC_WIDGET_TOGGLE:   _scDrawToggle  (hDC, pWidget, r, bHovered); break;
+    case SC_WIDGET_BUTTON:   _scDrawButton  (hDC, pWidget, r, bHovered); break;
+    case SC_WIDGET_HOTKEY:   _scDrawHotkey  (hDC, pWidget, r, bHovered); break;
+    case SC_WIDGET_IMAGE:    _scDrawImage   (hDC, pWidget, r, bHovered); break;
+    case SC_WIDGET_DROPDOWN: _scDrawDropdown(hDC, pWidget, r, bHovered); break;
     default:
       break;
   }
@@ -605,6 +662,137 @@ _scGalleryScrollbar(RECT cr) {
   }
   RECT rcTrack = { cr.right - _scScale(14), _scScale(8), cr.right - _scScale(6), cr.bottom - _scScale(8) };
   return _scComputeScrollGeom(rcTrack, _scScale(pPage->scroll.nContentH), cr.bottom, pPage->scroll.nScrollY, pPage->scroll.nMaxScrollY);
+}
+
+scInternal void
+_scBeginScrollDrag(s32* pValue, scScrollGeom sg, s32 iMaxScroll, POINT pt) {
+  if (!PtInRect(&sg.rcThumb, pt)) {
+    s32 iThumbH = sg.rcThumb.bottom - sg.rcThumb.top;
+    s32 iRel    = pt.y - sg.rcTrack.top - iThumbH / 2;
+    *pValue = sg.iTrackRange > 0 ? _scClamp((s32)((s64)iRel * iMaxScroll / sg.iTrackRange), 0, iMaxScroll) : 0;
+  }
+  gUI.drag.bActive      = true;
+  gUI.drag.pValue       = pValue;
+  gUI.drag.iStartY      = pt.y;
+  gUI.drag.iStartScroll = *pValue;
+  gUI.drag.iTrackRange  = sg.iTrackRange;
+  gUI.drag.iMaxScroll   = iMaxScroll;
+  SetCapture(gUI.hWindow);
+  InvalidateRect(gUI.hWindow, NULL, FALSE);
+}
+
+scInternal bool
+_scScrollbarHit(scScrollGeom sg, POINT pt) {
+  if (!sg.bVisible) {
+    return false;
+  }
+  RECT rcHit = sg.rcTrack;
+  InflateRect(&rcHit, _scScale(3), 0);
+  return PtInRect(&rcHit, pt);
+}
+
+//------------------------------------------------------------------------
+// Dropdown popup
+//------------------------------------------------------------------------
+typedef struct {
+  RECT         rcBox;
+  s32          iItemHeight;
+  s32          nVisible;
+  bool         bHasScroll;
+  s32          iMaxScroll;
+  scScrollGeom scroll;
+} scDropdownGeom;
+
+scInternal scDropdownGeom
+_scDropdownGeom(scWidget* pWidget, RECT cr) {
+  scDropdownGeom dg = { 0 };
+  s32 nOptions   = pWidget->u.dropdown.nOptionCount;
+  dg.iItemHeight = _scScale(28);
+
+  RECT lr = pWidget->rcLayout;
+  s32 iSpaceBelow = cr.bottom - _scScale(lr.bottom);
+  s32 iMaxVisible = (iSpaceBelow - _scScale(20)) / dg.iItemHeight;
+  if (iMaxVisible < 1) iMaxVisible = 1;
+  dg.nVisible = nOptions < iMaxVisible ? nOptions : iMaxVisible;
+
+  dg.rcBox.left   = _scScale(lr.right - 165);
+  dg.rcBox.top    = _scScale(lr.bottom - 6);
+  dg.rcBox.right  = _scScale(lr.right - 15);
+  dg.rcBox.bottom = dg.rcBox.top + dg.nVisible * dg.iItemHeight;
+
+  dg.bHasScroll = nOptions > dg.nVisible;
+  dg.iMaxScroll = dg.bHasScroll ? (nOptions - dg.nVisible) * 28 : 0;
+  if (dg.bHasScroll) {
+    RECT rcTrack = { dg.rcBox.right - _scScale(10), dg.rcBox.top + _scScale(4), dg.rcBox.right - _scScale(4), dg.rcBox.bottom - _scScale(4) };
+    dg.scroll = _scComputeScrollGeom(rcTrack, nOptions * dg.iItemHeight, dg.nVisible * dg.iItemHeight, gUI.iDropdownScrollY, dg.iMaxScroll);
+  }
+  return dg;
+}
+
+scInternal void
+_scRenderDropdownPopup(HDC hDC, RECT cr) {
+  scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
+  if (gUI.iExpandedDropdown < 0 || gUI.iExpandedDropdown >= pPage->nWidgetCount) {
+    return;
+  }
+  scWidget* pWidget = &pPage->aWidgets[gUI.iExpandedDropdown];
+  if (pWidget->eType != SC_WIDGET_DROPDOWN) {
+    return;
+  }
+
+  scUITheme* t = &gUI.theme;
+  scDropdownGeom dg = _scDropdownGeom(pWidget, cr);
+  f32 fRad = 6.0f * gUI.fUIScale;
+
+  GpGraphics* pGraphics = gpGraphicsBegin(hDC);
+  gpFillRound(pGraphics, dg.rcBox, fRad, gpColor(t->dwPopup, 255));
+  gp_stroke_round(pGraphics, dg.rcBox, fRad, gpColor(t->dwStroke, 255), 1.0f);
+  gpGraphicsEnd(pGraphics);
+
+  HRGN hRgn = CreateRoundRectRgn(dg.rcBox.left, dg.rcBox.top, dg.rcBox.right + 1, dg.rcBox.bottom + 1, (int)(fRad * 2), (int)(fRad * 2));
+  SelectClipRgn(hDC, hRgn);
+
+  pGraphics = gpGraphicsBegin(hDC);
+  for (s32 i = 0; i < pWidget->u.dropdown.nOptionCount; ++i) {
+    s32 iTop    = dg.rcBox.top + i * dg.iItemHeight - _scScale(gUI.iDropdownScrollY);
+    s32 iBottom = iTop + dg.iItemHeight;
+    if (iBottom <= dg.rcBox.top || iTop >= dg.rcBox.bottom) {
+      continue;
+    }
+    if (gUI.iDropdownHover == i) {
+      RECT rcItem = { dg.rcBox.left + _scScale(3), iTop + _scScale(1), dg.rcBox.right - _scScale(dg.bHasScroll ? 11 : 3), iBottom - _scScale(1) };
+      gpFillRound(pGraphics, rcItem, 4.0f * gUI.fUIScale, gpColor(t->dwCardHover, 255));
+    }
+    if (strcmp(pWidget->u.dropdown.aOptions[i], scLocaleCurrent()) == 0) {
+      s32 iCy = (iTop + iBottom) / 2;
+      RECT rcInd = { dg.rcBox.left + _scScale(3), iCy - _scScale(7), dg.rcBox.left + _scScale(6), iCy + _scScale(7) };
+      gpFillRound(pGraphics, rcInd, 1.5f * gUI.fUIScale, gpColor(t->dwAccent, 255));
+    }
+  }
+  if (dg.bHasScroll && dg.scroll.bVisible) {
+    f32 fScrollRad = (dg.scroll.rcTrack.right - dg.scroll.rcTrack.left) / 2.0f;
+    bool bHot = gUI.bHoveredScroll || gUI.drag.bActive;
+    gpFillRound(pGraphics, dg.scroll.rcTrack, fScrollRad, gpColor(t->dwScrollThumb, 32));
+    gpFillRound(pGraphics, dg.scroll.rcThumb, fScrollRad, gpColor(t->dwScrollThumb, bHot ? 230 : 150));
+  }
+  gpGraphicsEnd(pGraphics);
+
+  SelectObject(hDC, t->pFont);
+  SetTextColor(hDC, t->dwText);
+  SetBkMode(hDC, TRANSPARENT);
+  for (s32 i = 0; i < pWidget->u.dropdown.nOptionCount; ++i) {
+    s32 iTop    = dg.rcBox.top + i * dg.iItemHeight - _scScale(gUI.iDropdownScrollY);
+    s32 iBottom = iTop + dg.iItemHeight;
+    if (iBottom <= dg.rcBox.top || iTop >= dg.rcBox.bottom) {
+      continue;
+    }
+    wchar_t wszOption[64];
+    MultiByteToWideChar(CP_UTF8, 0, pWidget->u.dropdown.aOptions[i], -1, wszOption, 64);
+    TextOutW(hDC, dg.rcBox.left + _scScale(12), iTop + _scScale(5), wszOption, lstrlenW(wszOption));
+  }
+
+  SelectClipRgn(hDC, NULL);
+  DeleteObject(hRgn);
 }
 
 //------------------------------------------------------------------------
@@ -645,17 +833,31 @@ _scOnBrowseClicked() {
 }
 
 scInternal void
+_scOnLanguageSelected(s32 iIndex) {
+  scLocaleSet(scLocaleCode(iIndex));
+  gUI.iExpandedDropdown = -1;
+  gUI.bNeedsLayout = true;
+  InvalidateRect(gUI.hWindow, NULL, TRUE);
+}
+
+scInternal void
 _scLayoutGeneral(scPage* pPage, RECT rc) {
   pPage->nWidgetCount = 0;
-  _scPagePush(pPage, _scMakeLabel((RECT){ CONTENT_LEFT, 20, 500, 40 }, L"Screenshot Destination", true));
-  _scPagePush(pPage, _scMakeButton((RECT){ rc.right - 120, 42, rc.right - 20, 72 }, L"Browse...", _scOnBrowseClicked));
+  _scPagePush(pPage, _scMakeLabel((RECT){ CONTENT_LEFT, 20, 500, 40 }, scLocaleGet("Screenshot Destination"), true));
+  _scPagePush(pPage, _scMakeButton((RECT){ rc.right - 120, 42, rc.right - 20, 72 }, scLocaleGet("Browse..."), _scOnBrowseClicked));
 
   s32 iY = 90;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, L"Copy screenshot to Clipboard", &gApp->config.bCopyToClipboard));
+
+  wchar_t wszLang[64];
+  MultiByteToWideChar(CP_UTF8, 0, scLocaleCurrent(), -1, wszLang, 64);
+  _scPagePush(pPage, _scMakeDropdown((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Language"), wszLang, scLocaleCodes(), scLocaleCount(), _scOnLanguageSelected));
   iY += 45;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, L"Run on Startup", &gApp->config.bRunAtStartup));
+
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Copy screenshot to Clipboard"), &gApp->config.bCopyToClipboard));
   iY += 45;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, L"Play sound on capture", &gApp->config.bPlaySoundOnAction));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Run on Startup"), &gApp->config.bRunAtStartup));
+  iY += 45;
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Play sound on capture"), &gApp->config.bPlaySoundOnAction));
 }
 
 scInternal void
@@ -834,7 +1036,8 @@ _scRenderSidebar(HDC hDC, RECT cr) {
 
     SelectObject(hDC, bActive ? t->pBoldFont : t->pFont);
     SetTextColor(hDC, bActive ? t->dwText : t->dwTextDim);
-    TextOutW(hDC, rcTab.left + _scScale(15), rcTab.top + _scScale(7), pPage->wszName, lstrlenW(pPage->wszName));
+    const wchar_t* wszName = scLocaleGet(pPage->szKey);
+    TextOutW(hDC, rcTab.left + _scScale(15), rcTab.top + _scScale(7), wszName, lstrlenW(wszName));
   }
 
   const wchar_t* wszVersion = SC_VERSION_STRING_FULL_W;
@@ -868,7 +1071,7 @@ _scRenderScrollbar(HDC hDC, scScrollGeom sg) {
   }
   scUITheme* t = &gUI.theme;
   f32 fRad = (sg.rcTrack.right - sg.rcTrack.left) / 2.0f;
-  bool bHot = gUI.bHoveredScroll || gUI.bDraggingScroll;
+  bool bHot = gUI.bHoveredScroll || gUI.drag.bActive;
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
   gpFillRound(pGraphics, sg.rcTrack, fRad, gpColor(t->dwScrollThumb, 32));
@@ -893,6 +1096,9 @@ _scRender(HDC hDC) {
   _scRenderCurrentPage(hMemDC, cr);
   if (gUI.eCurrentPage == SC_PAGE_GALLERY) {
     _scRenderScrollbar(hMemDC, _scGalleryScrollbar(cr));
+  }
+  if (gUI.iExpandedDropdown >= 0) {
+    _scRenderDropdownPopup(hMemDC, cr);
   }
 
   BitBlt(hDC, 0, 0, cr.right, cr.bottom, hMemDC, 0, 0, SRCCOPY);
@@ -935,16 +1141,31 @@ _scOnWidgetClicked(scWidget* pWidget) {
 
 scInternal bool
 _scHandleMouseMove(POINT pt, RECT cr) {
-  if (gUI.bDraggingScroll) {
-    scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
-    s32 iDelta = pt.y - gUI.iDragStartY;
-    s32 iScroll = gUI.iDragStartScroll + (gUI.iDragTrackRange > 0 ? (s32)((s64)iDelta * gUI.iDragMaxScroll / gUI.iDragTrackRange) : 0);
-    iScroll = _scClamp(iScroll, 0, gUI.iDragMaxScroll);
-    if (iScroll != pPage->scroll.nScrollY) {
-      pPage->scroll.nScrollY = iScroll;
+  if (gUI.drag.bActive) {
+    s32 iDelta  = pt.y - gUI.drag.iStartY;
+    s32 iScroll = gUI.drag.iStartScroll + (gUI.drag.iTrackRange > 0 ? (s32)((s64)iDelta * gUI.drag.iMaxScroll / gUI.drag.iTrackRange) : 0);
+    iScroll = _scClamp(iScroll, 0, gUI.drag.iMaxScroll);
+    if (iScroll != *gUI.drag.pValue) {
+      *gUI.drag.pValue = iScroll;
       InvalidateRect(gUI.hWindow, NULL, FALSE);
     }
     return false;
+  }
+
+  if (gUI.iExpandedDropdown >= 0) {
+    scWidget* pWidget = &gUI.aPages[gUI.eCurrentPage].aWidgets[gUI.iExpandedDropdown];
+    scDropdownGeom dg = _scDropdownGeom(pWidget, cr);
+    s32  iPrevHover  = gUI.iDropdownHover;
+    bool bPrevScroll = gUI.bHoveredScroll;
+
+    gUI.bHoveredScroll = dg.bHasScroll && PtInRect(&dg.scroll.rcThumb, pt);
+    if (!gUI.bHoveredScroll && PtInRect(&dg.rcBox, pt)) {
+      s32 iIdx = (pt.y - dg.rcBox.top + _scScale(gUI.iDropdownScrollY)) / dg.iItemHeight;
+      gUI.iDropdownHover = (iIdx >= 0 && iIdx < pWidget->u.dropdown.nOptionCount) ? iIdx : -1;
+    } else {
+      gUI.iDropdownHover = -1;
+    }
+    return gUI.iDropdownHover != iPrevHover || gUI.bHoveredScroll != bPrevScroll;
   }
 
   scPageID ePrevTab    = gUI.eHoveredTab;
@@ -976,29 +1197,32 @@ _scHandleMouseMove(POINT pt, RECT cr) {
 
 scInternal void
 _scHandleLeftDown(POINT pt, RECT cr) {
+  if (gUI.iExpandedDropdown >= 0) {
+    scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
+    scWidget* pWidget = &pPage->aWidgets[gUI.iExpandedDropdown];
+    scDropdownGeom dg = _scDropdownGeom(pWidget, cr);
+
+    if (dg.bHasScroll && _scScrollbarHit(dg.scroll, pt)) {
+      _scBeginScrollDrag(&gUI.iDropdownScrollY, dg.scroll, dg.iMaxScroll, pt);
+      return;
+    }
+    if (PtInRect(&dg.rcBox, pt)) {
+      s32 iIdx = (pt.y - dg.rcBox.top + _scScale(gUI.iDropdownScrollY)) / dg.iItemHeight;
+      if (iIdx >= 0 && iIdx < pWidget->u.dropdown.nOptionCount && pWidget->u.dropdown.pfnSelect) {
+        pWidget->u.dropdown.pfnSelect(iIdx);
+      }
+    }
+    gUI.iExpandedDropdown = -1;
+    gUI.iDropdownHover    = -1;
+    InvalidateRect(gUI.hWindow, NULL, TRUE);
+    return;
+  }
+
   if (gUI.eCurrentPage == SC_PAGE_GALLERY) {
     scScrollGeom sg = _scGalleryScrollbar(cr);
-    if (sg.bVisible) {
-      scPage* pPage = &gUI.aPages[SC_PAGE_GALLERY];
-      bool bOnThumb = PtInRect(&sg.rcThumb, pt);
-      RECT rcTrackHit = sg.rcTrack;
-      InflateRect(&rcTrackHit, _scScale(3), 0);
-      if (!bOnThumb && PtInRect(&rcTrackHit, pt)) {
-        s32 iThumbH = sg.rcThumb.bottom - sg.rcThumb.top;
-        s32 iRel = pt.y - sg.rcTrack.top - iThumbH / 2;
-        pPage->scroll.nScrollY = sg.iTrackRange > 0 ? _scClamp((s32)((s64)iRel * pPage->scroll.nMaxScrollY / sg.iTrackRange), 0, pPage->scroll.nMaxScrollY) : 0;
-        bOnThumb = true;
-      }
-      if (bOnThumb) {
-        gUI.bDraggingScroll  = true;
-        gUI.iDragStartY      = pt.y;
-        gUI.iDragStartScroll = pPage->scroll.nScrollY;
-        gUI.iDragTrackRange  = sg.iTrackRange;
-        gUI.iDragMaxScroll   = pPage->scroll.nMaxScrollY;
-        SetCapture(gUI.hWindow);
-        InvalidateRect(gUI.hWindow, NULL, FALSE);
-        return;
-      }
+    if (_scScrollbarHit(sg, pt)) {
+      _scBeginScrollDrag(&gUI.aPages[SC_PAGE_GALLERY].scroll.nScrollY, sg, gUI.aPages[SC_PAGE_GALLERY].scroll.nMaxScrollY, pt);
+      return;
     }
   }
 
@@ -1012,9 +1236,24 @@ _scHandleLeftDown(POINT pt, RECT cr) {
 
   scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
   s32 iHit = _scWidgetAt(pPage, pt);
-  if (iHit >= 0) {
-    _scOnWidgetClicked(&pPage->aWidgets[iHit]);
+  if (iHit < 0) {
+    return;
   }
+
+  scWidget* pWidget = &pPage->aWidgets[iHit];
+  if (pWidget->eType == SC_WIDGET_DROPDOWN) {
+    RECT lr = pWidget->rcLayout;
+    RECT box = { _scScale(lr.right - 165), _scScale(lr.top + 6), _scScale(lr.right - 15), _scScale(lr.bottom - 6) };
+    if (PtInRect(&box, pt)) {
+      gUI.iExpandedDropdown = iHit;
+      gUI.iDropdownScrollY  = 0;
+      gUI.iDropdownHover    = -1;
+      InvalidateRect(gUI.hWindow, NULL, TRUE);
+    }
+    return;
+  }
+
+  _scOnWidgetClicked(pWidget);
 }
 
 scInternal void
@@ -1030,10 +1269,10 @@ _scGalleryContextMenu(HWND hWnd, scWidget* pImage, POINT pt) {
   mi.hbrBack = gUI.theme.hBackgroundBrush;
   SetMenuInfo(hMenu, &mi);
 
-  AppendMenuW(hMenu, MF_OWNERDRAW, 1, (LPCWSTR)L"Copy to Clipboard");
-  AppendMenuW(hMenu, MF_OWNERDRAW, 2, (LPCWSTR)L"Open Containing Folder");
-  AppendMenuW(hMenu, MF_OWNERDRAW, 3, (LPCWSTR)L"Open");
-  AppendMenuW(hMenu, MF_OWNERDRAW, 4, (LPCWSTR)L"Delete");
+  AppendMenuW(hMenu, MF_OWNERDRAW, 1, (LPCWSTR)scLocaleGet("Copy to Clipboard"));
+  AppendMenuW(hMenu, MF_OWNERDRAW, 2, (LPCWSTR)scLocaleGet("Open Containing Folder"));
+  AppendMenuW(hMenu, MF_OWNERDRAW, 3, (LPCWSTR)scLocaleGet("Open"));
+  AppendMenuW(hMenu, MF_OWNERDRAW, 4, (LPCWSTR)scLocaleGet("Delete"));
 
   POINT ptScreen = pt;
   ClientToScreen(hWnd, &ptScreen);
@@ -1058,7 +1297,7 @@ _scGalleryContextMenu(HWND hWnd, scWidget* pImage, POINT pt) {
       break;
     }
     case 4: {
-      if (MessageBoxW(hWnd, L"Are you sure you want to delete this screenshot?", L"Confirm Delete", MB_ICONWARNING | MB_YESNO) == IDYES) {
+      if (MessageBoxW(hWnd, scLocaleGet("Are you sure you want to delete this screenshot?"), scLocaleGet("Confirm Delete"), MB_ICONWARNING | MB_YESNO) == IDYES) {
         wchar_t wszPath[MAX_PATH];
         MultiByteToWideChar(CP_ACP, 0, szPath, -1, wszPath, MAX_PATH);
         DeleteFileW(wszPath);
@@ -1147,6 +1386,7 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       return 0;
     }
     case WM_SIZE: {
+      gUI.iExpandedDropdown = -1;
       gUI.bNeedsLayout = true;
       InvalidateRect(hWnd, NULL, TRUE);
       return 0;
@@ -1169,10 +1409,16 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       return 0;
     }
     case WM_MOUSEWHEEL: {
-      if (gUI.eCurrentPage == SC_PAGE_GALLERY) {
+      s32 iDelta = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
+      if (gUI.iExpandedDropdown >= 0) {
+        RECT cr = _scEnsureLayout();
+        scWidget* pWidget = &gUI.aPages[gUI.eCurrentPage].aWidgets[gUI.iExpandedDropdown];
+        scDropdownGeom dg = _scDropdownGeom(pWidget, cr);
+        gUI.iDropdownScrollY = _scClamp(gUI.iDropdownScrollY - iDelta * 28, 0, dg.iMaxScroll);
+        InvalidateRect(hWnd, NULL, FALSE);
+      } else if (gUI.eCurrentPage == SC_PAGE_GALLERY) {
         scPage* pPage = &gUI.aPages[SC_PAGE_GALLERY];
         if (pPage->scroll.nMaxScrollY > 0) {
-          s32 iDelta = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
           pPage->scroll.nScrollY = _scClamp(pPage->scroll.nScrollY - iDelta * 40, 0, pPage->scroll.nMaxScrollY);
           InvalidateRect(hWnd, NULL, FALSE);
         }
@@ -1186,8 +1432,8 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       return 0;
     }
     case WM_LBUTTONUP: {
-      if (gUI.bDraggingScroll) {
-        gUI.bDraggingScroll = false;
+      if (gUI.drag.bActive) {
+        gUI.drag.bActive = false;
         ReleaseCapture();
         InvalidateRect(hWnd, NULL, FALSE);
       }
@@ -1206,7 +1452,7 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       return 0;
     }
     case WM_CAPTURECHANGED: {
-      gUI.bDraggingScroll = false;
+      gUI.drag.bActive = false;
       return 0;
     }
     case WM_DRAWITEM: {
@@ -1384,15 +1630,15 @@ _scUISetupTheme() {
 scInternal void
 _scSetupPages() {
   scPage* pGeneral = &gUI.aPages[SC_PAGE_GENERAL];
-  wcscpy_s(pGeneral->wszName, 64, L"General");
+  pGeneral->szKey     = "General";
   pGeneral->pfnLayout = _scLayoutGeneral;
 
   scPage* pSettings = &gUI.aPages[SC_PAGE_SETTINGS];
-  wcscpy_s(pSettings->wszName, 64, L"Settings");
+  pSettings->szKey     = "Settings";
   pSettings->pfnLayout = _scLayoutSettings;
 
   scPage* pGallery = &gUI.aPages[SC_PAGE_GALLERY];
-  wcscpy_s(pGallery->wszName, 64, L"Gallery");
+  pGallery->szKey     = "Gallery";
   pGallery->pfnLayout = _scLayoutGallery;
 }
 
@@ -1406,10 +1652,12 @@ void scUIOpenWindow() {
       return;
     }
 
-    gUI.eCurrentPage   = SC_PAGE_GENERAL;
-    gUI.eHoveredTab    = SC_PAGE_NONE;
-    gUI.iHoveredWidget = -1;
-    gUI.iEditingHotkey = -1;
+    gUI.eCurrentPage      = SC_PAGE_GENERAL;
+    gUI.eHoveredTab       = SC_PAGE_NONE;
+    gUI.iHoveredWidget    = -1;
+    gUI.iEditingHotkey    = -1;
+    gUI.iExpandedDropdown = -1;
+    gUI.iDropdownHover    = -1;
   }
 
   _scSetupPages();
@@ -1486,9 +1734,10 @@ void scUISetCurrentPage(scPageID ePageID) {
     _scCancelHotkeyRecording();
   }
 
-  gUI.eCurrentPage   = ePageID;
-  gUI.iHoveredWidget = -1;
-  gUI.bNeedsLayout   = true;
+  gUI.eCurrentPage      = ePageID;
+  gUI.iHoveredWidget    = -1;
+  gUI.iExpandedDropdown = -1;
+  gUI.bNeedsLayout      = true;
   if (ePageID == SC_PAGE_GALLERY) {
     gUI.aPages[ePageID].scroll.nScrollY = 0;
   }

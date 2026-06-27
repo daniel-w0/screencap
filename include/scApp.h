@@ -55,7 +55,7 @@ typedef struct {
 typedef struct {
   scHotkey aHotkeys[_SC_HOTKEY_COUNT];
   wchar_t  wszSavePath[SC_PATH_MAX_LEN];
-  char     sLanguageCode[4];
+  char     sLanguageCode[16];
   bool     bCopyToClipboard;
   bool     bRunAtStartup;
   bool     bPlaySoundOnAction;

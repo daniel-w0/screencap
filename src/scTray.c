@@ -2,6 +2,7 @@
 #include "scTray.h"
 #include "scApp.h"
 #include "scUI.h"
+#include "scLocale.h"
 #include "scLogging.h"
 #include "scAssert.h"
 
@@ -23,8 +24,8 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
         POINT pt;
         GetCursorPos(&pt);
 
-        const wchar_t* wszSettingsText = L"Settings...";
-        const wchar_t* wszExitText     = L"Exit";
+        const wchar_t* wszSettingsText = scLocaleGet("Settings...");
+        const wchar_t* wszExitText     = scLocaleGet("Exit");
 
         HMENU hActionMenu = CreatePopupMenu();
         for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
