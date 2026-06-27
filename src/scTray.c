@@ -39,7 +39,7 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
         }
 
         HMENU hMenu = CreatePopupMenu();
-        AppendMenuA(hMenu, MF_POPUP, (UINT_PTR)hActionMenu, "Actions");
+        AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hActionMenu, scLocaleGet("Actions"));
         AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
         AppendMenuW(hMenu, MF_STRING, TRAY_MENU_SETTINGS, wszSettingsText);
         AppendMenuW(hMenu, MF_STRING, TRAY_MENU_EXIT, wszExitText);
