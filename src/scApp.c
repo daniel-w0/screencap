@@ -889,6 +889,8 @@ _scIsGeWin10() {
 // Application
 //------------------------------------------------------------------------
 bool scAppInit() {
+  scLogInit();
+
   gApp = (scApp*)malloc(sizeof(scApp));
   memset(gApp, 0, sizeof(scApp));
 

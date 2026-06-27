@@ -104,6 +104,7 @@ typedef struct {
   COLORREF dwAccentHover;
   COLORREF dwPillOff;
   COLORREF dwOk;
+  COLORREF dwWarn;
   COLORREF dwError;
   COLORREF dwScrollThumb;
 
@@ -145,8 +146,9 @@ static HHOOK gKeyboardHook;
 #define WINDOW_MIN_WIDTH  ((s32)550)
 #define WINDOW_MIN_HEIGHT ((s32)328)
 
-#define SIDEBAR_WIDTH 150
-#define CONTENT_LEFT  160
+#define SIDEBAR_WIDTH   150
+#define CONTENT_LEFT    160
+#define LOG_LINE_HEIGHT 20
 
 scInternal void _scBeginHotkeyRecording(s32 iIndex);
 scInternal void _scCancelHotkeyRecording();
@@ -655,8 +657,8 @@ _scComputeScrollGeom(RECT rcTrack, s32 iContentH, s32 iViewportH, s32 iScroll, s
 }
 
 scInternal scScrollGeom
-_scGalleryScrollbar(RECT cr) {
-  scPage* pPage = &gUI.aPages[SC_PAGE_GALLERY];
+_scPageScrollbar(RECT cr) {
+  scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
   if (pPage->scroll.nMaxScrollY <= 0) {
     return (scScrollGeom){ 0 };
   }
@@ -966,6 +968,21 @@ _scLayoutGallery(scPage* pPage, RECT rc) {
   free(aFiles);
 }
 
+scInternal void
+_scLayoutLogs(scPage* pPage, RECT rc) {
+  pPage->nWidgetCount = 0;
+
+  bool bAtBottom = pPage->scroll.nScrollY >= pPage->scroll.nMaxScrollY;
+
+  pPage->scroll.nContentH   = scLogStoreCount() * LOG_LINE_HEIGHT + 20;
+  pPage->scroll.nMaxScrollY = pPage->scroll.nContentH - rc.bottom;
+  if (pPage->scroll.nMaxScrollY < 0) {
+    pPage->scroll.nMaxScrollY = 0;
+  }
+  pPage->scroll.nScrollY = bAtBottom ? pPage->scroll.nMaxScrollY
+                                     : _scClamp(pPage->scroll.nScrollY, 0, pPage->scroll.nMaxScrollY);
+}
+
 scInternal RECT
 _scEnsureLayout() {
   RECT cr;
@@ -1079,6 +1096,41 @@ _scRenderScrollbar(HDC hDC, scScrollGeom sg) {
   gpGraphicsEnd(pGraphics);
 }
 
+scInternal COLORREF
+_scLogColor(scLogLevel eLevel) {
+  switch (eLevel) {
+    case SC_LOG_ERROR: return gUI.theme.dwError;
+    case SC_LOG_WARN:  return gUI.theme.dwWarn;
+    case SC_LOG_INFO:  return gUI.theme.dwText;
+    case SC_LOG_DEBUG:
+    default:           return gUI.theme.dwTextDim;
+  }
+}
+
+scInternal void
+_scRenderLogs(HDC hDC, RECT cr) {
+  scPage* pPage = &gUI.aPages[SC_PAGE_LOGS];
+  s32 iCount = scLogStoreCount();
+  s32 iX     = _scScale(CONTENT_LEFT);
+
+  SelectObject(hDC, gUI.theme.pFont);
+  SetBkMode(hDC, TRANSPARENT);
+
+  for (s32 i = 0; i < iCount; ++i) {
+    s32 iY = _scScale(14 + i * LOG_LINE_HEIGHT - pPage->scroll.nScrollY);
+    if (iY + _scScale(LOG_LINE_HEIGHT) < 0 || iY > cr.bottom) {
+      continue;
+    }
+    scLogLevel eLevel;
+    const char* szText = scLogStoreGet(i, &eLevel);
+    if (!szText) {
+      continue;
+    }
+    SetTextColor(hDC, _scLogColor(eLevel));
+    TextOutA(hDC, iX, iY, szText, (int)strlen(szText));
+  }
+}
+
 scInternal void
 _scRender(HDC hDC) {
   RECT cr = _scEnsureLayout();
@@ -1094,9 +1146,10 @@ _scRender(HDC hDC) {
     _scRenderPathField(hMemDC, cr);
   }
   _scRenderCurrentPage(hMemDC, cr);
-  if (gUI.eCurrentPage == SC_PAGE_GALLERY) {
-    _scRenderScrollbar(hMemDC, _scGalleryScrollbar(cr));
+  if (gUI.eCurrentPage == SC_PAGE_LOGS) {
+    _scRenderLogs(hMemDC, cr);
   }
+  _scRenderScrollbar(hMemDC, _scPageScrollbar(cr));
   if (gUI.iExpandedDropdown >= 0) {
     _scRenderDropdownPopup(hMemDC, cr);
   }
@@ -1181,13 +1234,8 @@ _scHandleMouseMove(POINT pt, RECT cr) {
     }
   }
 
-  gUI.bHoveredScroll = false;
-  if (gUI.eCurrentPage == SC_PAGE_GALLERY) {
-    scScrollGeom sg = _scGalleryScrollbar(cr);
-    if (sg.bVisible && PtInRect(&sg.rcThumb, pt)) {
-      gUI.bHoveredScroll = true;
-    }
-  }
+  scScrollGeom sg = _scPageScrollbar(cr);
+  gUI.bHoveredScroll = sg.bVisible && PtInRect(&sg.rcThumb, pt);
 
   s32 iHit = gUI.bHoveredScroll ? -1 : _scWidgetAt(&gUI.aPages[gUI.eCurrentPage], pt);
   gUI.iHoveredWidget = iHit;
@@ -1218,12 +1266,11 @@ _scHandleLeftDown(POINT pt, RECT cr) {
     return;
   }
 
-  if (gUI.eCurrentPage == SC_PAGE_GALLERY) {
-    scScrollGeom sg = _scGalleryScrollbar(cr);
-    if (_scScrollbarHit(sg, pt)) {
-      _scBeginScrollDrag(&gUI.aPages[SC_PAGE_GALLERY].scroll.nScrollY, sg, gUI.aPages[SC_PAGE_GALLERY].scroll.nMaxScrollY, pt);
-      return;
-    }
+  scPage* pCurrent = &gUI.aPages[gUI.eCurrentPage];
+  scScrollGeom sg = _scPageScrollbar(cr);
+  if (_scScrollbarHit(sg, pt)) {
+    _scBeginScrollDrag(&pCurrent->scroll.nScrollY, sg, pCurrent->scroll.nMaxScrollY, pt);
+    return;
   }
 
   for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
@@ -1416,8 +1463,8 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         scDropdownGeom dg = _scDropdownGeom(pWidget, cr);
         gUI.iDropdownScrollY = _scClamp(gUI.iDropdownScrollY - iDelta * 28, 0, dg.iMaxScroll);
         InvalidateRect(hWnd, NULL, FALSE);
-      } else if (gUI.eCurrentPage == SC_PAGE_GALLERY) {
-        scPage* pPage = &gUI.aPages[SC_PAGE_GALLERY];
+      } else {
+        scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
         if (pPage->scroll.nMaxScrollY > 0) {
           pPage->scroll.nScrollY = _scClamp(pPage->scroll.nScrollY - iDelta * 40, 0, pPage->scroll.nMaxScrollY);
           InvalidateRect(hWnd, NULL, FALSE);
@@ -1599,6 +1646,7 @@ _scUISetupTheme() {
     pTheme->dwTextFaint   = RGB(122, 122, 122);
     pTheme->dwPillOff     = RGB(158, 158, 158);
     pTheme->dwOk          = RGB(108, 203, 95);
+    pTheme->dwWarn        = RGB(230, 180, 80);
     pTheme->dwError       = RGB(255, 99, 97);
     pTheme->dwScrollThumb = RGB(170, 170, 170);
     pTheme->dwAccentHover = _scBlendColor(pTheme->dwAccent, RGB(255, 255, 255), 0.15f);
@@ -1616,6 +1664,7 @@ _scUISetupTheme() {
     pTheme->dwTextFaint   = RGB(142, 142, 142);
     pTheme->dwPillOff     = RGB(134, 134, 134);
     pTheme->dwOk          = RGB(15, 123, 15);
+    pTheme->dwWarn        = RGB(176, 124, 0);
     pTheme->dwError       = RGB(196, 43, 28);
     pTheme->dwScrollThumb = RGB(120, 120, 120);
     pTheme->dwAccentHover = _scBlendColor(pTheme->dwAccent, RGB(0, 0, 0), 0.15f);
@@ -1625,6 +1674,14 @@ _scUISetupTheme() {
   pTheme->hCardBrush = CreateSolidBrush(pTheme->dwCard);
 
   scLogDebug("Created theme, dark mode: %s", pTheme->bDark ? "true" : "false");
+}
+
+scInternal void
+_scOnLogPushed(void) {
+  if (gUI.hWindow && gUI.eCurrentPage == SC_PAGE_LOGS) {
+    gUI.bNeedsLayout = true;
+    InvalidateRect(gUI.hWindow, NULL, FALSE);
+  }
 }
 
 scInternal void
@@ -1640,6 +1697,10 @@ _scSetupPages() {
   scPage* pGallery = &gUI.aPages[SC_PAGE_GALLERY];
   pGallery->szKey     = "Gallery";
   pGallery->pfnLayout = _scLayoutGallery;
+
+  scPage* pLogs = &gUI.aPages[SC_PAGE_LOGS];
+  pLogs->szKey     = "Logs";
+  pLogs->pfnLayout = _scLayoutLogs;
 }
 
 void scUIOpenWindow() {
@@ -1658,6 +1719,8 @@ void scUIOpenWindow() {
     gUI.iEditingHotkey    = -1;
     gUI.iExpandedDropdown = -1;
     gUI.iDropdownHover    = -1;
+
+    scLogSetSink(_scOnLogPushed);
   }
 
   _scSetupPages();
