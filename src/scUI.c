@@ -43,7 +43,7 @@ typedef struct {
       s32                nOptionCount;
       void (*pfnSelect)(s32 iIndex);
     } dropdown;
-    struct { void (*pfnClick)(void); } button;
+    struct { void (*pfnClick)(s32 iParam); s32 iParam; } button;
     struct { scHotkeyID eHotkey; }     hotkey;
   } u;
 } scWidget;
@@ -144,7 +144,7 @@ static scUI gUI;
 static HHOOK gKeyboardHook;
 
 #define WINDOW_MIN_WIDTH  ((s32)550)
-#define WINDOW_MIN_HEIGHT ((s32)328)
+#define WINDOW_MIN_HEIGHT ((s32)340)
 
 #define SIDEBAR_WIDTH   150
 #define CONTENT_LEFT    160
@@ -367,11 +367,12 @@ _scMakeToggle(RECT rcLayout, const wchar_t* wszText, bool* pValue) {
 }
 
 scInternal scWidget
-_scMakeButton(RECT rcLayout, const wchar_t* wszText, void (*pfnClick)()) {
+_scMakeButton(RECT rcLayout, const wchar_t* wszText, void (*pfnClick)(s32 iParam), s32 iParam) {
   scWidget w = { 0 };
   w.eType           = SC_WIDGET_BUTTON;
   w.rcLayout        = rcLayout;
   w.u.button.pfnClick = pfnClick;
+  w.u.button.iParam   = iParam;
   wcscpy_s(w.wszText, 128, wszText);
   return w;
 }
@@ -501,8 +502,7 @@ _scDrawDropdown(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
   bool bExpanded = gUI.iExpandedDropdown >= 0 && gUI.iExpandedDropdown < pPage->nWidgetCount &&
                    &pPage->aWidgets[gUI.iExpandedDropdown] == pWidget;
 
-  RECT lr = pWidget->rcLayout;
-  RECT box = { _scScale(lr.right - 165), _scScale(lr.top + 6), _scScale(lr.right - 15), _scScale(lr.bottom - 6) };
+  RECT box = { r.right - _scScale(165), r.top + _scScale(6), r.right - _scScale(15), r.bottom - _scScale(6) };
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
   gpFillRound(pGraphics, r, _scRoundRad(), gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
@@ -711,15 +711,15 @@ _scDropdownGeom(scWidget* pWidget, RECT cr) {
   s32 nOptions   = pWidget->u.dropdown.nOptionCount;
   dg.iItemHeight = _scScale(28);
 
-  RECT lr = pWidget->rcLayout;
-  s32 iSpaceBelow = cr.bottom - _scScale(lr.bottom);
+  RECT r = _scWidgetScaledRect(&gUI.aPages[gUI.eCurrentPage], pWidget);
+  s32 iSpaceBelow = cr.bottom - r.bottom;
   s32 iMaxVisible = (iSpaceBelow - _scScale(20)) / dg.iItemHeight;
   if (iMaxVisible < 1) iMaxVisible = 1;
   dg.nVisible = nOptions < iMaxVisible ? nOptions : iMaxVisible;
 
-  dg.rcBox.left   = _scScale(lr.right - 165);
-  dg.rcBox.top    = _scScale(lr.bottom - 6);
-  dg.rcBox.right  = _scScale(lr.right - 15);
+  dg.rcBox.left   = r.right - _scScale(165);
+  dg.rcBox.top    = r.bottom - _scScale(6);
+  dg.rcBox.right  = r.right - _scScale(15);
   dg.rcBox.bottom = dg.rcBox.top + dg.nVisible * dg.iItemHeight;
 
   dg.bHasScroll = nOptions > dg.nVisible;
@@ -801,7 +801,8 @@ _scRenderDropdownPopup(HDC hDC, RECT cr) {
 // Pages
 //------------------------------------------------------------------------
 scInternal void
-_scOnBrowseClicked() {
+_scOnBrowseClicked(s32 iParam) {
+  (void)iParam;
   bool bComInit = SUCCEEDED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED));
 
   IFileOpenDialog* pDialog = NULL;
@@ -845,8 +846,28 @@ _scOnLanguageSelected(s32 iIndex) {
 scInternal void
 _scLayoutGeneral(scPage* pPage, RECT rc) {
   pPage->nWidgetCount = 0;
+  s32 iY = 20;
+  for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
+    if (i == SC_HOTKEY_OCR && !gApp->bIsGeWin10) {
+      continue;
+    }
+    _scPagePush(pPage, _scMakeButton((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 35 }, scLocaleGet(scCaptureActionNames[i]), scAppRunHandlerFromActionID, i));
+    iY += 40;
+  }
+
+  pPage->scroll.nContentH   = iY + 20;
+  pPage->scroll.nMaxScrollY = pPage->scroll.nContentH - rc.bottom;
+  if (pPage->scroll.nMaxScrollY < 0) {
+    pPage->scroll.nMaxScrollY = 0;
+  }
+  pPage->scroll.nScrollY = _scClamp(pPage->scroll.nScrollY, 0, pPage->scroll.nMaxScrollY);
+}
+
+scInternal void
+_scLayoutSettings(scPage* pPage, RECT rc) {
+  pPage->nWidgetCount = 0;
   _scPagePush(pPage, _scMakeLabel((RECT){ CONTENT_LEFT, 20, 500, 40 }, scLocaleGet("Screenshot Destination"), true));
-  _scPagePush(pPage, _scMakeButton((RECT){ rc.right - 120, 42, rc.right - 20, 72 }, scLocaleGet("Browse..."), _scOnBrowseClicked));
+  _scPagePush(pPage, _scMakeButton((RECT){ rc.right - 120, 42, rc.right - 20, 72 }, scLocaleGet("Browse..."), _scOnBrowseClicked, 0));
 
   s32 iY = 90;
 
@@ -860,15 +881,22 @@ _scLayoutGeneral(scPage* pPage, RECT rc) {
   _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Run on Startup"), &gApp->config.bRunAtStartup));
   iY += 45;
   _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Play sound on capture"), &gApp->config.bPlaySoundOnAction));
-}
+  iY += 45;
 
-scInternal void
-_scLayoutSettings(scPage* pPage, RECT rc) {
-  pPage->nWidgetCount = 0;
+  _scPagePush(pPage, _scMakeLabel((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, L"Input Settings", true));
+  iY += 25;
+
   for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
-    s32 iTop = 20 + i * 35;
-    _scPagePush(pPage, _scMakeHotkey((RECT){ CONTENT_LEFT, iTop, rc.right - 20, iTop + 30 }, (scHotkeyID)i));
+    _scPagePush(pPage, _scMakeHotkey((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 30 }, (scHotkeyID)i));
+    iY += 35;
   }
+
+  pPage->scroll.nContentH   = iY + 20;
+  pPage->scroll.nMaxScrollY = pPage->scroll.nContentH - rc.bottom;
+  if (pPage->scroll.nMaxScrollY < 0) {
+    pPage->scroll.nMaxScrollY = 0;
+  }
+  pPage->scroll.nScrollY = _scClamp(pPage->scroll.nScrollY, 0, pPage->scroll.nMaxScrollY);
 }
 
 scInternal bool
@@ -1068,7 +1096,8 @@ scInternal void
 _scRenderPathField(HDC hDC, RECT cr) {
   scUITheme* t = &gUI.theme;
   f32 fRad = 4.0f * gUI.fUIScale;
-  RECT box = { _scScale(CONTENT_LEFT), _scScale(42), cr.right - _scScale(130), _scScale(72) };
+  s32 iScroll = gUI.aPages[gUI.eCurrentPage].scroll.nScrollY;
+  RECT box = { _scScale(CONTENT_LEFT), _scScale(42 - iScroll), cr.right - _scScale(130), _scScale(72 - iScroll) };
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
   gpFillRound(pGraphics, box, fRad, gpColor(t->dwCard, 255));
@@ -1142,7 +1171,7 @@ _scRender(HDC hDC) {
   FillRect(hMemDC, &cr, gUI.theme.hBackgroundBrush);
 
   _scRenderSidebar(hMemDC, cr);
-  if (gUI.eCurrentPage == SC_PAGE_GENERAL) {
+  if (gUI.eCurrentPage == SC_PAGE_SETTINGS) {
     _scRenderPathField(hMemDC, cr);
   }
   _scRenderCurrentPage(hMemDC, cr);
@@ -1174,7 +1203,7 @@ _scOnWidgetClicked(scWidget* pWidget) {
     }
     case SC_WIDGET_BUTTON: {
       if (pWidget->u.button.pfnClick) {
-        pWidget->u.button.pfnClick();
+        pWidget->u.button.pfnClick(pWidget->u.button.iParam);
       }
       break;
     }
@@ -1289,8 +1318,8 @@ _scHandleLeftDown(POINT pt, RECT cr) {
 
   scWidget* pWidget = &pPage->aWidgets[iHit];
   if (pWidget->eType == SC_WIDGET_DROPDOWN) {
-    RECT lr = pWidget->rcLayout;
-    RECT box = { _scScale(lr.right - 165), _scScale(lr.top + 6), _scScale(lr.right - 15), _scScale(lr.bottom - 6) };
+    RECT r = _scWidgetScaledRect(pPage, pWidget);
+    RECT box = { r.right - _scScale(165), r.top + _scScale(6), r.right - _scScale(15), r.bottom - _scScale(6) };
     if (PtInRect(&box, pt)) {
       gUI.iExpandedDropdown = iHit;
       gUI.iDropdownScrollY  = 0;
