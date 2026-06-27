@@ -253,6 +253,10 @@ _scOcrBeginScan(scCaptureContext* pCtx) {
 //------------------------------------------------------------------------
 extern "C" bool
 _scOcrOnHotkeyPressed(scCaptureContext* pCtx) {
+  if (!gApp->bIsGeWin10) {
+    scLogWarn("Somehow '_scOcrOnHotkeyPressed' was called when 'bIsGeWin10' is false?");
+    return true;
+  }
   scCtxRequestCaptureArea(pCtx);
   if (gApp->pCaptureContext == pCtx) {
     _scOcrBeginScan(pCtx);

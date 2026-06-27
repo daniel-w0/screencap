@@ -155,17 +155,17 @@ _startRecording(scRecordContext* pCtx, scRect rect) {
   swprintf(pCtx->wszSavePath, MAX_PATH, L"%ls\\%ls", wszDir, wszName);
 
   wchar_t wszCmd[1024];
-  //if (_sc_is_win10_or_greater()) {
+  if (gApp->bIsGeWin10) {
     swprintf(wszCmd, ARRAYSIZE(wszCmd),
              L"\"%ls\" -y -f gdigrab -framerate %d -offset_x %d -offset_y %d "
              L"-video_size %dx%d -i desktop -c:v libx264 -pix_fmt yuv420p \"%ls\"",
              pCtx->wszFFmpegPath, gApp->config.iFFmpegFramerate, rect.x, rect.y, w, h, pCtx->wszSavePath);
-  //} else {
-    //swprintf(wszCmd, ARRAYSIZE(wszCmd),
-    //         L"\"%ls\" -y -f gdigrab -framerate 30 -offset_x %d -offset_y %d "
-    //         L"-video_size %dx%d -i desktop -c:v mpeg4 -qscale:v 4 \"%ls\"",
-    //         pCtx->wszFFmpegPath, rect.X, rect.Y, w, h, wszSavePath);
-  //}
+  } else {
+    swprintf(wszCmd, ARRAYSIZE(wszCmd),
+             L"\"%ls\" -y -f gdigrab -framerate %d -offset_x %d -offset_y %d "
+             L"-video_size %dx%d -i desktop -c:v mpeg4 -qscale:v 4 \"%ls\"",
+             pCtx->wszFFmpegPath, gApp->config.iFFmpegFramerate, rect.x, rect.y, w, h, pCtx->wszSavePath);
+  }
 
   HANDLE hCon = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
   bool   bHaveConsole = (hCon != INVALID_HANDLE_VALUE);
