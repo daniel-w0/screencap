@@ -66,8 +66,8 @@ _scGrabScaled(HDC hFrozenDC, int srcX, int srcY, int srcW, int srcH, int dstW, i
     GetDIBits(hMemDC, hBitmap, 0, dstH, pBuf, (BITMAPINFO*)&bih, DIB_RGB_COLORS);
   }
 
-  DeleteObject(hBitmap);
   DeleteDC(hMemDC);
+  DeleteObject(hBitmap);
   return pBuf;
 }
 

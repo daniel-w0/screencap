@@ -807,6 +807,12 @@ void scDestroyCaptureContext(scCaptureContext* pCtx) {
     DeleteObject(pCtx->hFrozenBitmap);
     scLogDebug("Destroyed frozen bitmap");
   }
+  if (pCtx->hOverlayMemDC) {
+    DeleteDC(pCtx->hOverlayMemDC);
+  }
+  if (pCtx->hOverlayMemBitmap) {
+    DeleteObject(pCtx->hOverlayMemBitmap);
+  }
   if (pCtx->hMagDC) {
     DeleteDC(pCtx->hMagDC);
     scLogDebug("Destroyed magnifier dc");
