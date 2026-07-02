@@ -153,6 +153,7 @@ void scAppDestroy();
 void scAppRunHandlerFromActionID(scHotkeyID iHotkeyID);
 
 void scSaveConfig();
+void scSetRunOnStartup(bool bEnable);
 
 //------------------------------------------------------------------------
 // Utils

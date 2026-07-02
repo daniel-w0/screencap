@@ -395,6 +395,29 @@ void scSaveConfig() {
   scLogInfo("Config saved");
 }
 
+void scSetRunOnStartup(bool bEnable) {
+  HKEY hKey;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE, &hKey) != ERROR_SUCCESS) {
+    return;
+  }
+
+  if (bEnable) {
+    wchar_t wszExePath[MAX_PATH];
+    DWORD dwLen = GetModuleFileNameW(NULL, wszExePath, MAX_PATH);
+    if (dwLen > 0 && dwLen < MAX_PATH) {
+      wchar_t wszQuoted[MAX_PATH + 2];
+      int iLen = _snwprintf_s(wszQuoted, MAX_PATH + 2, _TRUNCATE, L"\"%s\"", wszExePath);
+      RegSetValueExW(hKey, L"Screencap", 0, REG_SZ, (const BYTE*)wszQuoted, (DWORD)((iLen + 1) * sizeof(wchar_t)));
+      scLogInfo("Enabled run on startup");
+    }
+  } else {
+    RegDeleteValueW(hKey, L"Screencap");
+    scLogInfo("Disabled run on startup");
+  }
+
+  RegCloseKey(hKey);
+}
+
 //------------------------------------------------------------------------
 // Window Procedure
 //------------------------------------------------------------------------
@@ -918,6 +941,8 @@ bool scAppInit() {
   if (!scConfigLoad()) {
     return false;
   }
+
+  scSetRunOnStartup(gApp->config.bRunAtStartup);
 
   scLocaleInit();
 

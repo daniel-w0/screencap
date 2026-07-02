@@ -36,7 +36,7 @@ typedef struct {
   char         szPath[MAX_PATH];
   union {
     struct { bool bBold; }             label;
-    struct { bool* pValue; }           toggle;
+    struct { bool* pValue; void (*pfnChange)(bool bValue); } toggle;
     struct {
       const char* const* aOptions;
       s32                nOptionCount;
@@ -357,11 +357,12 @@ _scMakeLabel(RECT rcLayout, const wchar_t* wszText, bool bBold) {
 }
 
 scInternal scWidget
-_scMakeToggle(RECT rcLayout, const wchar_t* wszText, bool* pValue) {
+_scMakeToggle(RECT rcLayout, const wchar_t* wszText, bool* pValue, void (*pfnChange)(bool bValue)) {
   scWidget w = { 0 };
-  w.eType         = SC_WIDGET_TOGGLE;
-  w.rcLayout      = rcLayout;
-  w.u.toggle.pValue = pValue;
+  w.eType            = SC_WIDGET_TOGGLE;
+  w.rcLayout         = rcLayout;
+  w.u.toggle.pValue  = pValue;
+  w.u.toggle.pfnChange = pfnChange;
   wcscpy_s(w.wszText, 128, wszText);
   return w;
 }
@@ -917,15 +918,15 @@ _scLayoutSettings(scPage* pPage, RECT rc) {
   }
 
   // Rest of the options
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Copy screenshot to Clipboard"), &gApp->config.bCopyToClipboard));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Copy screenshot to Clipboard"), &gApp->config.bCopyToClipboard, NULL));
   iY += 45;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Run on Startup"), &gApp->config.bRunAtStartup));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Run on Startup"), &gApp->config.bRunAtStartup, scSetRunOnStartup));
   iY += 45;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Play sound on capture"), &gApp->config.bPlaySoundOnAction));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Play sound on capture"), &gApp->config.bPlaySoundOnAction, NULL));
   iY += 45;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Show notification on capture"), &gApp->config.bShowNotification));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Show notification on capture"), &gApp->config.bShowNotification, NULL));
   iY += 45;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Start Minimized"), &gApp->config.bStartMinimized));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Start Minimized"), &gApp->config.bStartMinimized, NULL));
   iY += 45;
 
   _scPagePush(pPage, _scMakeLabel((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, L"Input Settings", true));
@@ -1242,6 +1243,9 @@ _scOnWidgetClicked(scWidget* pWidget) {
   switch (pWidget->eType) {
     case SC_WIDGET_TOGGLE: {
       *pWidget->u.toggle.pValue = !*pWidget->u.toggle.pValue;
+      if (pWidget->u.toggle.pfnChange) {
+        pWidget->u.toggle.pfnChange(*pWidget->u.toggle.pValue);
+      }
       scSaveConfig();
       InvalidateRect(gUI.hWindow, NULL, FALSE);
       break;
