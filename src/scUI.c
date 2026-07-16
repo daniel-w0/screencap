@@ -10,6 +10,7 @@
 
 #include <windowsx.h>
 #include <shobjidl.h>
+#include <shlobj.h>
 
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
@@ -113,6 +114,17 @@ typedef struct {
 } scUITheme;
 
 typedef struct {
+  IDropSource base;
+  LONG        cRef;
+} scDropSource;
+
+typedef struct {
+  bool bPending;
+  s32  iWidgetIndex;
+  POINT ptStart;
+} scImageDragPending;
+
+typedef struct {
   scUITheme theme;
   HWND      hWindow;
   bool      bRegisteredClass;
@@ -132,8 +144,9 @@ typedef struct {
 
   s32 iEditingHotkey;
 
-  bool         bHoveredScroll;
+  bool bHoveredScroll;
   scScrollDrag drag;
+  scImageDragPending imageDrag;
 
   scThumb* aThumbs;
   s32      nThumbCount;
@@ -161,6 +174,95 @@ scInternal s32 _scScale(s32 nVal)   { return (s32)(nVal * gUI.fUIScale); }
 scInternal s32 _scUnscale(s32 nVal) { return (s32)(nVal / gUI.fUIScale); }
 scInternal s32 _scClamp(s32 v, s32 lo, s32 hi) { return v < lo ? lo : (v > hi ? hi : v); }
 scInternal f32 _scRoundRad() { return 6.0f * gUI.fUIScale; }
+
+scInternal HRESULT STDMETHODCALLTYPE
+_scDropSourceQueryInterface(IDropSource* pThis, REFIID riid, void** ppv) {
+  if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDropSource)) {
+    *ppv = pThis;
+    pThis->lpVtbl->AddRef(pThis);
+    return S_OK;
+  }
+  *ppv = NULL;
+  return E_NOINTERFACE;
+}
+
+scInternal ULONG STDMETHODCALLTYPE
+_scDropSourceAddRef(IDropSource* pThis) {
+  return InterlockedIncrement(&((scDropSource*)pThis)->cRef);
+}
+
+scInternal ULONG STDMETHODCALLTYPE
+_scDropSourceRelease(IDropSource* pThis) {
+  scDropSource* p = (scDropSource*)pThis;
+  LONG c = InterlockedDecrement(&p->cRef);
+  if (c == 0) {
+    free(p);
+  }
+  return c;
+}
+
+scInternal HRESULT STDMETHODCALLTYPE
+_scDropSourceQueryContinueDrag(IDropSource* pThis, BOOL fEscapePressed, DWORD grfKeyState) {
+  (void)pThis;
+  if (fEscapePressed) {
+    return DRAGDROP_S_CANCEL;
+  }
+  if (!(grfKeyState & MK_LBUTTON)) {
+    return DRAGDROP_S_DROP;
+  }
+  return S_OK;
+}
+
+scInternal HRESULT STDMETHODCALLTYPE
+_scDropSourceGiveFeedback(IDropSource* pThis, DWORD dwEffect) {
+  (void)pThis; (void)dwEffect;
+  return DRAGDROP_S_USEDEFAULTCURSORS;
+}
+
+static IDropSourceVtbl gDropSourceVtbl = {
+  _scDropSourceQueryInterface,
+  _scDropSourceAddRef,
+  _scDropSourceRelease,
+  _scDropSourceQueryContinueDrag,
+  _scDropSourceGiveFeedback
+};
+
+scInternal IDropSource*
+_scCreateDropSource() {
+  scDropSource* p = (scDropSource*)malloc(sizeof(scDropSource));
+  p->base.lpVtbl = &gDropSourceVtbl;
+  p->cRef        = 1;
+  return (IDropSource*)p;
+}
+
+scInternal void
+_scStartImageDrag(const char* szPath) {
+  wchar_t wszPath[MAX_PATH];
+  MultiByteToWideChar(CP_ACP, 0, szPath, -1, wszPath, MAX_PATH);
+
+  IShellItem* pItem = NULL;
+  if (FAILED(SHCreateItemFromParsingName(wszPath, NULL, &IID_IShellItem, (void**)&pItem))) {
+    return;
+  }
+
+  IShellItemArray* pItemArray = NULL;
+  if (FAILED(SHCreateShellItemArrayFromShellItem(pItem, &IID_IShellItemArray, (void**)&pItemArray))) {
+    pItem->lpVtbl->Release(pItem);
+    return;
+  }
+
+  IDataObject* pDataObject = NULL;
+  if (SUCCEEDED(pItemArray->lpVtbl->BindToHandler(pItemArray, NULL, &BHID_DataObject, &IID_IDataObject, (void**)&pDataObject))) {
+    IDropSource* pDropSource = _scCreateDropSource();
+    DWORD dwEffect = 0;
+    DoDragDrop(pDataObject, pDropSource, DROPEFFECT_COPY, &dwEffect);
+    pDropSource->lpVtbl->Release(pDropSource);
+    pDataObject->lpVtbl->Release(pDataObject);
+  }
+
+  pItemArray->lpVtbl->Release(pItemArray);
+  pItem->lpVtbl->Release(pItem);
+}
 
 scInternal f32 _scGetDPIScale() {
   HDC hDC = GetDC(gUI.hWindow);
@@ -1376,6 +1478,11 @@ _scHandleLeftDown(POINT pt, RECT cr) {
       InvalidateRect(gUI.hWindow, NULL, TRUE);
     }
     return;
+  } else if (pWidget->eType == SC_WIDGET_IMAGE) {
+    gUI.imageDrag.bPending      = true;
+    gUI.imageDrag.iWidgetIndex  = iHit;
+    gUI.imageDrag.ptStart       = pt;
+    return;
   }
 
   _scOnWidgetClicked(pWidget);
@@ -1513,11 +1620,29 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     case WM_SIZE: {
       gUI.iExpandedDropdown = -1;
       gUI.bNeedsLayout = true;
+      gUI.imageDrag.bPending = false;
       InvalidateRect(hWnd, NULL, TRUE);
       return 0;
     }
     case WM_MOUSEMOVE: {
       POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+      if (gUI.imageDrag.bPending) {
+        s32 dx = pt.x - gUI.imageDrag.ptStart.x;
+        s32 dy = pt.y - gUI.imageDrag.ptStart.y;
+        if (abs(dx) > GetSystemMetrics(SM_CXDRAG) || abs(dy) > GetSystemMetrics(SM_CYDRAG)) {
+          s32 iIdx = gUI.imageDrag.iWidgetIndex;
+          gUI.imageDrag.bPending = false;
+          scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
+          if (iIdx >= 0 && iIdx < pPage->nWidgetCount && pPage->aWidgets[iIdx].eType == SC_WIDGET_IMAGE) {
+            char szPath[MAX_PATH];
+            strcpy_s(szPath, MAX_PATH, pPage->aWidgets[iIdx].szPath);
+            _scStartImageDrag(szPath);
+          }
+          return 0;
+        }
+      }
+
       RECT cr = _scEnsureLayout();
       if (_scHandleMouseMove(pt, cr)) {
         InvalidateRect(hWnd, NULL, FALSE);
@@ -1557,6 +1682,14 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       return 0;
     }
     case WM_LBUTTONUP: {
+      if (gUI.imageDrag.bPending) {
+        s32 iIdx = gUI.imageDrag.iWidgetIndex;
+        gUI.imageDrag.bPending = false;
+        scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
+        if (iIdx >= 0 && iIdx < pPage->nWidgetCount) {
+          _scOnWidgetClicked(&pPage->aWidgets[iIdx]);
+        }
+      }
       if (gUI.drag.bActive) {
         gUI.drag.bActive = false;
         ReleaseCapture();
@@ -1784,6 +1917,8 @@ _scSetupPages() {
 void scUIOpenWindow() {
   static ULONG_PTR pGdiPlusToken = 0;
   if (!pGdiPlusToken) {
+    scLogSetSink(_scOnLogPushed);
+
     gp_startup(&pGdiPlusToken);
     scLogDebug("pGdiPlusToken: %p", pGdiPlusToken);
     if (!pGdiPlusToken) {
@@ -1791,14 +1926,14 @@ void scUIOpenWindow() {
       return;
     }
 
+    OleInitialize(NULL);
+
     gUI.eCurrentPage      = SC_PAGE_GENERAL;
     gUI.eHoveredTab       = SC_PAGE_NONE;
     gUI.iHoveredWidget    = -1;
     gUI.iEditingHotkey    = -1;
     gUI.iExpandedDropdown = -1;
     gUI.iDropdownHover    = -1;
-
-    scLogSetSink(_scOnLogPushed);
   }
 
   _scSetupPages();
@@ -1873,6 +2008,7 @@ void scUISetCurrentPage(scPageID ePageID) {
     _scCancelHotkeyRecording();
   }
 
+  gUI.imageDrag.bPending = false;
   gUI.eCurrentPage      = ePageID;
   gUI.iHoveredWidget    = -1;
   gUI.iExpandedDropdown = -1;
