@@ -1026,8 +1026,10 @@ _scLayoutSettings(scPage* pPage, RECT rc) {
   iY += 45;
   _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Play sound on capture"), &gApp->config.bPlaySoundOnAction, NULL));
   iY += 45;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Show notification on capture"), &gApp->config.bShowNotification, NULL));
-  iY += 45;
+  if (gApp->bIsGeWin10) {
+    _scPagePush(pPage, _scMakeToggle((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Show notification on capture"), &gApp->config.bShowNotification, NULL));
+    iY += 45;
+  }
   _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Start Minimized"), &gApp->config.bStartMinimized, NULL));
   iY += 45;
 
