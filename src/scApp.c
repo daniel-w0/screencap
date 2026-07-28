@@ -140,23 +140,26 @@ _scGetConfigFilepath(wchar_t wszPath[SC_PATH_MAX_LEN]) {
 
 scInternal void
 _scConfigCreateDefaults(scAppConfig* pOutConfig) {
-  pOutConfig->aHotkeys[SC_HOTKEY_SCREENSHOT]          = (scHotkey){ .eID = SC_HOTKEY_SCREENSHOT         , .uModifiers = 0,                       .uKey = VK_SNAPSHOT, .bRegistered = false };
-  pOutConfig->aHotkeys[SC_HOTKEY_CLIPBOARD]           = (scHotkey){ .eID = SC_HOTKEY_CLIPBOARD          , .uModifiers = MOD_CONTROL | MOD_SHIFT, .uKey = VK_SNAPSHOT, .bRegistered = false };
-  pOutConfig->aHotkeys[SC_HOTKEY_OCR]                 = (scHotkey){ .eID = SC_HOTKEY_OCR                , .uModifiers = MOD_CONTROL | MOD_ALT,   .uKey = VK_SNAPSHOT, .bRegistered = false };
-  pOutConfig->aHotkeys[SC_HOTKEY_ACTIVE_WINDOW]       = (scHotkey){ .eID = SC_HOTKEY_ACTIVE_WINDOW       , .uModifiers = MOD_ALT,                .uKey = VK_SNAPSHOT, .bRegistered = false };
-  pOutConfig->aHotkeys[SC_HOTKEY_ACTIVE_MONITOR]      = (scHotkey){ .eID = SC_HOTKEY_ACTIVE_MONITOR      , .uModifiers = MOD_CONTROL,            .uKey = VK_SNAPSHOT, .bRegistered = false };
+  pOutConfig->aHotkeys[SC_HOTKEY_SCREENSHOT]          = (scHotkey){ .eID = SC_HOTKEY_SCREENSHOT,          .uModifiers = 0,                       .uKey = VK_SNAPSHOT, .bRegistered = false };
+  pOutConfig->aHotkeys[SC_HOTKEY_CLIPBOARD]           = (scHotkey){ .eID = SC_HOTKEY_CLIPBOARD,           .uModifiers = MOD_CONTROL | MOD_SHIFT, .uKey = VK_SNAPSHOT, .bRegistered = false };
+  pOutConfig->aHotkeys[SC_HOTKEY_OCR]                 = (scHotkey){ .eID = SC_HOTKEY_OCR,                 .uModifiers = MOD_CONTROL | MOD_ALT,   .uKey = VK_SNAPSHOT, .bRegistered = false };
+  pOutConfig->aHotkeys[SC_HOTKEY_ACTIVE_WINDOW]       = (scHotkey){ .eID = SC_HOTKEY_ACTIVE_WINDOW,       .uModifiers = MOD_ALT,                 .uKey = VK_SNAPSHOT, .bRegistered = false };
+  pOutConfig->aHotkeys[SC_HOTKEY_ACTIVE_MONITOR]      = (scHotkey){ .eID = SC_HOTKEY_ACTIVE_MONITOR,      .uModifiers = MOD_CONTROL,             .uKey = VK_SNAPSHOT, .bRegistered = false };
   pOutConfig->aHotkeys[SC_HOTKEY_FALLBACK_SCREENSHOT] = (scHotkey){ .eID = SC_HOTKEY_FALLBACK_SCREENSHOT, .uModifiers = MOD_CONTROL | MOD_ALT,   .uKey = 'C',         .bRegistered = false };
-  pOutConfig->aHotkeys[SC_HOTKEY_RECORD]              = (scHotkey){ .eID = SC_HOTKEY_RECORD              , .uModifiers = MOD_SHIFT,              .uKey = VK_SNAPSHOT, .bRegistered = false };
+  pOutConfig->aHotkeys[SC_HOTKEY_RECORD]              = (scHotkey){ .eID = SC_HOTKEY_RECORD,              .uModifiers = MOD_SHIFT,               .uKey = VK_SNAPSHOT, .bRegistered = false };
+  pOutConfig->aHotkeys[SC_HOTKEY_REPLAY_BUFFER]       = (scHotkey){ .eID = SC_HOTKEY_REPLAY_BUFFER,       .uModifiers = MOD_ALT,                 .uKey = VK_F10,      .bRegistered = false };
 
   pOutConfig->iFFmpegFramerate = 24;
   _scGetDefaultSaveRootPath(pOutConfig->wszSavePath); // defaults to current directory if fails
   _scGetSystemLanguage(pOutConfig->sLanguageCode); // defaults to en if fails
-    
-  pOutConfig->bCopyToClipboard   = true;
-  pOutConfig->bRunAtStartup      = false;
-  pOutConfig->bPlaySoundOnAction = true;
-  pOutConfig->bShowNotification  = true;
-  pOutConfig->bStartMinimized    = true;
+
+  pOutConfig->iReplayBufferTime   = 30;
+  pOutConfig->bCopyToClipboard    = true;
+  pOutConfig->bRunAtStartup       = false;
+  pOutConfig->bPlaySoundOnAction  = true;
+  pOutConfig->bShowNotification   = true;
+  pOutConfig->bStartMinimized     = true;
+  pOutConfig->bEnableReplayBuffer = false;
 }
 
 scInternal void
@@ -192,6 +195,7 @@ _scWriteConfig(scAppConfig* pConfig, wchar_t* wszPath) {
   WritePrivateProfileStringW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"show_notification",  pConfig->bShowNotification ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"start_minimized",    pConfig->bStartMinimized ? L"1" : L"0", wszActualPath);
+  WritePrivateProfileStringW(L"options", L"replay_buffer_enabled",    pConfig->bEnableReplayBuffer ? L"1" : L"0", wszActualPath);
 
   wchar_t wszFramerate[16];
   _snwprintf_s(wszFramerate, 16, _TRUNCATE, L"%d", pConfig->iFFmpegFramerate);
@@ -239,12 +243,13 @@ _scConfigReadInto(scAppConfig* pConfig, wchar_t* wszPath) {
     wszActualPath = wszLocalPath;
   }
 
-  pConfig->bCopyToClipboard   = GetPrivateProfileIntW(L"options", L"copy_to_clipboard", pConfig->bCopyToClipboard, wszActualPath) != 0;
-  pConfig->bRunAtStartup      = GetPrivateProfileIntW(L"options", L"run_on_startup",    pConfig->bRunAtStartup, wszActualPath) != 0;
-  pConfig->bPlaySoundOnAction = GetPrivateProfileIntW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction, wszActualPath) != 0;
-  pConfig->bShowNotification  = GetPrivateProfileIntW(L"options", L"show_notification",  pConfig->bShowNotification, wszActualPath) != 0;
-  pConfig->bStartMinimized    = GetPrivateProfileIntW(L"options", L"start_minimized",    pConfig->bStartMinimized, wszActualPath) != 0;
-  pConfig->iFFmpegFramerate   = GetPrivateProfileIntW(L"options", L"record_framerate",  pConfig->iFFmpegFramerate, wszActualPath);
+  pConfig->bCopyToClipboard    = GetPrivateProfileIntW(L"options", L"copy_to_clipboard", pConfig->bCopyToClipboard, wszActualPath) != 0;
+  pConfig->bRunAtStartup       = GetPrivateProfileIntW(L"options", L"run_on_startup",    pConfig->bRunAtStartup, wszActualPath) != 0;
+  pConfig->bPlaySoundOnAction  = GetPrivateProfileIntW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction, wszActualPath) != 0;
+  pConfig->bShowNotification   = GetPrivateProfileIntW(L"options", L"show_notification",  pConfig->bShowNotification, wszActualPath) != 0;
+  pConfig->bStartMinimized     = GetPrivateProfileIntW(L"options", L"start_minimized",    pConfig->bStartMinimized, wszActualPath) != 0;
+  pConfig->bEnableReplayBuffer = GetPrivateProfileIntW(L"options", L"replay_buffer_enabled",    pConfig->bEnableReplayBuffer, wszActualPath) != 0;
+  pConfig->iFFmpegFramerate    = GetPrivateProfileIntW(L"options", L"record_framerate",  pConfig->iFFmpegFramerate, wszActualPath);
 
   wchar_t wszDefaultLang[16];
   MultiByteToWideChar(CP_UTF8, 0, pConfig->sLanguageCode, -1, wszDefaultLang, 16);
@@ -994,13 +999,21 @@ void scAppRunHandlerFromActionID(scHotkeyID iHotkeyID) {
 
 void scAppUpdate() {
   MSG msg = { 0 };
-  while (GetMessageA(&msg, NULL, 0, 0) > 0) {
-    if (msg.message == WM_HOTKEY) {
-      scAppRunHandlerFromActionID((s32)msg.wParam);
+  while (msg.message != WM_QUIT) {
+    if (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
+      if (msg.message == WM_QUIT) {
+        break;
+      }
+
+      if (msg.message == WM_HOTKEY) {
+        scAppRunHandlerFromActionID((s32)msg.wParam);
+      }
+
+      TranslateMessage(&msg);
+      DispatchMessageA(&msg);
     }
 
-    TranslateMessage(&msg);
-    DispatchMessageA(&msg);
+    //scReplayBufferUpdate();
   }
 }
 
@@ -1546,6 +1559,7 @@ extern scCaptureHandler scOcrHandler;
 extern scCaptureHandler scActiveWindowHandler;
 extern scCaptureHandler scActiveMonitorHandler;
 extern scCaptureHandler scRecordHandler;
+extern scCaptureHandler scReplayHandler;
 
 void scAppSetupCallbackHandler() {
   scHotkey* pHotkeys = gApp->config.aHotkeys;
@@ -1562,4 +1576,51 @@ void scAppSetupCallbackHandler() {
   _scRegisterHandler(SC_HOTKEY_ACTIVE_MONITOR, &scActiveMonitorHandler);
   _scRegisterHandler(SC_HOTKEY_FALLBACK_SCREENSHOT, &scScreenshotHandler);
   _scRegisterHandler(SC_HOTKEY_RECORD, &scRecordHandler);
+  _scRegisterHandler(SC_HOTKEY_REPLAY_BUFFER, &scReplayHandler);
+}
+
+//------------------------------------------------------------------------
+// Replay Buffer
+void scReplayBufferStart() {
+  memset(&gApp->pReplayBuffer, 0, sizeof(scReplayBuffer));
+
+  wchar_t wszCurrentDirectory[MAX_PATH];
+  GetCurrentDirectoryW(MAX_PATH, wszCurrentDirectory);
+
+  swprintf(gApp->pReplayBuffer.wszTempPath, MAX_PATH, L"%s\\temp_video.mp4", wszCurrentDirectory);
+  scLog(SC_LOG_INFO, "Starting replay buffer (%d seconds)", gApp->config.iReplayBufferTime);
+
+  scRect rect;
+  rect.x = 0;
+  rect.y = 0;
+  rect.w = GetSystemMetrics(SM_CXSCREEN);
+  rect.h = GetSystemMetrics(SM_CYSCREEN);
+  if (scFFmpegStartRecording(&gApp->pReplayBuffer.ffmpegInst, gApp->pReplayBuffer.wszTempPath, rect)) {
+    gApp->pReplayBuffer.uRecordSeconds = 5;
+    gApp->pReplayBuffer.uStartTime = GetTickCount64();
+    gApp->pReplayBuffer.bRecording = true;
+  }
+}
+
+void scReplayBufferSave() {
+  scLog(SC_LOG_INFO, "Saving replay");
+  scFFmpegStopRecording(&gApp->pReplayBuffer.ffmpegInst);
+}
+
+void scReplayBufferUpdate() {
+  if (!gApp->pReplayBuffer.bRecording) {
+    if (gApp->config.bEnableReplayBuffer) {
+      scReplayBufferStart();
+    }
+    return;
+  }
+
+  u64 currentTick = GetTickCount64();
+  u64 elapsedMilliseconds = currentTick - gApp->pReplayBuffer.uStartTime;
+  u64 targetMilliseconds = gApp->pReplayBuffer.uRecordSeconds * 1000;
+
+  if (elapsedMilliseconds >= targetMilliseconds) {
+    gApp->pReplayBuffer.bRecording = false;
+    scFFmpegStopRecording(&gApp->pReplayBuffer.ffmpegInst);
+  }
 }

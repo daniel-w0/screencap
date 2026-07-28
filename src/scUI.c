@@ -1030,6 +1030,8 @@ _scLayoutSettings(scPage* pPage, RECT rc) {
   iY += 45;
   _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Start Minimized"), &gApp->config.bStartMinimized, NULL));
   iY += 45;
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Replay Buffer"), &gApp->config.bEnableReplayBuffer, NULL));
+  iY += 45;
 
   _scPagePush(pPage, _scMakeLabel((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, L"Input Settings", true));
   iY += 25;

@@ -28,6 +28,6 @@ typedef struct {
 #define scInternal static
 #define scGlobal   static
 
-#define SC_PATH_MAX_LEN 255
+#define SC_PATH_MAX_LEN 260
 
 #endif // SC_TYPES_H

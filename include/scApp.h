@@ -3,9 +3,10 @@
 
 #include "pch.h"
 #include "scTypes.h"
+#include "scFfmpegHelper.h"
 
 #define SC_VERSION_MAJOR 1
-#define SC_VERSION_MINOR 3
+#define SC_VERSION_MINOR 4
 #define SC_VERSION_PATCH 0
 
 #define SC_STRINGIZE_(x) #x
@@ -22,6 +23,7 @@ typedef enum {
   SC_HOTKEY_ACTIVE_MONITOR,
   SC_HOTKEY_FALLBACK_SCREENSHOT,
   SC_HOTKEY_RECORD,
+  SC_HOTKEY_REPLAY_BUFFER,
   _SC_HOTKEY_COUNT
 } scHotkeyID;
 
@@ -37,7 +39,8 @@ static const char* scHotkeyIdNames[_SC_HOTKEY_COUNT] = {
   "active_window",
   "current_monitor",
   "fallback_screenshot",
-  "record"
+  "record",
+  "save_replay_buffer"
 };
 
 static const char* scCaptureActionNames[_SC_HOTKEY_COUNT] = {
@@ -47,7 +50,8 @@ static const char* scCaptureActionNames[_SC_HOTKEY_COUNT] = {
   "Take Screenshot (Window)",
   "Take Screenshot (Desktop)",
   "Take Screenshot (Alt)",
-  "Start/Stop Recording"
+  "Start/Stop Recording",
+  "Save Replay Buffer"
 };
 
 typedef struct {
@@ -61,12 +65,15 @@ typedef struct {
   scHotkey aHotkeys[_SC_HOTKEY_COUNT];
   wchar_t  wszSavePath[SC_PATH_MAX_LEN];
   s32      iFFmpegFramerate;
+  s32      iReplayBufferTime;
   char     sLanguageCode[16];
   bool     bCopyToClipboard;
   bool     bRunAtStartup;
   bool     bPlaySoundOnAction;
   bool     bShowNotification;
   bool     bStartMinimized;
+  bool     bEnableReplayBuffer;
+  // todo: sound stuff for replay and recording
 } scAppConfig;
 
 typedef struct {
@@ -123,6 +130,14 @@ typedef struct {
   scImage img;
 } scClipboard;
 
+typedef struct {
+  wchar_t wszTempPath[SC_PATH_MAX_LEN];
+  scFFmpegInstance ffmpegInst;
+  u64 uStartTime;
+  u64 uRecordSeconds;
+  bool bRecording;
+} scReplayBuffer;
+
 typedef struct scCaptureHandler {
   bool (*cbOnHotkeyPressed)(scCaptureContext*    pCtx);
   bool (*cbOnAreaSelected)(scCaptureContext*     pCtx);
@@ -138,6 +153,7 @@ typedef struct {
   scCaptureHandler* aCaptureHandlers[_SC_HOTKEY_COUNT];
   scCaptureContext* pCaptureContext;
   scCaptureHandler* pActiveHandler;
+  scReplayBuffer pReplayBuffer;
   scClipboard stClipboard;
   bool bIsGeWin10;
 } scApp;
@@ -186,5 +202,11 @@ void scPlaySoundOrSkip(scSoundID eSoundID);
 
 void scAppRegisterHotkeys();
 void scAppSetupCallbackHandler();
+
+//------------------------------------------------------------------------
+// Replay Buffer
+void scReplayBufferStart();
+void scReplayBufferSave();
+void scReplayBufferUpdate();
 
 #endif // SC_APP_H
