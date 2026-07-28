@@ -1085,11 +1085,13 @@ u8* _scBitmapToPNG(const scImage* pImage, s32* pOutSize) {
 bool scCopyWindowToImage(HWND hWnd, scImage* pOutImage) {
   RECT wr;
   if (!GetWindowRect(hWnd, &wr)) {
+    scLog(SC_LOG_ERROR, "scCopyWindowToImage failed to get window rect");
     return false;
   }
   s32 wFull = wr.right  - wr.left;
   s32 hFull = wr.bottom - wr.top;
   if (wFull <= 0 || hFull <= 0) {
+    scLog(SC_LOG_ERROR, "scCopyWindowToImage invalid dimensions: %d, %d", wFull, hFull);
     return false;
   }
 
@@ -1106,13 +1108,18 @@ bool scCopyWindowToImage(HWND hWnd, scImage* pOutImage) {
     iOffX = 0; iOffY = 0; w = wFull; h = hFull;
   }
 
+  int nPrintFlags = 0;
+  if (_scIsGeWin10()) {
+    nPrintFlags = PW_RENDERFULLCONTENT;
+  }
+
   HDC hScreenDC = GetDC(NULL);
 
   // Render the whole window (border included) into a temp bitmap.
   HDC     hTempDC  = CreateCompatibleDC(hScreenDC);
   HBITMAP hTempBmp = CreateCompatibleBitmap(hScreenDC, wFull, hFull);
   HBITMAP hTempOld = SelectObject(hTempDC, hTempBmp);
-  BOOL    ok       = PrintWindow(hWnd, hTempDC, PW_RENDERFULLCONTENT);
+  BOOL    ok       = PrintWindow(hWnd, hTempDC, nPrintFlags);
 
   BITMAPINFO bi = { 0 };
   bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
@@ -1141,6 +1148,7 @@ bool scCopyWindowToImage(HWND hWnd, scImage* pOutImage) {
 
   if (!ok || !hDib) {
     if (hDib) DeleteObject(hDib);
+    scLog(SC_LOG_ERROR, "scCopyWindowToImage not okay or hDib is NULL: %d, 0x%p", ok, hDib);
     return false;
   }
 
