@@ -1239,21 +1239,13 @@ _scCompareFileTime(const void* a, const void* b) {
 }
 
 scInternal void
-_scLayoutGallery(scPage* pPage, RECT rc) {
-  pPage->nWidgetCount = 0;
-
-  wchar_t wszDir[MAX_PATH];
-  if (!scGetSavePath(wszDir, MAX_PATH)) {
-    pPage->scroll.nContentH   = 0;
-    pPage->scroll.nMaxScrollY = 0;
-    return;
-  }
-
-  _scFileEntry* aFiles = NULL;
-  s32 nFiles = 0, nFileCap = 0;
-
+_scGalleryLoadImages(const wchar_t* wszPath, _scFileEntry** paOutFiles, s32* pnOutCount, s32* pnOutCap) {
   wchar_t wszPattern[MAX_PATH];
-  _snwprintf_s(wszPattern, MAX_PATH, _TRUNCATE, L"%ls\\*", wszDir);
+  _snwprintf_s(wszPattern, MAX_PATH, _TRUNCATE, L"%ls\\*", wszPath);
+
+  _scFileEntry* aFiles = *paOutFiles;
+  s32 nFiles = *pnOutCount;
+  s32 nFileCap = *pnOutCap;
 
   WIN32_FIND_DATAW fd;
   HANDLE hFind = FindFirstFileW(wszPattern, &fd);
@@ -1272,6 +1264,27 @@ _scLayoutGallery(scPage* pPage, RECT rc) {
     } while (FindNextFileW(hFind, &fd));
     FindClose(hFind);
   }
+
+  *paOutFiles = aFiles;
+  *pnOutCount = nFiles;
+  *pnOutCap   = nFileCap;
+}
+
+scInternal void
+_scLayoutGallery(scPage* pPage, RECT rc) {
+  pPage->nWidgetCount = 0;
+
+  wchar_t wszDir[MAX_PATH];
+  if (!scGetSavePath(wszDir, MAX_PATH)) {
+    pPage->scroll.nContentH   = 0;
+    pPage->scroll.nMaxScrollY = 0;
+    return;
+  }
+
+  _scFileEntry* aFiles = NULL;
+  s32 nFiles = 0, nFileCap = 0;
+
+  _scGalleryLoadImages(wszDir, &aFiles, &nFiles, &nFileCap);
 
   if (nFiles == 0) {
     pPage->scroll.nContentH  = 0;
