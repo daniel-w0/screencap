@@ -203,7 +203,7 @@ static __inline void gpFillRound(GpGraphics* g, RECT r, float rad, ARGB c) {
 
 /* Stroked rounded rect (note the -1 inset, matching your original).
  * Replaces gp_stroke_round(g, r, rad, color, width). width has no default in C. */
-static __inline void gp_stroke_round(GpGraphics* g, RECT r, float rad,
+static __inline void gpStrokeRound(GpGraphics* g, RECT r, float rad,
                                      ARGB c, float width) {
     GpPath* path = 0;
     GpPen*  pen  = 0;
@@ -218,7 +218,7 @@ static __inline void gp_stroke_round(GpGraphics* g, RECT r, float rad,
 }
 
 /* Filled ellipse. Replaces: SolidBrush b(c); g.FillEllipse(&b, x,y,w,h); */
-static __inline void gp_fill_ellipse(GpGraphics* g, float x, float y,
+static __inline void gpFillEllipse(GpGraphics* g, float x, float y,
                                      float w, float h, ARGB c) {
     GpBrush* b = 0;
     GdipCreateSolidFill(c, &b);
@@ -236,7 +236,7 @@ static __inline void gpFillRectI(GpGraphics* g, int x, int y,
 }
 
 /* One-call startup. Replaces the GdiplusStartupInput/GdiplusStartup pair. */
-static __inline void gp_startup(ULONG_PTR* token) {
+static __inline void gpStartup(ULONG_PTR* token) {
     GdiplusStartupInput in;
     in.GdiplusVersion           = 1;
     in.DebugEventCallback       = 0;

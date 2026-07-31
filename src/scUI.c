@@ -559,7 +559,7 @@ _scDrawToggle(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
   gpFillRound(pGraphics, r, _scRoundRad(), gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
-  gp_stroke_round(pGraphics, r, _scRoundRad(), gpColor(t->dwStrokeSoft, 255), 1.0f);
+  gpStrokeRound(pGraphics, r, _scRoundRad(), gpColor(t->dwStrokeSoft, 255), 1.0f);
 
   RECT pill = { r.right - _scScale(55), r.top + _scScale(10), r.right - _scScale(15), r.top + _scScale(30) };
   f32 fPillRad = (pill.bottom - pill.top) / 2.0f;
@@ -567,14 +567,14 @@ _scDrawToggle(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
     gpFillRound(pGraphics, pill, fPillRad, gpColor(bHovered ? t->dwAccentHover : t->dwAccent, 255));
   } else {
     gpFillRound(pGraphics, pill, fPillRad, gpColor(t->dwCardActive, 255));
-    gp_stroke_round(pGraphics, pill, fPillRad, gpColor(t->dwPillOff, 255), 1.0f);
+    gpStrokeRound(pGraphics, pill, fPillRad, gpColor(t->dwPillOff, 255), 1.0f);
   }
 
   f32 fInset = 3.0f * gUI.fUIScale;
   f32 fThumb = (pill.bottom - pill.top) - fInset * 2.0f;
   f32 fThumbX = bOn ? (pill.right - fInset - fThumb) : (pill.left + fInset);
   COLORREF dwThumb = bOn ? (_scColorIsLight(t->dwAccent) ? RGB(0, 0, 0) : RGB(255, 255, 255)) : t->dwPillOff;
-  gp_fill_ellipse(pGraphics, fThumbX, pill.top + fInset, fThumb, fThumb, gpColor(dwThumb, 255));
+  gpFillEllipse(pGraphics, fThumbX, pill.top + fInset, fThumb, fThumb, gpColor(dwThumb, 255));
   gpGraphicsEnd(pGraphics);
 
   SelectObject(hDC, t->pFont);
@@ -589,7 +589,7 @@ _scDrawButton(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
   gpFillRound(pGraphics, r, fRad, gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
-  gp_stroke_round(pGraphics, r, fRad, gpColor(bHovered ? t->dwAccent : t->dwStroke, 255), 1.0f);
+  gpStrokeRound(pGraphics, r, fRad, gpColor(bHovered ? t->dwAccent : t->dwStroke, 255), 1.0f);
   gpGraphicsEnd(pGraphics);
 
   SelectObject(hDC, t->pFont);
@@ -609,11 +609,11 @@ _scDrawDropdown(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
   gpFillRound(pGraphics, r, _scRoundRad(), gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
-  gp_stroke_round(pGraphics, r, _scRoundRad(), gpColor(t->dwStrokeSoft, 255), 1.0f);
+  gpStrokeRound(pGraphics, r, _scRoundRad(), gpColor(t->dwStrokeSoft, 255), 1.0f);
 
   f32 fBoxRad = 4.0f * gUI.fUIScale;
   gpFillRound(pGraphics, box, fBoxRad, gpColor(t->dwBackground, 255));
-  gp_stroke_round(pGraphics, box, fBoxRad, gpColor((bExpanded || bHovered) ? t->dwAccent : t->dwStroke, 255), bExpanded ? 1.5f : 1.0f);
+  gpStrokeRound(pGraphics, box, fBoxRad, gpColor((bExpanded || bHovered) ? t->dwAccent : t->dwStroke, 255), bExpanded ? 1.5f : 1.0f);
   gpGraphicsEnd(pGraphics);
 
   SelectObject(hDC, t->pFont);
@@ -641,13 +641,13 @@ _scDrawHotkey(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
   gpFillRound(pGraphics, r, _scRoundRad(), gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
   if (bEditing) {
     gpFillRound(pGraphics, r, _scRoundRad(), gpColor(t->dwAccent, 36));
-    gp_stroke_round(pGraphics, r, _scRoundRad(), gpColor(t->dwAccent, 255), 1.5f);
+    gpStrokeRound(pGraphics, r, _scRoundRad(), gpColor(t->dwAccent, 255), 1.5f);
   } else {
-    gp_stroke_round(pGraphics, r, _scRoundRad(), gpColor(t->dwStrokeSoft, 255), 1.0f);
+    gpStrokeRound(pGraphics, r, _scRoundRad(), gpColor(t->dwStrokeSoft, 255), 1.0f);
   }
 
   COLORREF dwIndicator = (pHk->uKey == 0) ? t->dwPillOff : (pHk->bRegistered ? t->dwOk : t->dwError);
-  gp_fill_ellipse(pGraphics, (f32)(r.left + _scScale(11)), (f32)(r.top + _scScale(10)), (f32)_scScale(9), (f32)_scScale(9), gpColor(dwIndicator, 255));
+  gpFillEllipse(pGraphics, (f32)(r.left + _scScale(11)), (f32)(r.top + _scScale(10)), (f32)_scScale(9), (f32)_scScale(9), gpColor(dwIndicator, 255));
   gpGraphicsEnd(pGraphics);
 
   SelectObject(hDC, t->pFont);
@@ -726,7 +726,7 @@ _scDrawImage(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
   DeleteObject(hClip);
 
   pGraphics = gpGraphicsBegin(hDC);
-  gp_stroke_round(pGraphics, r, fRad, gpColor(bHovered ? t->dwAccent : t->dwStrokeSoft, 255), bHovered ? 1.5f : 1.0f);
+  gpStrokeRound(pGraphics, r, fRad, gpColor(bHovered ? t->dwAccent : t->dwStrokeSoft, 255), bHovered ? 1.5f : 1.0f);
   gpGraphicsEnd(pGraphics);
 }
 
@@ -857,7 +857,7 @@ _scRenderDropdownPopup(HDC hDC, RECT cr) {
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
   gpFillRound(pGraphics, dg.rcBox, fRad, gpColor(t->dwPopup, 255));
-  gp_stroke_round(pGraphics, dg.rcBox, fRad, gpColor(t->dwStroke, 255), 1.0f);
+  gpStrokeRound(pGraphics, dg.rcBox, fRad, gpColor(t->dwStroke, 255), 1.0f);
   gpGraphicsEnd(pGraphics);
 
   HRGN hRgn = CreateRoundRectRgn(dg.rcBox.left, dg.rcBox.top, dg.rcBox.right + 1, dg.rcBox.bottom + 1, (int)(fRad * 2), (int)(fRad * 2));
@@ -1251,7 +1251,7 @@ _scRenderPathField(HDC hDC, RECT cr) {
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
   gpFillRound(pGraphics, box, fRad, gpColor(t->dwCard, 255));
-  gp_stroke_round(pGraphics, box, fRad, gpColor(t->dwStroke, 255), 1.0f);
+  gpStrokeRound(pGraphics, box, fRad, gpColor(t->dwStroke, 255), 1.0f);
   gpGraphicsEnd(pGraphics);
 
   SelectObject(hDC, t->pFont);
@@ -1921,7 +1921,7 @@ void scUIOpenWindow() {
   if (!pGdiPlusToken) {
     scLogSetSink(_scOnLogPushed);
 
-    gp_startup(&pGdiPlusToken);
+    gpStartup(&pGdiPlusToken);
     scLogDebug("pGdiPlusToken: %p", pGdiPlusToken);
     if (!pGdiPlusToken) {
       scLogError("Failed to get gdiplus token, unable to show UI");
