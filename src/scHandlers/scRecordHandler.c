@@ -223,6 +223,7 @@ _stopRecording(scRecordContext* pCtx) {
     CloseHandle(pCtx->hFFmpegStdin);
     pCtx->hFFmpegProcess = 0;
     pCtx->hFFmpegStdin   = 0;
+    scUIOnCaptureSaved(pCtx->wszSavePath);
     scLogInfo("Stopped recording");
   } else {
     scLogError("Failed to stop recording normally??????? I have no idea what to do here. Sorry. Maybe force close screencap or any ffmpeg.exe instances");
