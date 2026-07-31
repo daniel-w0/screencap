@@ -34,7 +34,7 @@ typedef struct {
   scWidgetType eType;
   RECT         rcLayout;
   wchar_t      wszText[128];
-  char         szPath[MAX_PATH];
+  char         szPath[MAX_PATH]; // should be wchar_t...
   union {
     struct { bool bBold; }             label;
     struct { bool* pValue; void (*pfnChange)(bool bValue); } toggle;
@@ -353,8 +353,10 @@ _scHotkeyDisplayString(u32 uModifiers, u32 uKey, char* szOut, s32 nCap) {
 //------------------------------------------------------------------------
 // Thumbnail cache
 //------------------------------------------------------------------------
+// TODO: #define STBI_WINDOWS_UTF8
+
 scInternal HBITMAP
-_scLoadThumbnail(const char* szPath) {
+_scLoadImageThumbnail(const char* szPath) {
   s32 iSrcW, iSrcH, iChannels;
   u8* pData = stbi_load(szPath, &iSrcW, &iSrcH, &iChannels, 4);
   if (!pData) {
@@ -401,6 +403,50 @@ _scLoadThumbnail(const char* szPath) {
 
   stbi_image_free(pData);
   return hBitmap;
+}
+
+scInternal HBITMAP
+_scLoadVideoThumbnail(const char* szPath) {
+  wchar_t wszPath[MAX_PATH];
+  if (MultiByteToWideChar(CP_UTF8, 0, szPath, -1, wszPath, MAX_PATH) == 0) {
+    scLogError("MultiByteToWideChar failed in _scLoadVideoThumbnail, path: %s", szPath);
+    return NULL;
+  }
+
+  IShellItem* pItem = NULL;
+  HRESULT hResult = SHCreateItemFromParsingName(wszPath, NULL, &IID_IShellItem, (void**)&pItem);
+  if (FAILED(hResult) || !pItem) {
+    scLogError("SHCreateItemFromParsingName failed in _scLoadVideoThumbnail, path: %s", szPath);
+    return NULL;
+  }
+
+  IShellItemImageFactory* pFactory = NULL;
+  hResult = pItem->lpVtbl->QueryInterface(pItem, &IID_IShellItemImageFactory, (void**)&pFactory);
+  pItem->lpVtbl->Release(pItem);
+  if (FAILED(hResult) || !pFactory) {
+    scLogError("QueryInterface(IID_IShellItemImageFactory) failed in _scLoadVideoThumbnail, path: %s", szPath);
+    return NULL;
+  }
+
+  const SIZE size = { 640, 640 };
+  HBITMAP hBitmap = NULL;
+  hResult = pFactory->lpVtbl->GetImage(pFactory, size, SIIGBF_RESIZETOFIT, &hBitmap);
+  pFactory->lpVtbl->Release(pFactory);
+
+  return SUCCEEDED(hResult) ? hBitmap : NULL;
+}
+
+scInternal HBITMAP
+_scLoadThumbnail(const char* szPath) {
+  const char* szExt = strrchr(szPath, '.');
+  if (!szExt) {
+    return NULL;
+  }
+  if (_stricmp(szExt, ".mp4") == 0 || _stricmp(szExt, ".mov") == 0 || _stricmp(szExt, ".avi") == 0) {
+    return _scLoadVideoThumbnail(szPath);
+  } else {
+    return _scLoadImageThumbnail(szPath);
+  }
 }
 
 scInternal HBITMAP
