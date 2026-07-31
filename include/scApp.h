@@ -6,7 +6,7 @@
 
 #define SC_VERSION_MAJOR 1
 #define SC_VERSION_MINOR 3
-#define SC_VERSION_PATCH 1
+#define SC_VERSION_PATCH 2
 
 #define SC_STRINGIZE_(x) #x
 #define SC_STRINGIZE(x) SC_STRINGIZE_(x)
