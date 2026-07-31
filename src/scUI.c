@@ -17,6 +17,7 @@
 #endif
 
 #define WM_HOTKEY_RECORDED (WM_APP + 100)
+#define WM_THUMB_LOADED    (WM_APP + 101)
 
 //------------------------------------------------------------------------
 // Types
@@ -124,6 +125,21 @@ typedef struct {
   POINT ptStart;
 } scImageDragPending;
 
+typedef struct scThumbTask {
+  char szPath[MAX_PATH];
+  struct scThumbTask* pNext;
+} scThumbTask;
+
+typedef struct {
+  HANDLE hThread;
+  HANDLE hEvent;
+  CRITICAL_SECTION csQueue;
+  CRITICAL_SECTION csCache;
+  scThumbTask* pHead;
+  scThumbTask* pTail;
+  bool bRunning;
+} scThumbQueue;
+
 typedef struct {
   scUITheme theme;
   HWND      hWindow;
@@ -148,6 +164,7 @@ typedef struct {
   scScrollDrag drag;
   scImageDragPending imageDrag;
 
+  scThumbQueue qThumbQueue;
   scThumb* aThumbs;
   s32      nThumbCount;
   s32      nThumbCap;
@@ -451,21 +468,42 @@ _scLoadThumbnail(const char* szPath) {
 
 scInternal HBITMAP
 _scThumbGet(const char* szPath) {
+  EnterCriticalSection(&gUI.qThumbQueue.csCache);
+
   for (s32 i = 0; i < gUI.nThumbCount; ++i) {
     if (strcmp(gUI.aThumbs[i].szPath, szPath) == 0) {
-      return gUI.aThumbs[i].hBitmap;
+      HBITMAP hBmp = gUI.aThumbs[i].hBitmap;
+      LeaveCriticalSection(&gUI.qThumbQueue.csCache);
+      return hBmp;
     }
   }
 
   if (gUI.nThumbCount >= gUI.nThumbCap) {
     gUI.nThumbCap = gUI.nThumbCap ? gUI.nThumbCap * 2 : 16;
-    gUI.aThumbs   = (scThumb*)realloc(gUI.aThumbs, gUI.nThumbCap * sizeof(scThumb));
+    gUI.aThumbs = (scThumb*)realloc(gUI.aThumbs, gUI.nThumbCap * sizeof(scThumb));
   }
 
   scThumb* pThumb = &gUI.aThumbs[gUI.nThumbCount++];
   strcpy_s(pThumb->szPath, MAX_PATH, szPath);
-  pThumb->hBitmap = _scLoadThumbnail(szPath);
-  return pThumb->hBitmap;
+  pThumb->hBitmap = NULL;
+
+  LeaveCriticalSection(&gUI.qThumbQueue.csCache);
+
+  scThumbTask* pTask = (scThumbTask*)malloc(sizeof(scThumbTask));
+  strcpy_s(pTask->szPath, MAX_PATH, szPath);
+  pTask->pNext = NULL;
+
+  EnterCriticalSection(&gUI.qThumbQueue.csQueue);
+  if (gUI.qThumbQueue.pTail) {
+    gUI.qThumbQueue.pTail->pNext = pTask;
+    gUI.qThumbQueue.pTail = pTask;
+  } else {
+    gUI.qThumbQueue.pHead = gUI.qThumbQueue.pTail = pTask;
+  }
+  SetEvent(gUI.qThumbQueue.hEvent);
+  LeaveCriticalSection(&gUI.qThumbQueue.csQueue);
+
+  return NULL;
 }
 
 scInternal void
@@ -479,6 +517,84 @@ _scThumbCacheClear() {
   gUI.aThumbs     = NULL;
   gUI.nThumbCount = 0;
   gUI.nThumbCap   = 0;
+}
+
+static DWORD WINAPI _scThumbWorkerProc(LPVOID pParam) {
+  while (gUI.qThumbQueue.bRunning) {
+    WaitForSingleObject(gUI.qThumbQueue.hEvent, INFINITE);
+    if (!gUI.qThumbQueue.bRunning) break;
+
+    scThumbTask* pTask = NULL;
+
+    EnterCriticalSection(&gUI.qThumbQueue.csQueue);
+    if (gUI.qThumbQueue.pHead) {
+      pTask = gUI.qThumbQueue.pHead;
+      gUI.qThumbQueue.pHead = pTask->pNext;
+      if (!gUI.qThumbQueue.pHead) {
+        gUI.qThumbQueue.pTail = NULL;
+      }
+    } else {
+      ResetEvent(gUI.qThumbQueue.hEvent);
+    }
+    LeaveCriticalSection(&gUI.qThumbQueue.csQueue);
+
+    if (!pTask) continue;
+
+    HBITMAP hBmp = _scLoadThumbnail(pTask->szPath);
+
+    EnterCriticalSection(&gUI.qThumbQueue.csCache);
+    for (s32 i = 0; i < gUI.nThumbCount; ++i) {
+      if (strcmp(gUI.aThumbs[i].szPath, pTask->szPath) == 0) {
+        gUI.aThumbs[i].hBitmap = hBmp;
+        break;
+      }
+    }
+    LeaveCriticalSection(&gUI.qThumbQueue.csCache);
+
+    free(pTask);
+
+    if (gUI.hWindow && hBmp) {
+      PostMessageW(gUI.hWindow, WM_THUMB_LOADED, 0, 0);
+    }
+  }
+
+  return 0;
+}
+
+scInternal void _scInitThumbWorker() {
+  scLogDebug("Initializing background worker for thumbnails");
+
+  InitializeCriticalSection(&gUI.qThumbQueue.csQueue);
+  InitializeCriticalSection(&gUI.qThumbQueue.csCache);
+  gUI.qThumbQueue.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+  gUI.qThumbQueue.bRunning = true;
+  gUI.qThumbQueue.hThread = CreateThread(NULL, 0, _scThumbWorkerProc, NULL, 0, NULL);
+}
+
+scInternal void _scShutdownThumbWorker() {
+  if (!gUI.qThumbQueue.hThread) return;
+  scLogDebug("Shutting down background worker for thumbnails");
+
+  gUI.qThumbQueue.bRunning = false;
+  SetEvent(gUI.qThumbQueue.hEvent);
+
+  WaitForSingleObject(gUI.qThumbQueue.hThread, INFINITE);
+  CloseHandle(gUI.qThumbQueue.hThread);
+  CloseHandle(gUI.qThumbQueue.hEvent);
+
+  EnterCriticalSection(&gUI.qThumbQueue.csQueue);
+  scThumbTask* pCurr = gUI.qThumbQueue.pHead;
+  while (pCurr) {
+    scThumbTask* pNext = pCurr->pNext;
+    free(pCurr);
+    pCurr = pNext;
+  }
+  gUI.qThumbQueue.pHead = gUI.qThumbQueue.pTail = NULL;
+  LeaveCriticalSection(&gUI.qThumbQueue.csQueue);
+
+  DeleteCriticalSection(&gUI.qThumbQueue.csQueue);
+  DeleteCriticalSection(&gUI.qThumbQueue.csCache);
+  gUI.qThumbQueue.hThread = NULL;
 }
 
 //------------------------------------------------------------------------
@@ -1659,6 +1775,10 @@ _scCancelHotkeyRecording() {
 //------------------------------------------------------------------------
 LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
   switch (uMsg) {
+    case WM_THUMB_LOADED: {
+      InvalidateRect(hWnd, NULL, FALSE);
+      return 0;
+    }
     case WM_GETMINMAXINFO: {
       MINMAXINFO* pMmi = (MINMAXINFO*)lParam;
       pMmi->ptMinTrackSize.x = _scScale(WINDOW_MIN_WIDTH);
@@ -2028,6 +2148,9 @@ void scUIOpenWindow() {
     SetForegroundWindow(gUI.hWindow);
     scLogDebug("Focused main window");
   }
+
+  _scInitThumbWorker();
+
   ShowWindow(gUI.hWindow, SW_SHOW);
   UpdateWindow(gUI.hWindow);
 }
@@ -2037,6 +2160,7 @@ void scUICloseWindow() {
     _scCancelHotkeyRecording();
   }
 
+  _scShutdownThumbWorker();
   _scThumbCacheClear();
   for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
     free(gUI.aPages[i].aWidgets);
