@@ -47,6 +47,7 @@ typedef struct {
     } dropdown;
     struct { void (*pfnClick)(s32 iParam); s32 iParam; } button;
     struct { scHotkeyID eHotkey; }     hotkey;
+    struct { bool bIsFolder; bool bIsUp; s32 nItemCount; } image;
   } u;
 } scWidget;
 
@@ -168,6 +169,8 @@ typedef struct {
   scThumb* aThumbs;
   s32      nThumbCount;
   s32      nThumbCap;
+
+  wchar_t wszGalleryDir[MAX_PATH]; // current folder being browsed in the gallery explorer
 } scUI;
 
 static scUI gUI;
@@ -831,9 +834,71 @@ _scDrawHotkey(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
 }
 
 scInternal void
+_scDrawFolderIcon(HDC hDC, RECT rImage, bool bUp, s32 nItemCount) {
+  scUITheme* t = &gUI.theme;
+  s32 iCX = (rImage.left + rImage.right) / 2;
+  s32 iCY = (rImage.top + rImage.bottom) / 2;
+  s32 iW  = _scScale(84), iH = _scScale(60);
+
+  RECT rBody = { iCX - iW / 2, iCY - iH / 2 + _scScale(8), iCX + iW / 2, iCY + iH / 2 + _scScale(8) };
+
+  s32 iTabXOffset = _scScale(4);
+  s32 iTabYOffset = _scScale(4);
+  s32 iTabW = _scScale(32), iTabH = _scScale(14);
+
+  RECT rTab = {
+    rBody.left + iTabXOffset,
+    rBody.top - iTabH + iTabYOffset,
+    rBody.left + iTabXOffset + iTabW,
+    rBody.top + iTabYOffset
+  };
+
+  f32 fTabRad  = 3.0f * gUI.fUIScale;
+  f32 fBodyRad = 6.0f * gUI.fUIScale;
+
+  GpPath* pPath = NULL;
+  GdipCreatePath(FillModeWinding, &pPath);
+
+  gp__round_figure(pPath, (float)rTab.left, (float)rTab.top,
+                    (float)(rTab.right - rTab.left), (float)(rTab.bottom - rTab.top), fTabRad);
+  gp__round_figure(pPath, (float)rBody.left, (float)rBody.top,
+                    (float)(rBody.right - rBody.left), (float)(rBody.bottom - rBody.top), fBodyRad);
+
+  COLORREF dwFill = t->dwAccent;
+  BYTE     nAlpha = bUp ? 130 : 190;
+  ARGB argb = ((ARGB)nAlpha << 24) | (GetRValue(dwFill) << 16) | (GetGValue(dwFill) << 8) | GetBValue(dwFill);
+
+  GpGraphics* pGraphics = gpGraphicsBegin(hDC);
+  GpBrush* pBrush = NULL;
+  GdipCreateSolidFill(argb, (GpSolidFill**)&pBrush);
+  GdipFillPath(pGraphics, pBrush, pPath);
+  GdipDeleteBrush(pBrush);
+  gpGraphicsEnd(pGraphics);
+
+  GdipDeletePath(pPath);
+
+  if (bUp) {
+    SelectObject(hDC, t->pBoldFont);
+    SetTextColor(hDC, RGB(255, 255, 255));
+    RECT rArrow = rBody;
+    DrawTextW(hDC, L"\x2191", -1, &rArrow, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  } else {
+    wchar_t wszCount[16];
+    _snwprintf_s(wszCount, 16, _TRUNCATE, L"%d", nItemCount);
+
+    SelectObject(hDC, t->pBoldFont);
+    SetTextColor(hDC, RGB(255, 255, 255));
+    RECT rCount = rBody;
+    DrawTextW(hDC, wszCount, -1, &rCount, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
+}
+
+scInternal void
 _scDrawImage(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
   scUITheme* t = &gUI.theme;
   f32 fRad = 8.0f * gUI.fUIScale;
+  bool bIsUp     = pWidget->u.image.bIsUp;
+  bool bIsFolder = pWidget->u.image.bIsFolder;
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
   gpFillRound(pGraphics, r, fRad, gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
@@ -843,46 +908,52 @@ _scDrawImage(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
   SelectClipRgn(hDC, hClip);
   SetBkMode(hDC, TRANSPARENT);
 
-  HBITMAP hThumb = _scThumbGet(pWidget->szPath);
   RECT rImage = { r.left + _scScale(2), r.top + _scScale(2), r.right - _scScale(2), r.bottom - _scScale(30) };
-  if (hThumb) {
-    BITMAP bmp;
-    GetObject(hThumb, sizeof(BITMAP), &bmp);
 
-    HDC hMemDC = CreateCompatibleDC(hDC);
-    HGDIOBJ hOldBmp = SelectObject(hMemDC, hThumb);
-
-    s32 iBoxW = rImage.right - rImage.left;
-    s32 iBoxH = rImage.bottom - rImage.top;
-    f32 fSrcAspect = (f32)bmp.bmWidth / (f32)bmp.bmHeight;
-    f32 fBoxAspect = (f32)iBoxW / (f32)iBoxH;
-
-    s32 iDrawW = iBoxW, iDrawH = iBoxH, iDrawX = rImage.left, iDrawY = rImage.top;
-    if (fSrcAspect > fBoxAspect) {
-      iDrawH = (s32)(iBoxW / fSrcAspect);
-      iDrawY += (iBoxH - iDrawH) / 2;
-    } else {
-      iDrawW = (s32)(iBoxH * fSrcAspect);
-      iDrawX += (iBoxW - iDrawW) / 2;
-    }
-
-    s32 iOldMode = SetStretchBltMode(hDC, HALFTONE);
-    StretchBlt(hDC, iDrawX, iDrawY, iDrawW, iDrawH, hMemDC, 0, 0, bmp.bmWidth, bmp.bmHeight, SRCCOPY);
-    SetStretchBltMode(hDC, iOldMode);
-
-    SelectObject(hMemDC, hOldBmp);
-    DeleteDC(hMemDC);
+  if (bIsUp || bIsFolder) {
+    _scDrawFolderIcon(hDC, rImage, bIsUp, pWidget->u.image.nItemCount);
   } else {
-    SelectObject(hDC, t->pFont);
-    SetTextColor(hDC, t->dwTextDim);
-    const wchar_t* wszExt = wcsrchr(pWidget->wszText, L'.');
-    DrawTextW(hDC, wszExt ? wszExt + 1 : pWidget->wszText, -1, &rImage, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    HBITMAP hThumb = _scThumbGet(pWidget->szPath);
+    if (hThumb) {
+      BITMAP bmp;
+      GetObject(hThumb, sizeof(BITMAP), &bmp);
+
+      HDC hMemDC = CreateCompatibleDC(hDC);
+      HGDIOBJ hOldBmp = SelectObject(hMemDC, hThumb);
+
+      s32 iBoxW = rImage.right - rImage.left;
+      s32 iBoxH = rImage.bottom - rImage.top;
+      f32 fSrcAspect = (f32)bmp.bmWidth / (f32)bmp.bmHeight;
+      f32 fBoxAspect = (f32)iBoxW / (f32)iBoxH;
+
+      s32 iDrawW = iBoxW, iDrawH = iBoxH, iDrawX = rImage.left, iDrawY = rImage.top;
+      if (fSrcAspect > fBoxAspect) {
+        iDrawH = (s32)(iBoxW / fSrcAspect);
+        iDrawY += (iBoxH - iDrawH) / 2;
+      } else {
+        iDrawW = (s32)(iBoxH * fSrcAspect);
+        iDrawX += (iBoxW - iDrawW) / 2;
+      }
+
+      s32 iOldMode = SetStretchBltMode(hDC, HALFTONE);
+      StretchBlt(hDC, iDrawX, iDrawY, iDrawW, iDrawH, hMemDC, 0, 0, bmp.bmWidth, bmp.bmHeight, SRCCOPY);
+      SetStretchBltMode(hDC, iOldMode);
+
+      SelectObject(hMemDC, hOldBmp);
+      DeleteDC(hMemDC);
+    } else {
+      SelectObject(hDC, t->pFont);
+      SetTextColor(hDC, t->dwTextDim);
+      const wchar_t* wszExt = wcsrchr(pWidget->wszText, L'.');
+      DrawTextW(hDC, wszExt ? wszExt + 1 : pWidget->wszText, -1, &rImage, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
   }
 
   RECT rText = { r.left + _scScale(5), r.bottom - _scScale(30), r.right - _scScale(5), r.bottom };
   SelectObject(hDC, t->pFont);
   SetTextColor(hDC, t->dwText);
-  DrawTextW(hDC, pWidget->wszText, -1, &rText, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+  const wchar_t* wszLabel = bIsUp ? scLocaleGet("Back") : pWidget->wszText;
+  DrawTextW(hDC, wszLabel, -1, &rText, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
   SelectClipRgn(hDC, NULL);
   DeleteObject(hClip);
@@ -1231,6 +1302,26 @@ typedef struct {
   FILETIME ftWrite;
 } _scFileEntry;
 
+scInternal s32
+_scCountFolderItems(const wchar_t* wszPath) {
+  wchar_t wszPattern[MAX_PATH];
+  _snwprintf_s(wszPattern, MAX_PATH, _TRUNCATE, L"%ls\\*", wszPath);
+
+  s32 nCount = 0;
+  WIN32_FIND_DATAW fd;
+  HANDLE hFind = FindFirstFileW(wszPattern, &fd);
+  if (hFind != INVALID_HANDLE_VALUE) {
+    do {
+      if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !_scIsImageFile(fd.cFileName)) {
+        continue;
+      }
+      ++nCount;
+    } while (FindNextFileW(hFind, &fd));
+    FindClose(hFind);
+  }
+  return nCount;
+}
+
 scInternal int
 _scCompareFileTime(const void* a, const void* b) {
   const _scFileEntry* pA = (const _scFileEntry*)a;
@@ -1271,44 +1362,199 @@ _scGalleryLoadImages(const wchar_t* wszPath, _scFileEntry** paOutFiles, s32* pnO
 }
 
 scInternal void
+_scGalleryLoadFolders(const wchar_t* wszPath, _scFileEntry** paOutFolders, s32* pnOutCount, s32* pnOutCap) {
+  wchar_t wszPattern[MAX_PATH];
+  _snwprintf_s(wszPattern, MAX_PATH, _TRUNCATE, L"%ls\\*", wszPath);
+
+  _scFileEntry* aFolders = *paOutFolders;
+  s32 nFolders = *pnOutCount;
+  s32 nFolderCap = *pnOutCap;
+
+  WIN32_FIND_DATAW fd;
+  HANDLE hFind = FindFirstFileW(wszPattern, &fd);
+  if (hFind != INVALID_HANDLE_VALUE) {
+    do {
+      if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        continue;
+      }
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) {
+        continue;
+      }
+      if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) {
+        continue;
+      }
+      if (nFolders >= nFolderCap) {
+        nFolderCap = nFolderCap ? nFolderCap * 2 : 16;
+        aFolders   = (_scFileEntry*)realloc(aFolders, nFolderCap * sizeof(_scFileEntry));
+      }
+      wcscpy_s(aFolders[nFolders].wszName, MAX_PATH, fd.cFileName);
+      aFolders[nFolders].ftWrite = fd.ftLastWriteTime;
+      ++nFolders;
+    } while (FindNextFileW(hFind, &fd));
+    FindClose(hFind);
+  }
+
+  *paOutFolders = aFolders;
+  *pnOutCount = nFolders;
+  *pnOutCap   = nFolderCap;
+}
+
+scInternal void
+_scPathStripTrailingSlash(wchar_t* wszPath) {
+  s32 iLen = (s32)wcslen(wszPath);
+  while (iLen > 0 && wszPath[iLen - 1] == L'\\') {
+    wszPath[--iLen] = 0;
+  }
+}
+
+scInternal bool
+_scPathsEqualNormalized(const wchar_t* wszA, const wchar_t* wszB) {
+  wchar_t wszNormA[MAX_PATH], wszNormB[MAX_PATH];
+  wcscpy_s(wszNormA, MAX_PATH, wszA);
+  wcscpy_s(wszNormB, MAX_PATH, wszB);
+  _scPathStripTrailingSlash(wszNormA);
+  _scPathStripTrailingSlash(wszNormB);
+  return _wcsicmp(wszNormA, wszNormB) == 0;
+}
+
+scInternal bool
+_scPathIsUnderRoot(const wchar_t* wszChild, const wchar_t* wszRoot) {
+  wchar_t wszNormChild[MAX_PATH], wszNormRoot[MAX_PATH];
+  wcscpy_s(wszNormChild, MAX_PATH, wszChild);
+  wcscpy_s(wszNormRoot, MAX_PATH, wszRoot);
+  _scPathStripTrailingSlash(wszNormChild);
+  _scPathStripTrailingSlash(wszNormRoot);
+
+  s32 iRootLen = (s32)wcslen(wszNormRoot);
+  if (_wcsnicmp(wszNormChild, wszNormRoot, iRootLen) != 0) {
+    return false;
+  }
+  return wszNormChild[iRootLen] == 0 || wszNormChild[iRootLen] == L'\\';
+}
+
+scInternal void
+_scGalleryRefresh() {
+  _scThumbCacheClear();
+  gUI.aPages[SC_PAGE_GALLERY].scroll.nScrollY = 0;
+  gUI.bNeedsLayout = true;
+  if (gUI.hWindow) {
+    InvalidateRect(gUI.hWindow, NULL, TRUE);
+  }
+}
+
+scInternal void
+_scGalleryNavigateInto(const char* szFolderPath) {
+  wchar_t wszPath[MAX_PATH];
+  MultiByteToWideChar(CP_ACP, 0, szFolderPath, -1, wszPath, MAX_PATH);
+  wcscpy_s(gUI.wszGalleryDir, MAX_PATH, wszPath);
+  _scGalleryRefresh();
+}
+
+scInternal void
+_scGalleryNavigateUp() {
+  wchar_t wszParent[MAX_PATH];
+  wcscpy_s(wszParent, MAX_PATH, gUI.wszGalleryDir);
+  _scPathStripTrailingSlash(wszParent);
+
+  wchar_t* pSlash = wcsrchr(wszParent, L'\\');
+  if (pSlash) {
+    *pSlash = 0;
+  }
+
+  wchar_t wszRoot[MAX_PATH];
+  wcscpy_s(wszRoot, MAX_PATH, gApp->config.wszSavePath);
+
+  // Never let the explorer wander above the configured screenshot root folder.
+  if (!_scPathIsUnderRoot(wszParent, wszRoot)) {
+    wcscpy_s(wszParent, MAX_PATH, wszRoot);
+  }
+
+  wcscpy_s(gUI.wszGalleryDir, MAX_PATH, wszParent);
+  _scGalleryRefresh();
+}
+
+scInternal void
 _scLayoutGallery(scPage* pPage, RECT rc) {
   pPage->nWidgetCount = 0;
 
+  if (gUI.wszGalleryDir[0] == 0) {
+    if (!scGetSavePath(gUI.wszGalleryDir, MAX_PATH)) {
+      pPage->scroll.nContentH   = 0;
+      pPage->scroll.nMaxScrollY = 0;
+      return;
+    }
+  }
+
   wchar_t wszDir[MAX_PATH];
-  if (!scGetSavePath(wszDir, MAX_PATH)) {
-    pPage->scroll.nContentH   = 0;
-    pPage->scroll.nMaxScrollY = 0;
-    return;
+  wcscpy_s(wszDir, MAX_PATH, gUI.wszGalleryDir);
+
+  wchar_t wszRoot[MAX_PATH];
+  wcscpy_s(wszRoot, MAX_PATH, gApp->config.wszSavePath);
+  bool bAtRoot = _scPathsEqualNormalized(wszDir, wszRoot);
+
+  _scFileEntry* aFolders = NULL;
+  s32 nFolders = 0, nFolderCap = 0;
+  _scGalleryLoadFolders(wszDir, &aFolders, &nFolders, &nFolderCap);
+  if (nFolders > 0) {
+    qsort(aFolders, nFolders, sizeof(_scFileEntry), _scCompareFileTime);
   }
 
   _scFileEntry* aFiles = NULL;
   s32 nFiles = 0, nFileCap = 0;
-
   _scGalleryLoadImages(wszDir, &aFiles, &nFiles, &nFileCap);
+  if (nFiles > 0) {
+    qsort(aFiles, nFiles, sizeof(_scFileEntry), _scCompareFileTime);
+  }
 
-  if (nFiles == 0) {
+  s32 nUp    = bAtRoot ? 0 : 1;
+  s32 nTotal = nUp + nFolders + nFiles;
+
+  if (nTotal == 0) {
     pPage->scroll.nContentH  = 0;
     pPage->scroll.nMaxScrollY = 0;
+    free(aFolders);
     free(aFiles);
     return;
   }
-
-  qsort(aFiles, nFiles, sizeof(_scFileEntry), _scCompareFileTime);
 
   const s32 iItemW = 320, iItemH = 260, iGap = 20, iStartX = 170;
   s32 iAvailable = rc.right - iStartX - 10;
   s32 iCols = (iAvailable + iGap) / (iItemW + iGap);
   if (iCols < 1) iCols = 1;
-  s32 iRows = (nFiles + iCols - 1) / iCols;
+  s32 iRows = (nTotal + iCols - 1) / iCols;
 
   pPage->scroll.nContentH  = iRows * (iItemH + iGap) + 20;
   pPage->scroll.nMaxScrollY = pPage->scroll.nContentH - rc.bottom;
   if (pPage->scroll.nMaxScrollY < 0) pPage->scroll.nMaxScrollY = 0;
   pPage->scroll.nScrollY = _scClamp(pPage->scroll.nScrollY, 0, pPage->scroll.nMaxScrollY);
 
-  for (s32 i = 0; i < nFiles; ++i) {
-    s32 iX = iStartX + (i % iCols) * (iItemW + iGap);
-    s32 iY = 20 + (i / iCols) * (iItemH + iGap);
+  s32 iIndex = 0;
+
+  if (nUp) {
+    s32 iX = iStartX + (iIndex % iCols) * (iItemW + iGap);
+    s32 iY = 20 + (iIndex / iCols) * (iItemH + iGap);
+    scWidget* pWidget = _scPagePush(pPage, _scMakeImage((RECT){ iX, iY, iX + iItemW, iY + iItemH }, L"..", ""));
+    pWidget->u.image.bIsUp = true;
+    ++iIndex;
+  }
+
+  for (s32 i = 0; i < nFolders; ++i, ++iIndex) {
+    s32 iX = iStartX + (iIndex % iCols) * (iItemW + iGap);
+    s32 iY = 20 + (iIndex / iCols) * (iItemH + iGap);
+
+    wchar_t wszFull[MAX_PATH];
+    _snwprintf_s(wszFull, MAX_PATH, _TRUNCATE, L"%ls\\%ls", wszDir, aFolders[i].wszName);
+    char szFull[MAX_PATH];
+    WideCharToMultiByte(CP_ACP, 0, wszFull, -1, szFull, MAX_PATH, NULL, NULL);
+
+    scWidget* pWidget = _scPagePush(pPage, _scMakeImage((RECT){ iX, iY, iX + iItemW, iY + iItemH }, aFolders[i].wszName, szFull));
+    pWidget->u.image.bIsFolder = true;
+    pWidget->u.image.nItemCount = _scCountFolderItems(wszFull);
+  }
+
+  for (s32 i = 0; i < nFiles; ++i, ++iIndex) {
+    s32 iX = iStartX + (iIndex % iCols) * (iItemW + iGap);
+    s32 iY = 20 + (iIndex / iCols) * (iItemH + iGap);
 
     wchar_t wszFull[MAX_PATH];
     _snwprintf_s(wszFull, MAX_PATH, _TRUNCATE, L"%ls\\%ls", wszDir, aFiles[i].wszName);
@@ -1318,6 +1564,7 @@ _scLayoutGallery(scPage* pPage, RECT rc) {
     _scPagePush(pPage, _scMakeImage((RECT){ iX, iY, iX + iItemW, iY + iItemH }, aFiles[i].wszName, szFull));
   }
 
+  free(aFolders);
   free(aFiles);
 }
 
@@ -1541,7 +1788,13 @@ _scOnWidgetClicked(scWidget* pWidget) {
       break;
     }
     case SC_WIDGET_IMAGE: {
-      ShellExecuteA(NULL, "open", pWidget->szPath, NULL, NULL, SW_SHOWNORMAL);
+      if (pWidget->u.image.bIsUp) {
+        _scGalleryNavigateUp();
+      } else if (pWidget->u.image.bIsFolder) {
+        _scGalleryNavigateInto(pWidget->szPath);
+      } else {
+        ShellExecuteA(NULL, "open", pWidget->szPath, NULL, NULL, SW_SHOWNORMAL);
+      }
       break;
     }
     default:
@@ -1656,6 +1909,10 @@ _scHandleLeftDown(POINT pt, RECT cr) {
     }
     return;
   } else if (pWidget->eType == SC_WIDGET_IMAGE) {
+    if (pWidget->u.image.bIsUp || pWidget->u.image.bIsFolder) {
+      _scOnWidgetClicked(pWidget);
+      return;
+    }
     gUI.imageDrag.bPending      = true;
     gUI.imageDrag.iWidgetIndex  = iHit;
     gUI.imageDrag.ptStart       = pt;
@@ -1678,10 +1935,12 @@ _scGalleryContextMenu(HWND hWnd, scWidget* pImage, POINT pt) {
   mi.hbrBack = gUI.theme.hBackgroundBrush;
   SetMenuInfo(hMenu, &mi);
 
-  AppendMenuW(hMenu, MF_OWNERDRAW, 1, (LPCWSTR)scLocaleGet("Copy to Clipboard"));
-  AppendMenuW(hMenu, MF_OWNERDRAW, 2, (LPCWSTR)scLocaleGet("Open Containing Folder"));
-  AppendMenuW(hMenu, MF_OWNERDRAW, 3, (LPCWSTR)scLocaleGet("Open"));
-  AppendMenuW(hMenu, MF_OWNERDRAW, 4, (LPCWSTR)scLocaleGet("Delete"));
+  AppendMenuW(hMenu, MF_OWNERDRAW, 2, (LPCWSTR)scLocaleGet("Open Folder"));
+  if (!pImage->u.image.bIsFolder) {
+    AppendMenuW(hMenu, MF_OWNERDRAW, 1, (LPCWSTR)scLocaleGet("Copy to Clipboard"));
+    AppendMenuW(hMenu, MF_OWNERDRAW, 3, (LPCWSTR)scLocaleGet("Open"));
+    AppendMenuW(hMenu, MF_OWNERDRAW, 4, (LPCWSTR)scLocaleGet("Delete"));
+  }
 
   POINT ptScreen = pt;
   ClientToScreen(hWnd, &ptScreen);
@@ -1697,7 +1956,11 @@ _scGalleryContextMenu(HWND hWnd, scWidget* pImage, POINT pt) {
     }
     case 2: {
       char szArg[MAX_PATH + 16];
-      _snprintf_s(szArg, sizeof(szArg), _TRUNCATE, "/select,\"%s\"", szPath);
+      if (!pImage->u.image.bIsFolder) {
+        _snprintf_s(szArg, sizeof(szArg), _TRUNCATE, "/select,\"%s\"", szPath);
+      } else {
+        _snprintf_s(szArg, sizeof(szArg), _TRUNCATE, "%s", szPath);
+      }
       ShellExecuteA(NULL, "open", "explorer.exe", szArg, NULL, SW_SHOWNORMAL);
       break;
     }
@@ -1884,7 +2147,8 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         scPage* pPage = &gUI.aPages[SC_PAGE_GALLERY];
         _scEnsureLayout();
         s32 iHit = _scWidgetAt(pPage, pt);
-        if (iHit >= 0 && pPage->aWidgets[iHit].eType == SC_WIDGET_IMAGE) {
+        if (iHit >= 0 && pPage->aWidgets[iHit].eType == SC_WIDGET_IMAGE &&
+            !pPage->aWidgets[iHit].u.image.bIsUp) {
           _scGalleryContextMenu(hWnd, &pPage->aWidgets[iHit], pt);
         }
       }
