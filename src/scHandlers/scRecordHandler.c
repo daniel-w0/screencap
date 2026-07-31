@@ -2,6 +2,7 @@
 #include "scApp.h"
 #include "scLogging.h"
 #include "scAssert.h"
+#include "scUI.h"
 
 typedef struct {
   HANDLE hFFmpegProcess;
