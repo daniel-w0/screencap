@@ -22,28 +22,30 @@ _scProbeRegPath(HKEY hRoot, const wchar_t* wszSubkey, const wchar_t* wszExeName,
     return false;
   }
 
-  bool bFound = false;
+  bool  bFound = false;
   DWORD dwType = 0;
   DWORD dwSize = 0;
 
+  // Query size first.
   if (RegQueryValueExW(hKey, L"Path", NULL, &dwType, NULL, &dwSize) != ERROR_SUCCESS || dwSize == 0) {
     RegCloseKey(hKey);
     return false;
   }
 
-  wchar_t* wszRaw = (wchar_t*)malloc(dwSize + sizeof(wchar_t));
+  wchar_t* wszRaw = (wchar_t*)malloc(dwSize + sizeof(wchar_t)); // +1 wchar for our own terminator
   if (!wszRaw) {
     RegCloseKey(hKey);
     return false;
   }
 
   if (RegQueryValueExW(hKey, L"Path", NULL, &dwType, (LPBYTE)wszRaw, &dwSize) == ERROR_SUCCESS) {
-    wszRaw[dwSize / sizeof(wchar_t)] = L'\0';
+    wszRaw[dwSize / sizeof(wchar_t)] = L'\0'; // reg strings aren't guaranteed terminated
 
-    wchar_t* wszPath = wszRaw;
+    // Expand %VARS% if needed.
+    wchar_t* wszPath     = wszRaw;
     wchar_t* wszExpanded = NULL;
     if (dwType == REG_EXPAND_SZ) {
-      DWORD dwNeed = ExpandEnvironmentStringsW(wszRaw, NULL, 0);
+      DWORD dwNeed = ExpandEnvironmentStringsW(wszRaw, NULL, 0); // count in CHARS incl. null
       if (dwNeed > 0) {
         wszExpanded = (wchar_t*)malloc((size_t)dwNeed * sizeof(wchar_t));
         if (wszExpanded) {
@@ -53,22 +55,24 @@ _scProbeRegPath(HKEY hRoot, const wchar_t* wszSubkey, const wchar_t* wszExeName,
       }
     }
 
-    const s32 nLen = (s32)wcslen(wszPath);
-    s32 iStart = 0;
+    // Walk the ';'-separated dirs.
+    const s32 nLen   = (s32)wcslen(wszPath);
+    s32       iStart = 0;
     while (iStart <= nLen && !bFound) {
       const wchar_t* pSemi = wcschr(wszPath + iStart, L';');
-      const s32 iEnd = pSemi ? (s32)(pSemi - wszPath) : nLen;
-      const s32 iSeg = iStart;
-      s32 nDir = iEnd - iStart;
+      const s32      iEnd  = pSemi ? (s32)(pSemi - wszPath) : nLen;
+      const s32      iSeg  = iStart;
+      s32            nDir  = iEnd - iStart;
       iStart = iEnd + 1;
 
-      wchar_t wszDir[SC_PATH_MAX_LEN];
+      wchar_t wszDir[MAX_PATH];
       if (nDir <= 0 || nDir >= (s32)ARRAYSIZE(wszDir)) {
         continue;
       }
       memcpy(wszDir, wszPath + iSeg, (size_t)nDir * sizeof(wchar_t));
       wszDir[nDir] = L'\0';
 
+      // Strip surrounding quotes..
       if (nDir >= 2 && wszDir[0] == L'"' && wszDir[nDir - 1] == L'"') {
         memmove(wszDir, wszDir + 1, (size_t)(nDir - 2) * sizeof(wchar_t));
         nDir -= 2;
@@ -78,10 +82,10 @@ _scProbeRegPath(HKEY hRoot, const wchar_t* wszSubkey, const wchar_t* wszExeName,
         continue;
       }
 
-      const wchar_t cLast = wszDir[nDir - 1];
+      const wchar_t  cLast  = wszDir[nDir - 1];
       const wchar_t* wszSep = (cLast == L'\\' || cLast == L'/') ? L"" : L"\\";
 
-      wchar_t wszCandidate[SC_PATH_MAX_LEN];
+      wchar_t wszCandidate[MAX_PATH];
       if (swprintf(wszCandidate, ARRAYSIZE(wszCandidate), L"%ls%ls%ls", wszDir, wszSep, wszExeName) < 0) {
         continue;
       }
@@ -104,8 +108,8 @@ _scProbeRegPath(HKEY hRoot, const wchar_t* wszSubkey, const wchar_t* wszExeName,
 
 scInternal bool
 _scFindExecutable(const wchar_t* wszExeName, wchar_t* wszOutPath, s32 nOutCap) {
-  wchar_t wszSearchBuf[SC_PATH_MAX_LEN];
-  DWORD dwLen = SearchPathW(NULL, wszExeName, NULL, ARRAYSIZE(wszSearchBuf), wszSearchBuf, NULL);
+  wchar_t wszSearchBuf[MAX_PATH];
+  DWORD   dwLen = SearchPathW(NULL, wszExeName, NULL, ARRAYSIZE(wszSearchBuf), wszSearchBuf, NULL);
   if (dwLen > 0 && dwLen < ARRAYSIZE(wszSearchBuf)) {
     wcsncpy(wszOutPath, wszSearchBuf, nOutCap - 1);
     wszOutPath[nOutCap - 1] = L'\0';
@@ -123,7 +127,7 @@ _scFindExecutable(const wchar_t* wszExeName, wchar_t* wszOutPath, s32 nOutCap) {
 }
 
 scInternal void
-_scMergeAudioAndVideo(scRecordContext* pCtx, wchar_t aWavPaths[][SC_PATH_MAX_LEN], uint32_t wavCount) {
+_scMergeAudioAndVideo(scRecordContext* pCtx, wchar_t aWavPaths[][MAX_PATH], uint32_t wavCount) {
   wchar_t wszCmd[4096];
   int nOffset = 0;
 
@@ -183,23 +187,23 @@ _startRecording(scRecordContext* pCtx, scRect rect) {
     return false;
   }
 
-  wchar_t wszDir[SC_PATH_MAX_LEN];
-  wchar_t wszName[SC_PATH_MAX_LEN];
-  if (!scGetSavePath(wszDir, SC_PATH_MAX_LEN) || !scGetFilename(wszName, SC_PATH_MAX_LEN, ".mp4")) {
+  wchar_t wszDir[MAX_PATH];
+  wchar_t wszName[MAX_PATH];
+  if (!scGetSavePath(wszDir, MAX_PATH) || !scGetFilename(wszName, MAX_PATH, ".mp4")) {
     CloseHandle(hReadPipe);
     CloseHandle(hWritePipe);
     return false;
   }
 
-  GetTempPathW(SC_PATH_MAX_LEN, pCtx->wszTempDir);
-  swprintf(pCtx->wszSavePath, SC_PATH_MAX_LEN, L"%ls\\%ls", wszDir, wszName);
+  GetTempPathW(MAX_PATH, pCtx->wszTempDir);
+  swprintf(pCtx->wszSavePath, MAX_PATH, L"%ls\\%ls", wszDir, wszName);
 
   pCtx->bHasAudio = gApp->config.bCaptureAudio && scAudioStartRecording(pCtx->wszTempDir);
 
   if (pCtx->bHasAudio) {
-    swprintf(pCtx->wszTempVideoPath, SC_PATH_MAX_LEN, L"%ls\\sc_temp_video.mp4", pCtx->wszTempDir);
+    swprintf(pCtx->wszTempVideoPath, MAX_PATH, L"%ls\\sc_temp_video.mp4", pCtx->wszTempDir);
   } else {
-    wcsncpy(pCtx->wszTempVideoPath, pCtx->wszSavePath, SC_PATH_MAX_LEN);
+    wcsncpy(pCtx->wszTempVideoPath, pCtx->wszSavePath, MAX_PATH);
   }
 
   wchar_t wszCmd[1024];
@@ -216,15 +220,15 @@ _startRecording(scRecordContext* pCtx, scRect rect) {
   }
 
   HANDLE hCon = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
-  bool bHaveConsole = (hCon != INVALID_HANDLE_VALUE);
+  bool   bHaveConsole = (hCon != INVALID_HANDLE_VALUE);
   HANDLE hOut = bHaveConsole ? hCon : CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
 
   STARTUPINFOW si = { sizeof(STARTUPINFOW) };
-  si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+  si.dwFlags     = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
   si.wShowWindow = SW_HIDE;
-  si.hStdInput = hReadPipe;
-  si.hStdOutput = hOut;
-  si.hStdError = hOut;
+  si.hStdInput   = hReadPipe;
+  si.hStdOutput  = hOut;
+  si.hStdError   = hOut;
 
   PROCESS_INFORMATION pi = { 0 };
   DWORD flags = bHaveConsole ? 0 : CREATE_NO_WINDOW;
@@ -271,7 +275,7 @@ _stopRecording(scRecordContext* pCtx) {
     pCtx->hFFmpegProcess = 0;
     pCtx->hFFmpegStdin = 0;
 
-    wchar_t aWavPaths[SC_MAX_ACTIVE_RECORDERS][SC_PATH_MAX_LEN];
+    wchar_t aWavPaths[SC_MAX_ACTIVE_RECORDERS][MAX_PATH];
     uint32_t wavCount = 0;
 
     if (pCtx->bHasAudio) {
