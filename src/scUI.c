@@ -6,6 +6,7 @@
 #include "scLogging.h"
 #include "scGdiPlus.h"
 #include "scLocale.h"
+#include "scAudio.h"
 #include "stb_image.h"
 
 #include <windowsx.h>
@@ -40,7 +41,7 @@ typedef struct {
   char         szPath[MAX_PATH]; // should be wchar_t...
   union {
     struct { bool bBold; }             label;
-    struct { bool* pValue; void (*pfnChange)(bool bValue); } toggle;
+    struct { bool* pValue; s32 iParam; void (*pfnChange)(bool bValue, s32 iParam); } toggle;
     struct {
       const char* const* aOptions;
       s32                nOptionCount;
@@ -630,11 +631,12 @@ _scMakeLabel(RECT rcLayout, const wchar_t* wszText, bool bBold) {
 }
 
 scInternal scWidget
-_scMakeToggle(RECT rcLayout, const wchar_t* wszText, bool* pValue, void (*pfnChange)(bool bValue)) {
+_scMakeToggle(RECT rcLayout, const wchar_t* wszText, bool* pValue, s32 iParam, void (*pfnChange)(bool bValue, s32 iParam)) {
   scWidget w = { 0 };
-  w.eType            = SC_WIDGET_TOGGLE;
-  w.rcLayout         = rcLayout;
-  w.u.toggle.pValue  = pValue;
+  w.eType              = SC_WIDGET_TOGGLE;
+  w.rcLayout           = rcLayout;
+  w.u.toggle.pValue    = pValue;
+  w.u.toggle.iParam    = iParam;
   w.u.toggle.pfnChange = pfnChange;
   wcscpy_s(w.wszText, 128, wszText);
   return w;
@@ -1188,7 +1190,19 @@ _scOnLanguageSelected(s32 iIndex) {
   scLocaleSet(scLocaleCode(iIndex));
   gUI.iExpandedDropdown = -1;
   gUI.bNeedsLayout = true;
-  InvalidateRect(gUI.hWindow, NULL, TRUE);
+}
+
+scInternal void _scSetRunOnStartup(bool bEnabled, s32 unused) {
+  scSetRunOnStartup(bEnabled);
+}
+
+scInternal void
+_scRequestNewLayout(bool unused0, s32 iParam) {
+  gUI.bNeedsLayout = true;
+}
+
+scInternal void _scSetAudioDeviceEnabled(bool bEnabled, s32 iDeviceIdx) {
+  scAudioDeviceUpdated((u16)iDeviceIdx);
 }
 
 static const char* const kFramerateOptions[] = { "24", "30", "60" };
@@ -1259,17 +1273,37 @@ _scLayoutSettings(scPage* pPage, RECT rc) {
   }
 
   // Rest of the options
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Copy screenshot to Clipboard"), &gApp->config.bCopyToClipboard, NULL));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Copy screenshot to Clipboard"), &gApp->config.bCopyToClipboard, 0, NULL));
   iY += 45;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Run on Startup"), &gApp->config.bRunAtStartup, scSetRunOnStartup));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Run on Startup"), &gApp->config.bRunAtStartup, 0, _scSetRunOnStartup));
   iY += 45;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Play sound on capture"), &gApp->config.bPlaySoundOnAction, NULL));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Play sound on capture"), &gApp->config.bPlaySoundOnAction, 0, NULL));
   iY += 45;
   if (gApp->bIsGeWin10) {
-    _scPagePush(pPage, _scMakeToggle((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Show notification on capture"), &gApp->config.bShowNotification, NULL));
+    _scPagePush(pPage, _scMakeToggle((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Show notification on capture"), &gApp->config.bShowNotification, 0, NULL));
     iY += 45;
   }
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Start Minimized"), &gApp->config.bStartMinimized, NULL));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Start Minimized"), &gApp->config.bStartMinimized, 0, NULL));
+  iY += 45;
+
+  { // Audio Devices
+    _scPagePush(pPage, _scMakeLabel((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, L"Audio Settings", true));
+    iY += 25;
+
+    _scPagePush(pPage, _scMakeToggle((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Capture Audio"), &gApp->config.bCaptureAudio, 0, _scRequestNewLayout));
+    if (gApp->config.bCaptureAudio) {
+      for (u32 i = 0; i < gAudio.deviceCount; ++i) {
+        scAudioDevice* pDevice = &gAudio.pCaptureDevices[i];
+
+        wchar_t wszName[128];
+        MultiByteToWideChar(CP_ACP, 0, pDevice->szName, -1, wszName, 128);
+
+        iY += 45;
+        _scPagePush(pPage, _scMakeToggle((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, wszName, &pDevice->bIsEnabled, i, _scSetAudioDeviceEnabled));
+      }
+    }
+  }
+
   iY += 45;
 
   _scPagePush(pPage, _scMakeLabel((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, L"Input Settings", true));
@@ -1831,7 +1865,7 @@ _scOnWidgetClicked(scWidget* pWidget) {
     case SC_WIDGET_TOGGLE: {
       *pWidget->u.toggle.pValue = !*pWidget->u.toggle.pValue;
       if (pWidget->u.toggle.pfnChange) {
-        pWidget->u.toggle.pfnChange(*pWidget->u.toggle.pValue);
+        pWidget->u.toggle.pfnChange(*pWidget->u.toggle.pValue, pWidget->u.toggle.iParam);
       }
       scSaveConfig();
       InvalidateRect(gUI.hWindow, NULL, FALSE);

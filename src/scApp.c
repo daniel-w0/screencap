@@ -6,6 +6,7 @@
 #include "scUI.h"
 #include "scLocale.h"
 #include "scNotification.h"
+#include "scAudio.h"
 #include "stb_image_write.h"
 #include "stb_image.h"
 
@@ -167,7 +168,8 @@ _scConfigCreateDefaults(scAppConfig* pOutConfig) {
   pOutConfig->iFFmpegFramerate = 24;
   _scGetDefaultSaveRootPath(pOutConfig->wszSavePath); // defaults to current directory if fails
   _scGetSystemLanguage(pOutConfig->sLanguageCode); // defaults to en if fails
-    
+
+  pOutConfig->bCaptureAudio      = false;
   pOutConfig->bCopyToClipboard   = true;
   pOutConfig->bRunAtStartup      = false;
   pOutConfig->bPlaySoundOnAction = true;
@@ -203,9 +205,10 @@ _scWriteConfig(scAppConfig* pConfig, wchar_t* wszPath) {
 
   _scConfigWriteVersion(wszActualPath);
 
-  WritePrivateProfileStringW(L"options", L"copy_to_clipboard", pConfig->bCopyToClipboard ? L"1" : L"0", wszActualPath);
-  WritePrivateProfileStringW(L"options", L"run_on_startup",    pConfig->bRunAtStartup ? L"1" : L"0", wszActualPath);
-  WritePrivateProfileStringW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction ? L"1" : L"0", wszActualPath);
+  WritePrivateProfileStringW(L"options", L"capture_audio",      pConfig->bCaptureAudio ? L"1" : L"0", wszActualPath);
+  WritePrivateProfileStringW(L"options", L"copy_to_clipboard",  pConfig->bCopyToClipboard ? L"1" : L"0", wszActualPath);
+  WritePrivateProfileStringW(L"options", L"run_on_startup",     pConfig->bRunAtStartup ? L"1" : L"0", wszActualPath);
+  WritePrivateProfileStringW(L"options", L"play_sound",         pConfig->bPlaySoundOnAction ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"show_notification",  pConfig->bShowNotification ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"start_minimized",    pConfig->bStartMinimized ? L"1" : L"0", wszActualPath);
 
@@ -255,6 +258,7 @@ _scConfigReadInto(scAppConfig* pConfig, wchar_t* wszPath) {
     wszActualPath = wszLocalPath;
   }
 
+  pConfig->bCaptureAudio      = GetPrivateProfileIntW(L"options", L"capture_audio", pConfig->bCaptureAudio, wszActualPath) != 0;
   pConfig->bCopyToClipboard   = GetPrivateProfileIntW(L"options", L"copy_to_clipboard", pConfig->bCopyToClipboard, wszActualPath) != 0;
   pConfig->bRunAtStartup      = GetPrivateProfileIntW(L"options", L"run_on_startup",    pConfig->bRunAtStartup, wszActualPath) != 0;
   pConfig->bPlaySoundOnAction = GetPrivateProfileIntW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction, wszActualPath) != 0;
@@ -1078,6 +1082,9 @@ bool scAppInit() {
     scUIOpenWindow();
   }
 
+  scAudioInit();
+  //scAudioTest();
+
   return true;
 }
 
@@ -1121,6 +1128,7 @@ void scAppUpdate() {
 }
 
 void scAppDestroy() {
+  scAudioDestroy();
   _scUnregisterHotkeys();
   free(gApp);
 }
