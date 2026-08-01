@@ -3,12 +3,16 @@
 #include "scLogging.h"
 #include "scAssert.h"
 #include "scUI.h"
+#include "scAudio.h"
 
 typedef struct {
   HANDLE hFFmpegProcess;
   HANDLE hFFmpegStdin;
   wchar_t wszFFmpegPath[SC_PATH_MAX_LEN];
   wchar_t wszSavePath[SC_PATH_MAX_LEN];
+  wchar_t wszTempVideoPath[SC_PATH_MAX_LEN];
+  wchar_t wszTempDir[SC_PATH_MAX_LEN];
+  bool bHasAudio;
 } scRecordContext;
 
 scInternal bool
@@ -18,30 +22,28 @@ _scProbeRegPath(HKEY hRoot, const wchar_t* wszSubkey, const wchar_t* wszExeName,
     return false;
   }
 
-  bool  bFound = false;
+  bool bFound = false;
   DWORD dwType = 0;
   DWORD dwSize = 0;
 
-  // Query size first.
   if (RegQueryValueExW(hKey, L"Path", NULL, &dwType, NULL, &dwSize) != ERROR_SUCCESS || dwSize == 0) {
     RegCloseKey(hKey);
     return false;
   }
 
-  wchar_t* wszRaw = (wchar_t*)malloc(dwSize + sizeof(wchar_t)); // +1 wchar for our own terminator
+  wchar_t* wszRaw = (wchar_t*)malloc(dwSize + sizeof(wchar_t));
   if (!wszRaw) {
     RegCloseKey(hKey);
     return false;
   }
 
   if (RegQueryValueExW(hKey, L"Path", NULL, &dwType, (LPBYTE)wszRaw, &dwSize) == ERROR_SUCCESS) {
-    wszRaw[dwSize / sizeof(wchar_t)] = L'\0'; // reg strings aren't guaranteed terminated
+    wszRaw[dwSize / sizeof(wchar_t)] = L'\0';
 
-    // Expand %VARS% if needed.
-    wchar_t* wszPath     = wszRaw;
+    wchar_t* wszPath = wszRaw;
     wchar_t* wszExpanded = NULL;
     if (dwType == REG_EXPAND_SZ) {
-      DWORD dwNeed = ExpandEnvironmentStringsW(wszRaw, NULL, 0); // count in CHARS incl. null
+      DWORD dwNeed = ExpandEnvironmentStringsW(wszRaw, NULL, 0);
       if (dwNeed > 0) {
         wszExpanded = (wchar_t*)malloc((size_t)dwNeed * sizeof(wchar_t));
         if (wszExpanded) {
@@ -51,24 +53,22 @@ _scProbeRegPath(HKEY hRoot, const wchar_t* wszSubkey, const wchar_t* wszExeName,
       }
     }
 
-    // Walk the ';'-separated dirs.
-    const s32 nLen   = (s32)wcslen(wszPath);
-    s32       iStart = 0;
+    const s32 nLen = (s32)wcslen(wszPath);
+    s32 iStart = 0;
     while (iStart <= nLen && !bFound) {
       const wchar_t* pSemi = wcschr(wszPath + iStart, L';');
-      const s32      iEnd  = pSemi ? (s32)(pSemi - wszPath) : nLen;
-      const s32      iSeg  = iStart;
-      s32            nDir  = iEnd - iStart;
+      const s32 iEnd = pSemi ? (s32)(pSemi - wszPath) : nLen;
+      const s32 iSeg = iStart;
+      s32 nDir = iEnd - iStart;
       iStart = iEnd + 1;
 
-      wchar_t wszDir[MAX_PATH];
+      wchar_t wszDir[SC_PATH_MAX_LEN];
       if (nDir <= 0 || nDir >= (s32)ARRAYSIZE(wszDir)) {
         continue;
       }
       memcpy(wszDir, wszPath + iSeg, (size_t)nDir * sizeof(wchar_t));
       wszDir[nDir] = L'\0';
 
-      // Strip surrounding quotes..
       if (nDir >= 2 && wszDir[0] == L'"' && wszDir[nDir - 1] == L'"') {
         memmove(wszDir, wszDir + 1, (size_t)(nDir - 2) * sizeof(wchar_t));
         nDir -= 2;
@@ -78,10 +78,10 @@ _scProbeRegPath(HKEY hRoot, const wchar_t* wszSubkey, const wchar_t* wszExeName,
         continue;
       }
 
-      const wchar_t  cLast  = wszDir[nDir - 1];
+      const wchar_t cLast = wszDir[nDir - 1];
       const wchar_t* wszSep = (cLast == L'\\' || cLast == L'/') ? L"" : L"\\";
 
-      wchar_t wszCandidate[MAX_PATH];
+      wchar_t wszCandidate[SC_PATH_MAX_LEN];
       if (swprintf(wszCandidate, ARRAYSIZE(wszCandidate), L"%ls%ls%ls", wszDir, wszSep, wszExeName) < 0) {
         continue;
       }
@@ -104,8 +104,8 @@ _scProbeRegPath(HKEY hRoot, const wchar_t* wszSubkey, const wchar_t* wszExeName,
 
 scInternal bool
 _scFindExecutable(const wchar_t* wszExeName, wchar_t* wszOutPath, s32 nOutCap) {
-  wchar_t wszSearchBuf[MAX_PATH];
-  DWORD   dwLen = SearchPathW(NULL, wszExeName, NULL, ARRAYSIZE(wszSearchBuf), wszSearchBuf, NULL);
+  wchar_t wszSearchBuf[SC_PATH_MAX_LEN];
+  DWORD dwLen = SearchPathW(NULL, wszExeName, NULL, ARRAYSIZE(wszSearchBuf), wszSearchBuf, NULL);
   if (dwLen > 0 && dwLen < ARRAYSIZE(wszSearchBuf)) {
     wcsncpy(wszOutPath, wszSearchBuf, nOutCap - 1);
     wszOutPath[nOutCap - 1] = L'\0';
@@ -120,6 +120,42 @@ _scFindExecutable(const wchar_t* wszExeName, wchar_t* wszOutPath, s32 nOutCap) {
   }
 
   return false;
+}
+
+scInternal void
+_scMergeAudioAndVideo(scRecordContext* pCtx, wchar_t aWavPaths[][SC_PATH_MAX_LEN], uint32_t wavCount) {
+  wchar_t wszCmd[4096];
+  int nOffset = 0;
+
+  nOffset += swprintf(wszCmd + nOffset, ARRAYSIZE(wszCmd) - nOffset, L"\"%ls\" -y -i \"%ls\"", pCtx->wszFFmpegPath, pCtx->wszTempVideoPath);
+
+  for (uint32_t i = 0; i < wavCount; i++) {
+    nOffset += swprintf(wszCmd + nOffset, ARRAYSIZE(wszCmd) - nOffset, L" -i \"%ls\"", aWavPaths[i]);
+  }
+
+  if (wavCount == 1) {
+    nOffset += swprintf(wszCmd + nOffset, ARRAYSIZE(wszCmd) - nOffset, L" -c:v copy -c:a aac \"%ls\"", pCtx->wszSavePath);
+  } else {
+    nOffset += swprintf(wszCmd + nOffset, ARRAYSIZE(wszCmd) - nOffset, L" -filter_complex amix=inputs=%u:duration=longest -c:v copy -c:a aac \"%ls\"", wavCount, pCtx->wszSavePath);
+  }
+
+  STARTUPINFOW si = { sizeof(STARTUPINFOW) };
+  si.dwFlags = STARTF_USESHOWWINDOW;
+  si.wShowWindow = SW_HIDE;
+  PROCESS_INFORMATION pi = { 0 };
+
+  if (CreateProcessW(NULL, wszCmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+  } else {
+    scLogError("Failed to merge audio and video with FFmpeg");
+  }
+
+  DeleteFileW(pCtx->wszTempVideoPath);
+  for (uint32_t i = 0; i < wavCount; i++) {
+    DeleteFileW(aWavPaths[i]);
+  }
 }
 
 scInternal bool
@@ -147,39 +183,48 @@ _startRecording(scRecordContext* pCtx, scRect rect) {
     return false;
   }
 
-  wchar_t wszDir[MAX_PATH];
-  wchar_t wszName[MAX_PATH];
-  if (!scGetSavePath(wszDir, MAX_PATH) || !scGetFilename(wszName, MAX_PATH, ".mp4")) {
+  wchar_t wszDir[SC_PATH_MAX_LEN];
+  wchar_t wszName[SC_PATH_MAX_LEN];
+  if (!scGetSavePath(wszDir, SC_PATH_MAX_LEN) || !scGetFilename(wszName, SC_PATH_MAX_LEN, ".mp4")) {
     CloseHandle(hReadPipe);
     CloseHandle(hWritePipe);
     return false;
   }
 
-  swprintf(pCtx->wszSavePath, MAX_PATH, L"%ls\\%ls", wszDir, wszName);
+  GetTempPathW(SC_PATH_MAX_LEN, pCtx->wszTempDir);
+  swprintf(pCtx->wszSavePath, SC_PATH_MAX_LEN, L"%ls\\%ls", wszDir, wszName);
+
+  pCtx->bHasAudio = gApp->config.bCaptureAudio && scAudioStartRecording(pCtx->wszTempDir);
+
+  if (pCtx->bHasAudio) {
+    swprintf(pCtx->wszTempVideoPath, SC_PATH_MAX_LEN, L"%ls\\sc_temp_video.mp4", pCtx->wszTempDir);
+  } else {
+    wcsncpy(pCtx->wszTempVideoPath, pCtx->wszSavePath, SC_PATH_MAX_LEN);
+  }
 
   wchar_t wszCmd[1024];
   if (gApp->bIsGeWin10) {
     swprintf(wszCmd, ARRAYSIZE(wszCmd),
              L"\"%ls\" -y -f gdigrab -framerate %d -offset_x %d -offset_y %d "
              L"-video_size %dx%d -i desktop -c:v libx264 -pix_fmt yuv420p \"%ls\"",
-             pCtx->wszFFmpegPath, gApp->config.iFFmpegFramerate, rect.x, rect.y, w, h, pCtx->wszSavePath);
+             pCtx->wszFFmpegPath, gApp->config.iFFmpegFramerate, rect.x, rect.y, w, h, pCtx->wszTempVideoPath);
   } else {
     swprintf(wszCmd, ARRAYSIZE(wszCmd),
              L"\"%ls\" -y -f gdigrab -framerate %d -offset_x %d -offset_y %d "
              L"-video_size %dx%d -i desktop -c:v mpeg4 -qscale:v 4 \"%ls\"",
-             pCtx->wszFFmpegPath, gApp->config.iFFmpegFramerate, rect.x, rect.y, w, h, pCtx->wszSavePath);
+             pCtx->wszFFmpegPath, gApp->config.iFFmpegFramerate, rect.x, rect.y, w, h, pCtx->wszTempVideoPath);
   }
 
   HANDLE hCon = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
-  bool   bHaveConsole = (hCon != INVALID_HANDLE_VALUE);
+  bool bHaveConsole = (hCon != INVALID_HANDLE_VALUE);
   HANDLE hOut = bHaveConsole ? hCon : CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
 
   STARTUPINFOW si = { sizeof(STARTUPINFOW) };
-  si.dwFlags     = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+  si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
   si.wShowWindow = SW_HIDE;
-  si.hStdInput   = hReadPipe;
-  si.hStdOutput  = hOut;
-  si.hStdError   = hOut;
+  si.hStdInput = hReadPipe;
+  si.hStdOutput = hOut;
+  si.hStdError = hOut;
 
   PROCESS_INFORMATION pi = { 0 };
   DWORD flags = bHaveConsole ? 0 : CREATE_NO_WINDOW;
@@ -187,7 +232,7 @@ _startRecording(scRecordContext* pCtx, scRect rect) {
   bool ok = false;
   if (CreateProcessW(NULL, wszCmd, NULL, NULL, TRUE, flags, NULL, NULL, &si, &pi)) {
     pCtx->hFFmpegProcess = pi.hProcess;
-    pCtx->hFFmpegStdin   = hWritePipe;
+    pCtx->hFFmpegStdin = hWritePipe;
     CloseHandle(pi.hThread);
     ok = true;
   } else {
@@ -224,11 +269,22 @@ _stopRecording(scRecordContext* pCtx) {
     CloseHandle(pCtx->hFFmpegProcess);
     CloseHandle(pCtx->hFFmpegStdin);
     pCtx->hFFmpegProcess = 0;
-    pCtx->hFFmpegStdin   = 0;
+    pCtx->hFFmpegStdin = 0;
+
+    wchar_t aWavPaths[SC_MAX_ACTIVE_RECORDERS][SC_PATH_MAX_LEN];
+    uint32_t wavCount = 0;
+
+    if (pCtx->bHasAudio) {
+      scAudioStopRecording(aWavPaths, &wavCount);
+      if (wavCount > 0) {
+        _scMergeAudioAndVideo(pCtx, aWavPaths, wavCount);
+      }
+    }
+
     scUIOnCaptureSaved(pCtx->wszSavePath);
     scLogInfo("Stopped recording");
   } else {
-    scLogError("Failed to stop recording normally??????? I have no idea what to do here. Sorry. Maybe force close screencap or any ffmpeg.exe instances");
+    scLogError("Failed to stop recording normally");
   }
 
   scPlaySoundOrSkip(SC_SOUND_SCREENSHOT);

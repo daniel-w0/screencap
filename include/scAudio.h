@@ -3,6 +3,8 @@
 
 #include "miniaudio.h"
 
+#define SC_MAX_ACTIVE_RECORDERS 8
+
 typedef struct {
   char szName[128];
   ma_device_id id;
@@ -11,9 +13,18 @@ typedef struct {
 } scAudioDevice;
 
 typedef struct {
+  ma_device device;
+  ma_encoder encoder;
+  wchar_t wszWavPath[SC_PATH_MAX_LEN];
+  bool bIsActive;
+} scAudioRecorder;
+
+typedef struct {
   scAudioDevice* pCaptureDevices;
-  u32 deviceCount;
+  uint32_t deviceCount;
   ma_context maCtx;
+  scAudioRecorder aRecorders[SC_MAX_ACTIVE_RECORDERS];
+  uint32_t activeRecorderCount;
 } scAudio;
 
 extern scAudio gAudio;
@@ -21,6 +32,9 @@ extern scAudio gAudio;
 bool scAudioInit();
 void scAudioDestroy();
 void scAudioDeviceUpdated(u16 uDeviceIdx);
+
+bool scAudioStartRecording(const wchar_t* wszTempDir);
+void scAudioStopRecording(wchar_t pOutWavPaths[][SC_PATH_MAX_LEN], uint32_t* pOutCount);
 
 void scAudioTest();
 
