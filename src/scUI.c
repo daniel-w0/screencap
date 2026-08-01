@@ -174,6 +174,7 @@ typedef struct {
 
   wchar_t wszGalleryDir[MAX_PATH]; // current folder being browsed in the gallery explorer
   wchar_t aGalleryHistory[SC_GALLERY_HISTORY_MAX][MAX_PATH];
+  s32     anGalleryScrollY[SC_GALLERY_HISTORY_MAX];
   s32     nGalleryHistoryCount;
   s32     nGalleryHistoryPos;
 } scUI;
@@ -1438,12 +1439,19 @@ _scPathIsUnderRoot(const wchar_t* wszChild, const wchar_t* wszRoot) {
 }
 
 scInternal void
-_scGalleryRefresh() {
+_scGalleryRefresh(s32 nRestoreScrollY) {
   _scThumbCacheClear();
-  gUI.aPages[SC_PAGE_GALLERY].scroll.nScrollY = 0;
+  gUI.aPages[SC_PAGE_GALLERY].scroll.nScrollY = nRestoreScrollY;
   gUI.bNeedsLayout = true;
   if (gUI.hWindow) {
     InvalidateRect(gUI.hWindow, NULL, TRUE);
+  }
+}
+
+scInternal void
+_scGalleryHistorySaveScroll() {
+  if (gUI.nGalleryHistoryCount > 0) {
+    gUI.anGalleryScrollY[gUI.nGalleryHistoryPos] = gUI.aPages[SC_PAGE_GALLERY].scroll.nScrollY;
   }
 }
 
@@ -1457,17 +1465,19 @@ _scGalleryHistoryPush(const wchar_t* wszDir) {
   }
 
   wcscpy_s(gUI.aGalleryHistory[gUI.nGalleryHistoryCount], MAX_PATH, wszDir);
+  gUI.anGalleryScrollY[gUI.nGalleryHistoryCount] = 0;
   ++gUI.nGalleryHistoryCount;
   gUI.nGalleryHistoryPos = gUI.nGalleryHistoryCount - 1;
 }
 
 scInternal void
 _scGalleryNavigateInto(const char* szFolderPath) {
+  _scGalleryHistorySaveScroll();
   wchar_t wszPath[MAX_PATH];
   MultiByteToWideChar(CP_ACP, 0, szFolderPath, -1, wszPath, MAX_PATH);
   wcscpy_s(gUI.wszGalleryDir, MAX_PATH, wszPath);
   _scGalleryHistoryPush(gUI.wszGalleryDir);
-  _scGalleryRefresh();
+  _scGalleryRefresh(0);
 }
 
 scInternal void
@@ -1475,13 +1485,15 @@ _scGalleryHistoryBack() {
   if (gUI.nGalleryHistoryPos <= 0) {
     return;
   }
+  _scGalleryHistorySaveScroll();
   --gUI.nGalleryHistoryPos;
   wcscpy_s(gUI.wszGalleryDir, MAX_PATH, gUI.aGalleryHistory[gUI.nGalleryHistoryPos]);
-  _scGalleryRefresh();
+  _scGalleryRefresh(gUI.anGalleryScrollY[gUI.nGalleryHistoryPos]);
 }
 
 scInternal void
 _scGalleryNavigateUp() {
+  _scGalleryHistorySaveScroll();
   wchar_t wszParent[MAX_PATH];
   wcscpy_s(wszParent, MAX_PATH, gUI.wszGalleryDir);
   _scPathStripTrailingSlash(wszParent);
@@ -1507,7 +1519,7 @@ _scGalleryNavigateUp() {
 
   wcscpy_s(gUI.wszGalleryDir, MAX_PATH, wszParent);
   _scGalleryHistoryPush(gUI.wszGalleryDir);
-  _scGalleryRefresh();
+  _scGalleryRefresh(0);
 }
 
 scInternal void
@@ -1515,9 +1527,10 @@ _scGalleryHistoryForward() {
   if (gUI.nGalleryHistoryPos >= gUI.nGalleryHistoryCount - 1) {
     return;
   }
+  _scGalleryHistorySaveScroll();
   ++gUI.nGalleryHistoryPos;
   wcscpy_s(gUI.wszGalleryDir, MAX_PATH, gUI.aGalleryHistory[gUI.nGalleryHistoryPos]);
-  _scGalleryRefresh();
+  _scGalleryRefresh(gUI.anGalleryScrollY[gUI.nGalleryHistoryPos]);
 }
 
 scInternal void
