@@ -19,6 +19,8 @@
 #define WM_HOTKEY_RECORDED (WM_APP + 100)
 #define WM_THUMB_LOADED    (WM_APP + 101)
 
+#define SC_GALLERY_HISTORY_MAX 12 // For back and forward buttons on mouse, likely don't need much history.
+
 //------------------------------------------------------------------------
 // Types
 //------------------------------------------------------------------------
@@ -171,6 +173,9 @@ typedef struct {
   s32      nThumbCap;
 
   wchar_t wszGalleryDir[MAX_PATH]; // current folder being browsed in the gallery explorer
+  wchar_t aGalleryHistory[SC_GALLERY_HISTORY_MAX][MAX_PATH];
+  s32     nGalleryHistoryCount;
+  s32     nGalleryHistoryPos;
 } scUI;
 
 static scUI gUI;
@@ -1443,10 +1448,35 @@ _scGalleryRefresh() {
 }
 
 scInternal void
+_scGalleryHistoryPush(const wchar_t* wszDir) {
+  gUI.nGalleryHistoryCount = (gUI.nGalleryHistoryCount == 0) ? 0 : gUI.nGalleryHistoryPos + 1;
+
+  if (gUI.nGalleryHistoryCount >= SC_GALLERY_HISTORY_MAX) {
+    memmove(gUI.aGalleryHistory[0], gUI.aGalleryHistory[1], (SC_GALLERY_HISTORY_MAX - 1) * sizeof(gUI.aGalleryHistory[0]));
+    --gUI.nGalleryHistoryCount;
+  }
+
+  wcscpy_s(gUI.aGalleryHistory[gUI.nGalleryHistoryCount], MAX_PATH, wszDir);
+  ++gUI.nGalleryHistoryCount;
+  gUI.nGalleryHistoryPos = gUI.nGalleryHistoryCount - 1;
+}
+
+scInternal void
 _scGalleryNavigateInto(const char* szFolderPath) {
   wchar_t wszPath[MAX_PATH];
   MultiByteToWideChar(CP_ACP, 0, szFolderPath, -1, wszPath, MAX_PATH);
   wcscpy_s(gUI.wszGalleryDir, MAX_PATH, wszPath);
+  _scGalleryHistoryPush(gUI.wszGalleryDir);
+  _scGalleryRefresh();
+}
+
+scInternal void
+_scGalleryHistoryBack() {
+  if (gUI.nGalleryHistoryPos <= 0) {
+    return;
+  }
+  --gUI.nGalleryHistoryPos;
+  wcscpy_s(gUI.wszGalleryDir, MAX_PATH, gUI.aGalleryHistory[gUI.nGalleryHistoryPos]);
   _scGalleryRefresh();
 }
 
@@ -1469,7 +1499,24 @@ _scGalleryNavigateUp() {
     wcscpy_s(wszParent, MAX_PATH, wszRoot);
   }
 
+  if (gUI.nGalleryHistoryPos > 0 &&
+    _scPathsEqualNormalized(wszParent, gUI.aGalleryHistory[gUI.nGalleryHistoryPos - 1])) {
+    _scGalleryHistoryBack();
+    return;
+  }
+
   wcscpy_s(gUI.wszGalleryDir, MAX_PATH, wszParent);
+  _scGalleryHistoryPush(gUI.wszGalleryDir);
+  _scGalleryRefresh();
+}
+
+scInternal void
+_scGalleryHistoryForward() {
+  if (gUI.nGalleryHistoryPos >= gUI.nGalleryHistoryCount - 1) {
+    return;
+  }
+  ++gUI.nGalleryHistoryPos;
+  wcscpy_s(gUI.wszGalleryDir, MAX_PATH, gUI.aGalleryHistory[gUI.nGalleryHistoryPos]);
   _scGalleryRefresh();
 }
 
@@ -1483,6 +1530,7 @@ _scLayoutGallery(scPage* pPage, RECT rc) {
       pPage->scroll.nMaxScrollY = 0;
       return;
     }
+    _scGalleryHistoryPush(gUI.wszGalleryDir);
   }
 
   wchar_t wszDir[MAX_PATH];
@@ -2153,6 +2201,17 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
       }
       return 0;
+    }
+    case WM_XBUTTONUP: {
+      if (gUI.eCurrentPage == SC_PAGE_GALLERY) {
+        s32 iButton = GET_XBUTTON_WPARAM(wParam);
+        if (iButton == XBUTTON1) {
+          _scGalleryHistoryBack();
+        } else if (iButton == XBUTTON2) {
+          _scGalleryHistoryForward();
+        }
+      }
+      return TRUE;
     }
     case WM_CAPTURECHANGED: {
       gUI.drag.bActive = false;
