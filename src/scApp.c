@@ -528,6 +528,24 @@ _scPaintMagnifier(scCaptureContext* pCtx, HDC hMemDC) {
   DeleteObject(hPen);
 }
 
+scInternal void
+_scHandleCaptureCancel(scCaptureContext* pCtx) {
+  if (pCtx->bMouseDown) {
+    // Cancel the in-progress drag, but stay in capture mode.
+    ReleaseCapture();
+    pCtx->bMouseDown = false;
+    pCtx->bDragging  = false;
+    POINT stPoint;
+    GetCursorPos(&stPoint);
+    _scUpdateHoverRect(pCtx, stPoint);
+    InvalidateRect(pCtx->hOverlayWindow, NULL, FALSE);
+  } else {
+    // Cancel the whole capture.
+    ShowWindow(pCtx->hOverlayWindow, SW_HIDE);
+    scDestroyCaptureContext(gApp->pCaptureContext);
+  }
+}
+
 LRESULT CALLBACK
 OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
   scCaptureContext* pCtx = gApp->pCaptureContext;
@@ -614,23 +632,13 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       }
       return 0;
     }
-
+    case WM_RBUTTONDOWN: {
+      _scHandleCaptureCancel(pCtx);
+      return 0;
+    }
     case WM_KEYDOWN: {
       if (wParam == VK_ESCAPE) {
-        if (pCtx->bMouseDown) {
-          // Cancel the in-progress drag, but stay in capture mode.
-          ReleaseCapture();
-          pCtx->bMouseDown = false;
-          pCtx->bDragging  = false;
-          POINT stPoint;
-          GetCursorPos(&stPoint);
-          _scUpdateHoverRect(pCtx, stPoint);
-          InvalidateRect(hWnd, NULL, FALSE);
-        } else {
-          // Cancel the whole capture.
-          ShowWindow(hWnd, SW_HIDE);
-          scDestroyCaptureContext(gApp->pCaptureContext);
-        }
+        _scHandleCaptureCancel(pCtx);
       }
       return 0;
     }
