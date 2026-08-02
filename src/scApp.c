@@ -813,6 +813,19 @@ _scGetSystemMetrics(s32* X, s32* Y, s32* W, s32* H) {
   *H = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 }
 
+scInternal LRESULT CALLBACK
+_scLowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+  if (nCode == HC_ACTION && wParam == WM_KEYDOWN) {
+    KBDLLHOOKSTRUCT* pKb = (KBDLLHOOKSTRUCT*)lParam;
+    if (pKb->vkCode == VK_ESCAPE && gApp->pCaptureContext) {
+      _scHandleCaptureCancel(gApp->pCaptureContext);
+      return 1;
+    }
+  }
+  HHOOK hNext = gApp->pCaptureContext ? gApp->pCaptureContext->hKeyboardHook : 0;
+  return CallNextHookEx(hNext, nCode, wParam, lParam);
+}
+
 bool scGetWindowRect(HWND hWnd, RECT* wr) {
   if (DwmGetWindowAttribute(hWnd, DWMWA_EXTENDED_FRAME_BOUNDS, wr, sizeof(RECT)) != S_OK) {
     if (!GetWindowRect(hWnd, wr)) return false;
@@ -829,6 +842,10 @@ void scDestroyCaptureContext(scCaptureContext* pCtx) {
   if (pCtx->hOverlayWindow) {
     DestroyWindow(pCtx->hOverlayWindow);
     scLogDebug("Destroyed overlay window");
+  }
+  if (pCtx->hKeyboardHook) {
+    UnhookWindowsHookEx(pCtx->hKeyboardHook);
+    pCtx->hKeyboardHook = NULL;
   }
   if (pCtx->hFrozenDC) {
     DeleteDC(pCtx->hFrozenDC);
@@ -871,11 +888,16 @@ _scBeginCaptureContext() {
     scDestroyCaptureContext(gApp->pCaptureContext);
   }
   gApp->pCaptureContext = (scCaptureContext*)calloc(1, sizeof(scCaptureContext));
+  gApp->pCaptureContext->eHotkeyID = SC_HOTKEY_INVALID;
   return gApp->pCaptureContext != NULL;
 }
 
 scInternal bool
 _scCtxCreateCaptureWindow(scCaptureContext* pCtx) {
+  if (pCtx->hOverlayWindow) {
+    return false;
+  }
+
   s32 iScreenX, iScreenY, iScreenW, iScreenH;
   _scGetSystemMetrics(&iScreenX, &iScreenY, &iScreenW, &iScreenH);
 
@@ -903,8 +925,19 @@ _scCtxCreateCaptureWindow(scCaptureContext* pCtx) {
     return false;
   }
 
+  if (!pCtx->hKeyboardHook) {
+    pCtx->hKeyboardHook = SetWindowsHookExA(WH_KEYBOARD_LL, _scLowLevelKeyboardProc, GetModuleHandleA(NULL), 0);
+  } else {
+    scLogWarn("Keyboard hook is still installed during the time of creating a new capture window");
+  }
+
   ShowWindow(pCtx->hOverlayWindow, SW_SHOW);
-  SetForegroundWindow(pCtx->hOverlayWindow);
+  if (!SetForegroundWindow(pCtx->hOverlayWindow)) {
+    scLogError("SetForegroundWindow failed for the overlay window! Error code: %d", GetLastError());
+    DestroyWindow(pCtx->hOverlayWindow);
+    pCtx->hOverlayWindow = NULL;
+    return false;
+  }
   SetFocus(pCtx->hOverlayWindow);
   return true;
 }
@@ -985,12 +1018,15 @@ void scAppRunHandlerFromActionID(scHotkeyID iHotkeyID) {
       bHasValidContext = _scBeginCaptureContext();
     }
     if (bHasValidContext) {
-      gApp->pCaptureContext->eHotkeyID = iHotkeyID;
-      gApp->pActiveHandler = pHandler;
+      if (gApp->pCaptureContext->eHotkeyID == SC_HOTKEY_INVALID
+        || gApp->pCaptureContext->eHotkeyID == iHotkeyID) {
+        gApp->pCaptureContext->eHotkeyID = iHotkeyID;
+        gApp->pActiveHandler = pHandler;
 
-      // returns true if we should destroy
-      if (pHandler->cbOnHotkeyPressed(gApp->pCaptureContext)) {
-        scDestroyCaptureContext(gApp->pCaptureContext);
+        // returns true if we should destroy
+        if (pHandler->cbOnHotkeyPressed(gApp->pCaptureContext)) {
+          scDestroyCaptureContext(gApp->pCaptureContext);
+        }
       }
     } else {
       scLogError("Skipping screen capture due to invalid context!");
@@ -1534,11 +1570,12 @@ bool scClipboardSetImage(scClipboard* pCb, scImage* pImg) {
 
 //------------------------------------------------------------------------
 // Other Application
-void scCtxRequestCaptureArea(scCaptureContext* pCtx) {
+bool scCtxRequestCaptureArea(scCaptureContext* pCtx) {
   scAssert(pCtx, "pCtx is null!");
   if (!_scCtxCreateCaptureWindow(gApp->pCaptureContext)) {
-    scDestroyCaptureContext(pCtx);
+    return false;
   }
+  return true;
 }
 
 bool scCtxCopyToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect) {

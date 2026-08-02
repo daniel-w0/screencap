@@ -22,7 +22,8 @@ typedef enum {
   SC_HOTKEY_ACTIVE_MONITOR,
   SC_HOTKEY_FALLBACK_SCREENSHOT,
   SC_HOTKEY_RECORD,
-  _SC_HOTKEY_COUNT
+  _SC_HOTKEY_COUNT,
+  SC_HOTKEY_INVALID
 } scHotkeyID;
 
 typedef enum {
@@ -85,6 +86,7 @@ typedef struct {
   scV2I stDragStart;
   scRect stFinalRect;
   HWND hHoveredWindow;
+  HHOOK hKeyboardHook;
 
   // Magnifier stuff..
   HDC     hMagDC;
@@ -171,7 +173,7 @@ bool scClipboardSetImage(scClipboard* pCb, scImage* pImg);
 bool scGetWindowRect(HWND hWnd, RECT* wr);
 
 void scDestroyCaptureContext(scCaptureContext* pCtx);
-void scCtxRequestCaptureArea(scCaptureContext* pCtx);
+bool scCtxRequestCaptureArea(scCaptureContext* pCtx);
 
 bool scCopyWindowToImage(HWND hWnd, scImage* pOutImage);
 bool scCopyAreaToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect);
