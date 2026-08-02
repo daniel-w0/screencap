@@ -1305,7 +1305,7 @@ _scIsImageFile(const wchar_t* wszName) {
 
 typedef struct {
   wchar_t  wszName[MAX_PATH];
-  FILETIME ftWrite;
+  FILETIME ftCreate;
 } _scFileEntry;
 
 scInternal s32
@@ -1332,7 +1332,7 @@ scInternal int
 _scCompareFileTime(const void* a, const void* b) {
   const _scFileEntry* pA = (const _scFileEntry*)a;
   const _scFileEntry* pB = (const _scFileEntry*)b;
-  return CompareFileTime(&pB->ftWrite, &pA->ftWrite); // newest first
+  return CompareFileTime(&pB->ftCreate, &pA->ftCreate); // newest first
 }
 
 scInternal void
@@ -1356,7 +1356,7 @@ _scGalleryLoadImages(const wchar_t* wszPath, _scFileEntry** paOutFiles, s32* pnO
         aFiles   = (_scFileEntry*)realloc(aFiles, nFileCap * sizeof(_scFileEntry));
       }
       wcscpy_s(aFiles[nFiles].wszName, MAX_PATH, fd.cFileName);
-      aFiles[nFiles].ftWrite = fd.ftLastWriteTime;
+      aFiles[nFiles].ftCreate = fd.ftCreationTime;
       ++nFiles;
     } while (FindNextFileW(hFind, &fd));
     FindClose(hFind);
@@ -1394,7 +1394,7 @@ _scGalleryLoadFolders(const wchar_t* wszPath, _scFileEntry** paOutFolders, s32* 
         aFolders   = (_scFileEntry*)realloc(aFolders, nFolderCap * sizeof(_scFileEntry));
       }
       wcscpy_s(aFolders[nFolders].wszName, MAX_PATH, fd.cFileName);
-      aFolders[nFolders].ftWrite = fd.ftLastWriteTime;
+      aFolders[nFolders].ftCreate = fd.ftCreationTime;
       ++nFolders;
     } while (FindNextFileW(hFind, &fd));
     FindClose(hFind);
