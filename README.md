@@ -26,13 +26,16 @@ And you will not be able to use OCR in this, but everything else will work.
 
 ## Screenshots
 ### Interactive Mode
-![interactive](screenshots/capture_window.png)
+![interactive](screenshots/interactive.png)
 ### General
 ![general](screenshots/general.png)
-### Input
-![input](screenshots/input.png)
-### Recents
-![recents](screenshots/recents.png)
+### Settings
+![settings](screenshots/settings.png)
+### Gallery
+![gallery](screenshots/gallery0.png)
+![gallery1](screenshots/gallery1.png)
+### Logs
+![logs](screenshots/logs.png)
 ### Windows 7
 ![win7](screenshots/win7.png)
 
