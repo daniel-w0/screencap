@@ -1,6 +1,8 @@
 #ifndef SC_UI_H
 #define SC_UI_H
 
+#include "scTypes.h"
+
 #define IDI_APP_ICON 101
 
 typedef enum {
@@ -16,5 +18,8 @@ void scUIOpenWindow();
 void scUICloseWindow();
 void scUISetCurrentPage(scPageID ePageID);
 void scUIOnCaptureSaved(const wchar_t* wszPath);
+COLORREF scGetSystemAccentColor();
+bool scIsWindowsDarkTheme();
+COLORREF scBlendColor(COLORREF a, COLORREF b, f32 f);
 
 #endif // SC_UI_H

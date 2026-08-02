@@ -304,8 +304,7 @@ scInternal s32 _scMix(s32 x, s32 y, f32 f) {
   return (s32)(x + (y - x) * f);
 }
 
-scInternal COLORREF
-_scBlendColor(COLORREF a, COLORREF b, f32 f) {
+COLORREF scBlendColor(COLORREF a, COLORREF b, f32 f) {
   return RGB(
     _scMix(GetRValue(a), GetRValue(b), f),
     _scMix(GetGValue(a), GetGValue(b), f),
@@ -318,8 +317,7 @@ _scColorIsLight(COLORREF c) {
   return (GetRValue(c) * 299 + GetGValue(c) * 587 + GetBValue(c) * 114) / 1000 > 150;
 }
 
-scInternal bool
-_scIsWindowsDarkTheme() {
+bool scIsWindowsDarkTheme() {
   if (gApp->bIsGeWin10) {
     DWORD val = 1, size = sizeof(val);
     if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
@@ -330,8 +328,7 @@ _scIsWindowsDarkTheme() {
   return false;
 }
 
-scInternal COLORREF
-_scGetSystemAccentColor() {
+COLORREF scGetSystemAccentColor() {
   const COLORREF dwDefaultAccent = RGB(0, 120, 215);
   if (gApp->bIsGeWin10) {
     DWORD val = 0, size = sizeof(val);
@@ -2310,7 +2307,7 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     }
     case WM_SETTINGCHANGE: {
       if (gApp->bIsGeWin10 && lParam && wcscmp((const wchar_t*)lParam, L"ImmersiveColorSet") == 0) {
-        if (_scIsWindowsDarkTheme() != gUI.theme.bDark || _scGetSystemAccentColor() != gUI.theme.dwAccent) {
+        if (scIsWindowsDarkTheme() != gUI.theme.bDark || scGetSystemAccentColor() != gUI.theme.dwAccent) {
           _scUISetupTheme();
           BOOL bDark = gUI.theme.bDark;
           DwmSetWindowAttribute(hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &bDark, sizeof(bDark));
@@ -2357,8 +2354,8 @@ _scUISetupTheme() {
   pTheme->pFont     = CreateFontA(_scScale(15), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
   pTheme->pBoldFont = CreateFontA(_scScale(15), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
 
-  pTheme->dwAccent = _scGetSystemAccentColor();
-  pTheme->bDark  = _scIsWindowsDarkTheme();
+  pTheme->dwAccent = scGetSystemAccentColor();
+  pTheme->bDark  = scIsWindowsDarkTheme();
 
   if (pTheme->bDark) {
     pTheme->dwBackground  = RGB(28, 28, 28);
@@ -2377,7 +2374,7 @@ _scUISetupTheme() {
     pTheme->dwWarn        = RGB(230, 180, 80);
     pTheme->dwError       = RGB(255, 99, 97);
     pTheme->dwScrollThumb = RGB(170, 170, 170);
-    pTheme->dwAccentHover = _scBlendColor(pTheme->dwAccent, RGB(255, 255, 255), 0.15f);
+    pTheme->dwAccentHover = scBlendColor(pTheme->dwAccent, RGB(255, 255, 255), 0.15f);
   } else {
     pTheme->dwBackground  = RGB(243, 243, 243);
     pTheme->dwSidebar     = RGB(236, 236, 236);
@@ -2395,7 +2392,7 @@ _scUISetupTheme() {
     pTheme->dwWarn        = RGB(176, 124, 0);
     pTheme->dwError       = RGB(196, 43, 28);
     pTheme->dwScrollThumb = RGB(120, 120, 120);
-    pTheme->dwAccentHover = _scBlendColor(pTheme->dwAccent, RGB(0, 0, 0), 0.15f);
+    pTheme->dwAccentHover = scBlendColor(pTheme->dwAccent, RGB(0, 0, 0), 0.15f);
   }
 
   pTheme->hBackgroundBrush = CreateSolidBrush(pTheme->dwBackground);

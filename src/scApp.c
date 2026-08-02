@@ -510,7 +510,7 @@ _scPaintMagnifier(scCaptureContext* pCtx, HDC hMemDC) {
 
   BitBlt(hMemDC, destX, destY, SC_MAG_SIZE, SC_MAG_SIZE, pCtx->hMagDC, 0, 0, SRCCOPY);
 
-  HPEN hPen    = CreatePen(PS_SOLID, 1, RGB(156, 215, 228));
+  HPEN hPen    = CreatePen(PS_SOLID, 1, pCtx->cAccentColor);
   HPEN hOldPen = SelectObject(hMemDC, hPen);
 
   // Crosshair.
@@ -698,7 +698,7 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
       // Dotted selection border.
       {
-        HPEN   hPen      = CreatePen(PS_DOT, 1, RGB(156, 215, 228));
+        HPEN   hPen      = CreatePen(PS_DOT, 1, pCtx->cAccentColor);
         HPEN   hOldPen   = SelectObject(hMemDC, hPen);
         HBRUSH hOldBrush = SelectObject(hMemDC, GetStockObject(NULL_BRUSH));
 
@@ -912,6 +912,8 @@ _scCtxCreateCaptureWindow(scCaptureContext* pCtx) {
     BitBlt(pCtx->hFrozenDC, 0, 0, iScreenW, iScreenH, hScreenDC, iScreenX, iScreenY, SRCCOPY);
     ReleaseDC(NULL, hScreenDC);
   }
+
+  pCtx->cAccentColor = scGetSystemAccentColor();
 
   // Create and show overlay window
   pCtx->hOverlayWindow = CreateWindowExA(

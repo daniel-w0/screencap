@@ -87,6 +87,7 @@ typedef struct {
   scRect stFinalRect;
   HWND hHoveredWindow;
   HHOOK hKeyboardHook;
+  COLORREF cAccentColor;
 
   // Magnifier stuff..
   HDC     hMagDC;
