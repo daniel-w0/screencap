@@ -128,6 +128,11 @@ const wchar_t* scLocaleGet(const char* szKey) {
 
   if (gLoc.nEntryCount < SC_LOC_MAX_ENTRIES) {
     scLocEntry* pEntry = &gLoc.aEntries[gLoc.nEntryCount++];
+#if defined(SC_DEBUG)
+    if (strcmp(gApp->config.sLanguageCode, "en") != 0) {
+      scLogWarn("Locale Missing: %s", szKey);
+    }
+#endif
     strcpy_s(pEntry->szKey, SC_LOC_KEY_LEN, szKey);
     MultiByteToWideChar(CP_UTF8, 0, szKey, -1, pEntry->wszValue, SC_LOC_VALUE_LEN);
     return pEntry->wszValue;
