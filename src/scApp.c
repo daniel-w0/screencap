@@ -715,7 +715,9 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         HFONT hOldFont = SelectObject(hMemDC, GetStockObject(DEFAULT_GUI_FONT));
 
         char szSize[64];
-        snprintf(szSize, sizeof(szSize), "%d x %d", pCtx->stSelectedRect.w, pCtx->stSelectedRect.h);
+        snprintf(szSize, sizeof(szSize), "X:%d Y:%d - W:%d H:%d",
+                 pCtx->stSelectedRect.x, pCtx->stSelectedRect.y,
+                 pCtx->stSelectedRect.w, pCtx->stSelectedRect.h);
 
         SIZE stTextSize;
         GetTextExtentPoint32A(hMemDC, szSize, (int)strlen(szSize), &stTextSize);
