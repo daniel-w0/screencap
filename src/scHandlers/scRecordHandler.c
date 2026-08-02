@@ -8,11 +8,15 @@
 typedef struct {
   HANDLE hFFmpegProcess;
   HANDLE hFFmpegStdin;
+  HANDLE hFFmpegStderrRead;
+  HANDLE hStderrThread;
   wchar_t wszFFmpegPath[SC_PATH_MAX_LEN];
   wchar_t wszSavePath[SC_PATH_MAX_LEN];
   wchar_t wszTempVideoPath[SC_PATH_MAX_LEN];
   wchar_t wszTempDir[SC_PATH_MAX_LEN];
   bool bHasAudio;
+  LARGE_INTEGER liVideoStart;
+  volatile LONG bVideoStartFound;
 } scRecordContext;
 
 scInternal bool
@@ -126,21 +130,88 @@ _scFindExecutable(const wchar_t* wszExeName, wchar_t* wszOutPath, s32 nOutCap) {
   return false;
 }
 
+scInternal DWORD WINAPI
+_scFFmpegStderrThread(LPVOID pParam) {
+  scRecordContext* pCtx = (scRecordContext*)pParam;
+  char buf[256];
+  char lineBuf[512];
+  size_t lineLen = 0;
+  DWORD dwRead;
+
+  while (ReadFile(pCtx->hFFmpegStderrRead, buf, sizeof(buf), &dwRead, NULL) && dwRead > 0) {
+    for (DWORD i = 0; i < dwRead; i++) {
+      char c = buf[i];
+      if (c == '\r' || c == '\n') {
+        if (lineLen > 0) {
+          lineBuf[lineLen] = '\0';
+
+          if (strstr(lineBuf, "frame=")) {
+            const char* pSpeed = strstr(lineBuf, "speed=");
+            if (pSpeed) {
+              scLogDebug("ffmpeg progress: %s", lineBuf);
+            }
+          }
+
+          if (!pCtx->bVideoStartFound) {
+            const char* pFrame = strstr(lineBuf, "frame=");
+            if (pFrame) {
+              long lFrameNum = strtol(pFrame + 6, NULL, 10);
+              if (lFrameNum > 0) {
+                double dEncodedSec = 0.0;
+                const char* pTime = strstr(lineBuf, "time=");
+                if (pTime) {
+                  int h = 0, m = 0;
+                  double s = 0.0;
+                  if (sscanf(pTime + 5, "%d:%d:%lf", &h, &m, &s) == 3) {
+                    dEncodedSec = h * 3600.0 + m * 60.0 + s;
+                  }
+                }
+
+                LARGE_INTEGER liNow, liFreq;
+                QueryPerformanceCounter(&liNow);
+                QueryPerformanceFrequency(&liFreq);
+
+                LONGLONG llBackoff = (LONGLONG)(dEncodedSec * (double)liFreq.QuadPart);
+                pCtx->liVideoStart.QuadPart = liNow.QuadPart - llBackoff;
+
+                InterlockedExchange(&pCtx->bVideoStartFound, 1);
+                scLogInfo("First real ffmpeg frame, corrected start (perf counter: %lld, backoff %.3fs): %s",
+                          pCtx->liVideoStart.QuadPart, dEncodedSec, lineBuf);
+              }
+            }
+          }
+
+          lineLen = 0;
+        }
+      } else if (lineLen < sizeof(lineBuf) - 1) {
+        lineBuf[lineLen++] = c;
+      }
+    }
+  }
+  return 0;
+}
+
 scInternal void
-_scMergeAudioAndVideo(scRecordContext* pCtx, wchar_t aWavPaths[][MAX_PATH], uint32_t wavCount) {
+_scMergeAudioAndVideo(scRecordContext* pCtx, scAudioTrackInfo aTracks[], uint32_t trackCount) {
   wchar_t wszCmd[4096];
   int nOffset = 0;
 
+  LARGE_INTEGER liFreq;
+  QueryPerformanceFrequency(&liFreq);
+
   nOffset += swprintf(wszCmd + nOffset, ARRAYSIZE(wszCmd) - nOffset, L"\"%ls\" -y -i \"%ls\"", pCtx->wszFFmpegPath, pCtx->wszTempVideoPath);
 
-  for (uint32_t i = 0; i < wavCount; i++) {
-    nOffset += swprintf(wszCmd + nOffset, ARRAYSIZE(wszCmd) - nOffset, L" -i \"%ls\"", aWavPaths[i]);
+  for (uint32_t i = 0; i < trackCount; i++) {
+    double dOffsetSec = (double)(pCtx->liVideoStart.QuadPart - aTracks[i].liStartTime.QuadPart) / (double)liFreq.QuadPart;
+    if (dOffsetSec < 0.0) dOffsetSec = 0.0;
+    scLogInfo("Track %u offset: %.3f sec", i, dOffsetSec);
+    nOffset += swprintf(wszCmd + nOffset, ARRAYSIZE(wszCmd) - nOffset, L" -ss %.3f -i \"%ls\"", dOffsetSec, aTracks[i].wszPath);
   }
 
-  if (wavCount == 1) {
-    nOffset += swprintf(wszCmd + nOffset, ARRAYSIZE(wszCmd) - nOffset, L" -c:v copy -c:a aac \"%ls\"", pCtx->wszSavePath);
+  if (trackCount == 1) {
+    nOffset += swprintf(wszCmd + nOffset, ARRAYSIZE(wszCmd) - nOffset, L" -avoid_negative_ts make_zero -c:v copy -c:a aac \"%ls\"", pCtx->wszSavePath);
   } else {
-    nOffset += swprintf(wszCmd + nOffset, ARRAYSIZE(wszCmd) - nOffset, L" -filter_complex amix=inputs=%u:duration=longest -c:v copy -c:a aac \"%ls\"", wavCount, pCtx->wszSavePath);
+    nOffset += swprintf(wszCmd + nOffset, ARRAYSIZE(wszCmd) - nOffset, L" -filter_complex amix=inputs=%u:duration=longest -avoid_negative_ts make_zero -c:v copy -c:a aac \"%ls\"", trackCount, pCtx->wszSavePath);
   }
 
   STARTUPINFOW si = { sizeof(STARTUPINFOW) };
@@ -148,17 +219,19 @@ _scMergeAudioAndVideo(scRecordContext* pCtx, wchar_t aWavPaths[][MAX_PATH], uint
   si.wShowWindow = SW_HIDE;
   PROCESS_INFORMATION pi = { 0 };
 
+  scLogInfo("Merge command: %ls", wszCmd);
+
   if (CreateProcessW(NULL, wszCmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
     WaitForSingleObject(pi.hProcess, INFINITE);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
   } else {
-    scLogError("Failed to merge audio and video with FFmpeg");
+    scLogError("Failed to merge audio and video with FFmpeg: %lu", GetLastError());
   }
 
   DeleteFileW(pCtx->wszTempVideoPath);
-  for (uint32_t i = 0; i < wavCount; i++) {
-    DeleteFileW(aWavPaths[i]);
+  for (uint32_t i = 0; i < trackCount; i++) {
+    DeleteFileW(aTracks[i].wszPath);
   }
 }
 
@@ -198,7 +271,11 @@ _startRecording(scRecordContext* pCtx, scRect rect) {
   GetTempPathW(MAX_PATH, pCtx->wszTempDir);
   swprintf(pCtx->wszSavePath, MAX_PATH, L"%ls\\%ls", wszDir, wszName);
 
-  pCtx->bHasAudio = gApp->config.bCaptureAudio && scAudioStartRecording(pCtx->wszTempDir);
+  if (gApp->config.bCaptureAudio) {
+    pCtx->bHasAudio = scAudioStartRecording(pCtx->wszTempDir);
+  } else {
+    pCtx->bHasAudio = false;
+  }
 
   if (pCtx->bHasAudio) {
     swprintf(pCtx->wszTempVideoPath, MAX_PATH, L"%ls\\sc_temp_video.mp4", pCtx->wszTempDir);
@@ -210,7 +287,7 @@ _startRecording(scRecordContext* pCtx, scRect rect) {
   if (gApp->bIsGeWin10) {
     swprintf(wszCmd, ARRAYSIZE(wszCmd),
              L"\"%ls\" -y -f gdigrab -framerate %d -offset_x %d -offset_y %d "
-             L"-video_size %dx%d -i desktop -c:v libx264 -pix_fmt yuv420p \"%ls\"",
+             L"-video_size %dx%d -i desktop -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p \"%ls\"",
              pCtx->wszFFmpegPath, gApp->config.iFFmpegFramerate, rect.x, rect.y, w, h, pCtx->wszTempVideoPath);
   } else {
     swprintf(wszCmd, ARRAYSIZE(wszCmd),
@@ -219,35 +296,48 @@ _startRecording(scRecordContext* pCtx, scRect rect) {
              pCtx->wszFFmpegPath, gApp->config.iFFmpegFramerate, rect.x, rect.y, w, h, pCtx->wszTempVideoPath);
   }
 
-  HANDLE hCon = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
-  bool   bHaveConsole = (hCon != INVALID_HANDLE_VALUE);
-  HANDLE hOut = bHaveConsole ? hCon : CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
+  HANDLE hStderrRead, hStderrWrite;
+  SECURITY_ATTRIBUTES saPipe = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
+  if (!CreatePipe(&hStderrRead, &hStderrWrite, &saPipe, 0)) {
+    scLogError("Failed to create stderr pipe: %lu", GetLastError());
+    CloseHandle(hReadPipe);
+    CloseHandle(hWritePipe);
+    return false;
+  }
+  SetHandleInformation(hStderrRead, HANDLE_FLAG_INHERIT, 0);
 
   STARTUPINFOW si = { sizeof(STARTUPINFOW) };
   si.dwFlags     = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
   si.wShowWindow = SW_HIDE;
   si.hStdInput   = hReadPipe;
-  si.hStdOutput  = hOut;
-  si.hStdError   = hOut;
+  si.hStdOutput  = hStderrWrite;
+  si.hStdError   = hStderrWrite;
 
   PROCESS_INFORMATION pi = { 0 };
-  DWORD flags = bHaveConsole ? 0 : CREATE_NO_WINDOW;
-
   bool ok = false;
-  if (CreateProcessW(NULL, wszCmd, NULL, NULL, TRUE, flags, NULL, NULL, &si, &pi)) {
+  if (CreateProcessW(NULL, wszCmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
     pCtx->hFFmpegProcess = pi.hProcess;
     pCtx->hFFmpegStdin = hWritePipe;
+    pCtx->hFFmpegStderrRead = hStderrRead;
     CloseHandle(pi.hThread);
+    CloseHandle(hStderrWrite); // child's dup is enough once it has inherited it
+
+    pCtx->bVideoStartFound = 0;
+    pCtx->hStderrThread = CreateThread(NULL, 0, _scFFmpegStderrThread, pCtx, 0, NULL);
+
     ok = true;
   } else {
     scLogError("Failed to start recording, CreateProcessW failed: %lu", GetLastError());
     CloseHandle(hWritePipe);
+    CloseHandle(hStderrWrite);
+    CloseHandle(hStderrRead);
   }
 
   CloseHandle(hReadPipe);
-  if (hOut != INVALID_HANDLE_VALUE) {
-    CloseHandle(hOut);
-  }
+
+  //if (hOut != INVALID_HANDLE_VALUE) {
+  //  CloseHandle(hOut);
+  //}
 
   scLogInfo("Started recording: { %d, %d, %d, %d }", rect.x, rect.y, w, h);
   return ok;
@@ -275,13 +365,27 @@ _stopRecording(scRecordContext* pCtx) {
     pCtx->hFFmpegProcess = 0;
     pCtx->hFFmpegStdin = 0;
 
-    wchar_t aWavPaths[SC_MAX_ACTIVE_RECORDERS][MAX_PATH];
-    uint32_t wavCount = 0;
+    scAudioTrackInfo aTracks[SC_MAX_ACTIVE_RECORDERS];
+    uint32_t trackCount = 0;
+
+    if (pCtx->hStderrThread) {
+      WaitForSingleObject(pCtx->hStderrThread, 2000);
+      CloseHandle(pCtx->hStderrThread);
+      pCtx->hStderrThread = NULL;
+    }
+    if (pCtx->hFFmpegStderrRead) {
+      CloseHandle(pCtx->hFFmpegStderrRead);
+      pCtx->hFFmpegStderrRead = NULL;
+    }
 
     if (pCtx->bHasAudio) {
-      scAudioStopRecording(aWavPaths, &wavCount);
-      if (wavCount > 0) {
-        _scMergeAudioAndVideo(pCtx, aWavPaths, wavCount);
+      scAudioStopRecording(aTracks, &trackCount);
+      if (trackCount > 0) {
+        if (!pCtx->bVideoStartFound) {
+          scLogWarn("Never saw a frame= line from ffmpeg, falling back to current time for offset calc");
+          QueryPerformanceCounter(&pCtx->liVideoStart);
+        }
+        _scMergeAudioAndVideo(pCtx, aTracks, trackCount);
       }
     }
 

@@ -169,6 +169,7 @@ _scConfigCreateDefaults(scAppConfig* pOutConfig) {
   _scGetDefaultSaveRootPath(pOutConfig->wszSavePath); // defaults to current directory if fails
   _scGetSystemLanguage(pOutConfig->sLanguageCode); // defaults to en if fails
 
+  pOutConfig->szSelectedAudioDevices[0] = '\0';
   pOutConfig->bCaptureAudio      = false;
   pOutConfig->bCopyToClipboard   = true;
   pOutConfig->bRunAtStartup      = false;
@@ -204,6 +205,10 @@ _scWriteConfig(scAppConfig* pConfig, wchar_t* wszPath) {
   }
 
   _scConfigWriteVersion(wszActualPath);
+
+  wchar_t wszSelectedDevices[SC_AUDIO_DEVICES_STRSIZE];
+  MultiByteToWideChar(CP_UTF8, 0, pConfig->szSelectedAudioDevices, -1, wszSelectedDevices, ARRAYSIZE(wszSelectedDevices));
+  WritePrivateProfileStringW(L"options", L"selected_audio_devices", wszSelectedDevices, wszActualPath);
 
   WritePrivateProfileStringW(L"options", L"capture_audio",      pConfig->bCaptureAudio ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"copy_to_clipboard",  pConfig->bCopyToClipboard ? L"1" : L"0", wszActualPath);
@@ -265,6 +270,12 @@ _scConfigReadInto(scAppConfig* pConfig, wchar_t* wszPath) {
   pConfig->bShowNotification  = GetPrivateProfileIntW(L"options", L"show_notification",  pConfig->bShowNotification, wszActualPath) != 0;
   pConfig->bStartMinimized    = GetPrivateProfileIntW(L"options", L"start_minimized",    pConfig->bStartMinimized, wszActualPath) != 0;
   pConfig->iFFmpegFramerate   = GetPrivateProfileIntW(L"options", L"record_framerate",  pConfig->iFFmpegFramerate, wszActualPath);
+
+  wchar_t wszDefaultSelectedDevices[SC_AUDIO_DEVICES_STRSIZE];
+  wchar_t wszSelectedDevices[SC_AUDIO_DEVICES_STRSIZE];
+  MultiByteToWideChar(CP_UTF8, 0, pConfig->szSelectedAudioDevices, -1, wszDefaultSelectedDevices, SC_AUDIO_DEVICES_STRSIZE);
+  GetPrivateProfileStringW(L"options", L"selected_audio_devices", wszDefaultSelectedDevices, wszSelectedDevices, SC_AUDIO_DEVICES_STRSIZE, wszActualPath);
+  WideCharToMultiByte(CP_UTF8, 0, wszSelectedDevices, -1, pConfig->szSelectedAudioDevices, sizeof(pConfig->szSelectedAudioDevices), NULL, NULL);
 
   wchar_t wszDefaultLang[16];
   MultiByteToWideChar(CP_UTF8, 0, pConfig->sLanguageCode, -1, wszDefaultLang, 16);

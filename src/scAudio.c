@@ -2,6 +2,7 @@
 #include "scTypes.h"
 #include "scAudio.h"
 #include "scLogging.h"
+#include "scApp.h"
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
 
@@ -29,6 +30,7 @@ bool scAudioInit() {
   }
 
   scAudioPopulateDevices();
+  scAudioSetEnabledDevicesFromString(gApp->config.szSelectedAudioDevices);
   return true;
 }
 
@@ -102,7 +104,64 @@ void scAudioDeviceUpdated(u16 uDeviceIdx) {
     scLogWarn("Invalid audio device index! Passed in %u but device count is %d", uDeviceIdx, gAudio.deviceCount);
     return;
   }
-  scLogInfo("Audio device '%s' is %d", gAudio.pCaptureDevices[uDeviceIdx].szName, gAudio.pCaptureDevices[uDeviceIdx].bIsEnabled ? "enabled" : "disabled");
+  scLogInfo("Audio device '%s' is %s", gAudio.pCaptureDevices[uDeviceIdx].szName, gAudio.pCaptureDevices[uDeviceIdx].bIsEnabled ? "enabled" : "disabled");
+  scAudioGetEnabledDevicesString(gApp->config.szSelectedAudioDevices, sizeof(gApp->config.szSelectedAudioDevices));
+  scSaveConfig();
+}
+
+void scAudioGetEnabledDevicesString(char* szOut, size_t nOutCap) {
+  if (nOutCap == 0) {
+    return;
+  }
+  szOut[0] = '\0';
+
+  size_t len = 0;
+  for (uint32_t i = 0; i < gAudio.deviceCount; i++) {
+    if (!gAudio.pCaptureDevices[i].bIsEnabled) {
+      continue;
+    }
+
+    size_t nameLen = strlen(gAudio.pCaptureDevices[i].szName);
+    size_t sepLen = (len > 0) ? 1 : 0;
+
+    if (len + sepLen + nameLen >= nOutCap) {
+      scLogWarn("Enabled audio devices string truncated, buffer too small");
+      break;
+    }
+
+    if (sepLen) {
+      szOut[len++] = '|';
+    }
+    memcpy(szOut + len, gAudio.pCaptureDevices[i].szName, nameLen);
+    len += nameLen;
+    szOut[len] = '\0';
+  }
+}
+
+void scAudioSetEnabledDevicesFromString(const char* szDevices) {
+  for (uint32_t i = 0; i < gAudio.deviceCount; i++) {
+    gAudio.pCaptureDevices[i].bIsEnabled = false;
+  }
+
+  if (!szDevices || !szDevices[0]) {
+    return;
+  }
+
+  char szBuf[SC_AUDIO_DEVICES_STRSIZE];
+  strncpy(szBuf, szDevices, sizeof(szBuf) - 1);
+  szBuf[sizeof(szBuf) - 1] = '\0';
+
+  char* pCtx = NULL;
+  char* pTok = strtok_s(szBuf, ",|", &pCtx);
+  while (pTok) {
+    for (uint32_t i = 0; i < gAudio.deviceCount; i++) {
+      if (_stricmp(gAudio.pCaptureDevices[i].szName, pTok) == 0) {
+        gAudio.pCaptureDevices[i].bIsEnabled = true;
+        break;
+      }
+    }
+    pTok = strtok_s(NULL, ",|", &pCtx);
+  }
 }
 
 bool scAudioStartRecording(const wchar_t* wszTempDir) {
@@ -151,7 +210,8 @@ bool scAudioStartRecording(const wchar_t* wszTempDir) {
       pRec->bIsActive = false;
       continue;
     }
-
+    QueryPerformanceCounter(&pRec->liStartTime);
+    scLogInfo("Audio device '%s' started (perf counter: %lld)", gAudio.pCaptureDevices[i].szName, pRec->liStartTime.QuadPart);
     gAudio.activeRecorderCount++;
   }
 
@@ -159,7 +219,7 @@ bool scAudioStartRecording(const wchar_t* wszTempDir) {
   return gAudio.activeRecorderCount > 0;
 }
 
-void scAudioStopRecording(wchar_t pOutWavPaths[][SC_PATH_MAX_LEN], uint32_t* pOutCount) {
+void scAudioStopRecording(scAudioTrackInfo pOutTracks[], uint32_t* pOutCount) {
   *pOutCount = 0;
 
   for (uint32_t i = 0; i < gAudio.activeRecorderCount; i++) {
@@ -169,7 +229,9 @@ void scAudioStopRecording(wchar_t pOutWavPaths[][SC_PATH_MAX_LEN], uint32_t* pOu
       ma_encoder_uninit(&pRec->encoder);
       pRec->bIsActive = false;
 
-      wcsncpy(pOutWavPaths[*pOutCount], pRec->wszWavPath, SC_PATH_MAX_LEN);
+      wcsncpy(pOutTracks[*pOutCount].wszPath, pRec->wszWavPath, SC_PATH_MAX_LEN - 1);
+      pOutTracks[*pOutCount].wszPath[SC_PATH_MAX_LEN - 1] = L'\0';
+      pOutTracks[*pOutCount].liStartTime = pRec->liStartTime;
       (*pOutCount)++;
     }
   }

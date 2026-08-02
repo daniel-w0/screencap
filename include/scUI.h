@@ -16,5 +16,6 @@ void scUIOpenWindow();
 void scUICloseWindow();
 void scUISetCurrentPage(scPageID ePageID);
 void scUIOnCaptureSaved(const wchar_t* wszPath);
+void scUIOnAudioDevicesUpdated();
 
 #endif // SC_UI_H

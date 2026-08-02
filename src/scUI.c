@@ -719,6 +719,13 @@ _scWidgetAt(scPage* pPage, POINT pt) {
 }
 
 scInternal void
+_scDrawText(HDC hDC, RECT r, const wchar_t* wszText, COLORREF dwColor, UINT dwExtraFlags) {
+  SetTextColor(hDC, dwColor);
+  RECT rText = r;
+  DrawTextW(hDC, wszText, -1, &rText, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS | dwExtraFlags);
+}
+
+scInternal void
 _scDrawLabel(HDC hDC, scWidget* pWidget, RECT r) {
   SelectObject(hDC, pWidget->u.label.bBold ? gUI.theme.pBoldFont : gUI.theme.pFont);
   SetTextColor(hDC, gUI.theme.dwText);
@@ -751,8 +758,8 @@ _scDrawToggle(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
   gpGraphicsEnd(pGraphics);
 
   SelectObject(hDC, t->pFont);
-  SetTextColor(hDC, t->dwText);
-  TextOutW(hDC, r.left + _scScale(15), r.top + _scScale(10), pWidget->wszText, lstrlenW(pWidget->wszText));
+  RECT rLabel = { r.left + _scScale(15), r.top, pill.left - _scScale(10), r.bottom };
+  _scDrawText(hDC, rLabel, pWidget->wszText, t->dwText, DT_VCENTER);
 }
 
 scInternal void
@@ -2583,4 +2590,8 @@ void scUIOnCaptureSaved(const wchar_t* wszPath) {
     gUI.bNeedsLayout = true;
     InvalidateRect(gUI.hWindow, NULL, FALSE);
   }
+}
+
+void scUIOnAudioDevicesUpdated() {
+  gUI.bNeedsLayout = true;
 }

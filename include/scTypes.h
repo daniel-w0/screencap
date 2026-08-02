@@ -29,5 +29,6 @@ typedef struct {
 #define scGlobal   static
 
 #define SC_PATH_MAX_LEN MAX_PATH
+#define SC_AUDIO_DEVICES_STRSIZE 1024
 
 #endif // SC_TYPES_H

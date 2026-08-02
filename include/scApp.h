@@ -63,7 +63,7 @@ typedef struct {
   wchar_t  wszSavePath[SC_PATH_MAX_LEN];
   s32      iFFmpegFramerate;
   char     sLanguageCode[16];
-  char     szSelectedAudioDevices;
+  char     szSelectedAudioDevices[SC_AUDIO_DEVICES_STRSIZE];
   bool     bCaptureAudio;
   bool     bCopyToClipboard;
   bool     bRunAtStartup;

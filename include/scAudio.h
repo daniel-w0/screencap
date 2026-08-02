@@ -17,6 +17,7 @@ typedef struct {
   ma_encoder encoder;
   wchar_t wszWavPath[SC_PATH_MAX_LEN];
   bool bIsActive;
+  LARGE_INTEGER liStartTime;
 } scAudioRecorder;
 
 typedef struct {
@@ -27,6 +28,11 @@ typedef struct {
   uint32_t activeRecorderCount;
 } scAudio;
 
+typedef struct {
+  wchar_t wszPath[SC_PATH_MAX_LEN];
+  LARGE_INTEGER liStartTime;
+} scAudioTrackInfo;
+
 extern scAudio gAudio;
 
 bool scAudioInit();
@@ -34,7 +40,10 @@ void scAudioDestroy();
 void scAudioDeviceUpdated(u16 uDeviceIdx);
 
 bool scAudioStartRecording(const wchar_t* wszTempDir);
-void scAudioStopRecording(wchar_t pOutWavPaths[][SC_PATH_MAX_LEN], uint32_t* pOutCount);
+void scAudioStopRecording(scAudioTrackInfo pOutTracks[], uint32_t* pOutCount);
+
+void scAudioGetEnabledDevicesString(char* szOut, size_t nOutCap);
+void scAudioSetEnabledDevicesFromString(const char* szDevices);
 
 void scAudioTest();
 
