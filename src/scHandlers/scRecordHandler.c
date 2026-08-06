@@ -136,6 +136,7 @@ _startRecording(scRecordContext* pCtx, scRect rect) {
   SetHandleInformation(hWritePipe, HANDLE_FLAG_INHERIT, 0);
 
   if (rect.x < 0) rect.x = 0;
+  if (rect.y < 0) rect.y = 0;
   const s32 w = rect.w & ~1;
   const s32 h = rect.h & ~1;
 
