@@ -19,6 +19,22 @@ static const char* OVERLAY_CLASS_NAME = "ScOverlayWindow";
 #  define PW_RENDERFULLCONTENT 0x00000002
 #endif
 
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+typedef HANDLE DPI_AWARENESS_CONTEXT;
+#  define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
+#  define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE    ((DPI_AWARENESS_CONTEXT)-3)
+#endif
+
+typedef enum _scProcessDpiAwareness {
+  SC_PROCESS_DPI_UNAWARE           = 0,
+  SC_PROCESS_SYSTEM_DPI_AWARE      = 1,
+  SC_PROCESS_PER_MONITOR_DPI_AWARE = 2,
+} scProcessDpiAwareness;
+
+typedef BOOL    (WINAPI* SetProcessDpiAwarenessContextPtr)(DPI_AWARENESS_CONTEXT);
+typedef HRESULT (WINAPI* SetProcessDpiAwarenessPtr)(scProcessDpiAwareness);
+typedef BOOL    (WINAPI* SetProcessDPIAwarePtr)(void);
+
 //------------------------------------------------------------------------
 // Forward Declarations
 //------------------------------------------------------------------------
@@ -433,6 +449,10 @@ _scHoverEnumProc(HWND hWnd, LPARAM lParam) {
   if (hWnd == pHit->hOverlay)    return TRUE;
   if (!IsWindowVisible(hWnd))    return TRUE;
   if (IsIconic(hWnd))            return TRUE;
+  DWORD dwCloaked = 0;
+  if (SUCCEEDED(DwmGetWindowAttribute(hWnd, DWMWA_CLOAKED, &dwCloaked, sizeof(dwCloaked))) && dwCloaked != 0) {
+    return TRUE;
+  }
 
   RECT wr;
   if (!scGetWindowRect(hWnd, &wr)) return TRUE;
@@ -970,11 +990,61 @@ _scIsGeWin10() {
   return false; // just in case this failed
 }
 
+scInternal void
+_scEnableDpiAwareness() {
+  HMODULE hUser32 = GetModuleHandleA("user32.dll");
+  if (hUser32) {
+    SetProcessDpiAwarenessContextPtr pSetCtx = (SetProcessDpiAwarenessContextPtr)GetProcAddress(hUser32, "SetProcessDpiAwarenessContext");
+    if (pSetCtx) {
+      if (pSetCtx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+        scLogInfo("DPI awareness: Per-Monitor-V2");
+        return;
+      }
+      if (pSetCtx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE)) {
+        scLogInfo("DPI awareness: Per-Monitor (V1)");
+        return;
+      }
+      scLogWarn("SetProcessDpiAwarenessContext present but both attempts failed: %d", GetLastError());
+    }
+  }
+
+  HMODULE hShcore = LoadLibraryA("shcore.dll");
+  if (hShcore) {
+    SetProcessDpiAwarenessPtr pSetAwareness = (SetProcessDpiAwarenessPtr)GetProcAddress(hShcore, "SetProcessDpiAwareness");
+    if (pSetAwareness) {
+      HRESULT hr = pSetAwareness(SC_PROCESS_PER_MONITOR_DPI_AWARE);
+      if (SUCCEEDED(hr)) {
+        scLogInfo("DPI awareness: Per-Monitor (Shcore, Win8.1)");
+        FreeLibrary(hShcore);
+        return;
+      }
+      scLogWarn("SetProcessDpiAwareness failed: 0x%08lx", hr);
+    }
+    FreeLibrary(hShcore);
+  }
+
+  // Windows 7
+  if (hUser32) {
+    SetProcessDPIAwarePtr pSetDpiAware =
+      (SetProcessDPIAwarePtr)GetProcAddress(hUser32, "SetProcessDPIAware");
+    if (pSetDpiAware) {
+      if (pSetDpiAware()) {
+        scLogInfo("DPI awareness: System-aware (legacy fallback, Vista/7)");
+        return;
+      }
+      scLogWarn("SetProcessDPIAware failed: %d", GetLastError());
+    }
+  }
+
+  scLogWarn("Could not enable any form of DPI awareness; app may render incorrectly on scaled displays");
+}
+
 //------------------------------------------------------------------------
 // Application
 //------------------------------------------------------------------------
 bool scAppInit() {
   scLogInit();
+  _scEnableDpiAwareness();
 
   gApp = (scApp*)malloc(sizeof(scApp));
   memset(gApp, 0, sizeof(scApp));
