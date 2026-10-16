@@ -7,6 +7,7 @@
 #include "scLocale.h"
 #include "scNotification.h"
 #include "scConfig.h"
+#include "scTimer.h"
 #include "stb_image_write.h"
 #include "stb_image.h"
 
@@ -698,6 +699,10 @@ _scEnableDpiAwareness() {
 // Application
 //------------------------------------------------------------------------
 bool scAppInit() {
+  scTimer startTimer;
+  scTimerInit(&startTimer);
+  scTimerStart(&startTimer);
+
   scLogInit();
   _scEnableDpiAwareness();
 
@@ -729,9 +734,22 @@ bool scAppInit() {
   scAppRegisterHotkeys();
   scAppSetupCallbackHandler();
 
+  f64 nWindowOpenTime = 0;
   if (!gApp->config.bStartMinimized) {
+    scTimer windowCreateTimer;
+    scTimerInit(&windowCreateTimer);
+    scTimerStart(&windowCreateTimer);
     scUIOpenWindow();
+    scTimerStop(&windowCreateTimer);
+    nWindowOpenTime = scTimerElapsedMS(&windowCreateTimer);
   }
+
+  scTimerStop(&startTimer);
+  f64 nElapsed = scTimerElapsedMS(&startTimer);
+  nElapsed -= nWindowOpenTime;
+
+  scLogDebug("Startup Time: %.2fms", nElapsed);
+  scLogDebug("Window Initialization (And setup): %.2fms", nWindowOpenTime);
 
   return true;
 }
