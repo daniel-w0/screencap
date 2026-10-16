@@ -30,7 +30,9 @@ typedef enum {
   SC_WIDGET_DROPDOWN,
   SC_WIDGET_BUTTON,
   SC_WIDGET_HOTKEY,
-  SC_WIDGET_IMAGE
+  SC_WIDGET_IMAGE,
+  SC_WIDGET_PAGE_TAB,
+  SC_WIDGET_LINK
 } scWidgetType;
 
 typedef struct {
@@ -50,6 +52,8 @@ typedef struct {
     struct { void (*pfnClick)(s32 iParam); s32 iParam; } button;
     struct { scHotkeyID eHotkey; }     hotkey;
     struct { bool bIsFolder; bool bIsUp; s32 nItemCount; } image;
+    struct { scPageID ePage; } pageTab;
+    struct { void (*pfnClick)(s32 iParam); s32 iParam; bool bAnchorBottom; } link;
   } u;
 } scWidget;
 
@@ -150,9 +154,14 @@ typedef struct {
   f32       fUIScale;
 
   scPage   aPages[_SC_PAGE_COUNT];
-  scPageID eCurrentPage;
-  scPageID eHoveredTab;
-  s32      iHoveredWidget;
+  scWidget* aSidebarWidgets;
+  s32       nSidebarWidgetCount;
+  s32       nSidebarWidgetCap;
+  scPageID  eCurrentPage;
+  s32       iHoveredSidebarWidget;
+  s32       iHoveredWidget;
+
+  POINT vMousePos;
 
   s32 iExpandedDropdown;
   s32 iDropdownHover;
@@ -192,6 +201,7 @@ static HHOOK gKeyboardHook;
 scInternal void _scBeginHotkeyRecording(s32 iIndex);
 scInternal void _scCancelHotkeyRecording();
 scInternal void _scUISetupTheme();
+scInternal void _scOnVersionLinkClicked(s32 iParam);
 
 //------------------------------------------------------------------------
 // Utility
@@ -683,23 +693,73 @@ _scMakeDropdown(RECT rcLayout, const wchar_t* wszLabel, const char* const* aOpti
   return w;
 }
 
+scInternal scWidget
+_scMakePageTab(RECT rcLayout, scPageID ePage) {
+  scWidget w = { 0 };
+  w.eType = SC_WIDGET_PAGE_TAB;
+  w.rcLayout = rcLayout;
+  w.u.pageTab.ePage = ePage;
+  return w;
+}
+
+scInternal scWidget
+_scMakeLink(RECT rcLayout, const wchar_t* wszText, void (*pfnClick)(s32 iParam), s32 iParam, bool bAnchorBottom) {
+  scWidget w = { 0 };
+  w.eType = SC_WIDGET_LINK;
+  w.rcLayout = rcLayout;
+  w.u.link.pfnClick = pfnClick;
+  w.u.link.iParam = iParam;
+  w.u.link.bAnchorBottom = bAnchorBottom;
+  wcscpy_s(w.wszText, 128, wszText);
+  return w;
+}
+
+scInternal scWidget*
+_scSidebarPush(scWidget widget) {
+  if (gUI.nSidebarWidgetCount >= gUI.nSidebarWidgetCap) {
+    gUI.nSidebarWidgetCap = gUI.nSidebarWidgetCap ? gUI.nSidebarWidgetCap * 2 : 8;
+    gUI.aSidebarWidgets = (scWidget*)realloc(gUI.aSidebarWidgets, gUI.nSidebarWidgetCap * sizeof(scWidget));
+  }
+  gUI.aSidebarWidgets[gUI.nSidebarWidgetCount] = widget;
+  return &gUI.aSidebarWidgets[gUI.nSidebarWidgetCount++];
+}
+
 scInternal RECT
-_scWidgetScaledRect(scPage* pPage, scWidget* pWidget) {
+_scWidgetRect(scWidget* pWidget, s32 iScrollY) {
   RECT r = pWidget->rcLayout;
-  s32 iOffset = -pPage->scroll.nScrollY;
   return (RECT){
     _scScale(r.left),
-    _scScale(r.top    + iOffset),
+    _scScale(r.top - iScrollY),
     _scScale(r.right),
-    _scScale(r.bottom + iOffset)
+    _scScale(r.bottom - iScrollY)
   };
+}
+
+scInternal RECT
+_scWidgetScaledRect(scPage* pPage, scWidget* pWidget) {
+  return _scWidgetRect(pWidget, pPage->scroll.nScrollY);
 }
 
 scInternal bool
 _scWidgetIsInteractive(scWidgetType eType) {
   return eType == SC_WIDGET_TOGGLE || eType == SC_WIDGET_BUTTON ||
          eType == SC_WIDGET_HOTKEY || eType == SC_WIDGET_IMAGE ||
-         eType == SC_WIDGET_DROPDOWN;
+         eType == SC_WIDGET_DROPDOWN || eType == SC_WIDGET_PAGE_TAB ||
+         eType == SC_WIDGET_LINK;
+}
+
+scInternal s32
+_scSidebarWidgetAt(POINT pt) {
+  for (s32 i = gUI.nSidebarWidgetCount - 1; i >= 0; --i) {
+    scWidget* pWidget = &gUI.aSidebarWidgets[i];
+    if (_scWidgetIsInteractive(pWidget->eType)) {
+      RECT r = _scWidgetRect(pWidget, 0);
+      if (PtInRect(&r, pt)) {
+        return i;
+      }
+    }
+  }
+  return -1;
 }
 
 scInternal s32
@@ -900,6 +960,40 @@ _scDrawFolderIcon(HDC hDC, RECT rImage, bool bUp, s32 nItemCount) {
 }
 
 scInternal void
+_scDrawPageTab(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
+  scUITheme* t = &gUI.theme;
+  bool bActive = pWidget->u.pageTab.ePage == gUI.eCurrentPage;
+
+  if (bActive || bHovered) {
+    GpGraphics* pGraphics = gpGraphicsBegin(hDC);
+    gpFillRound(pGraphics, r, 5.0f * gUI.fUIScale, gpColor(bActive ? t->dwCardHover : t->dwCard, 255));
+    if (bActive) {
+      s32 iCenterY = (r.top + r.bottom) / 2;
+      RECT rcInd = { r.left + _scScale(3), iCenterY - _scScale(8), r.left + _scScale(6), iCenterY + _scScale(8) };
+      gpFillRound(pGraphics, rcInd, 1.5f * gUI.fUIScale, gpColor(t->dwAccent, 255));
+    }
+    gpGraphicsEnd(pGraphics);
+  }
+
+  SelectObject(hDC, bActive ? t->pBoldFont : t->pFont);
+  SetTextColor(hDC, bActive ? t->dwText : t->dwTextDim);
+  SetBkMode(hDC, TRANSPARENT);
+  const wchar_t* wszName = scLocaleGet(gUI.aPages[pWidget->u.pageTab.ePage].szKey);
+  TextOutW(hDC, r.left + _scScale(15), r.top + _scScale(7), wszName, lstrlenW(wszName));
+}
+
+scInternal void
+_scDrawLink(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
+  scUITheme* t = &gUI.theme;
+  HFONT hOldFont = (HFONT)SelectObject(hDC, t->pFont);
+  int iOldBkMode = SetBkMode(hDC, TRANSPARENT);
+  SetTextColor(hDC, bHovered ? t->dwAccent : t->dwTextFaint);
+  DrawTextW(hDC, pWidget->wszText, -1, &r, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+  SetBkMode(hDC, iOldBkMode);
+  SelectObject(hDC, hOldFont);
+}
+
+scInternal void
 _scDrawImage(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
   scUITheme* t = &gUI.theme;
   f32 fRad = 8.0f * gUI.fUIScale;
@@ -978,6 +1072,8 @@ _scDrawWidget(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
     case SC_WIDGET_HOTKEY:   _scDrawHotkey  (hDC, pWidget, r, bHovered); break;
     case SC_WIDGET_IMAGE:    _scDrawImage   (hDC, pWidget, r, bHovered); break;
     case SC_WIDGET_DROPDOWN: _scDrawDropdown(hDC, pWidget, r, bHovered); break;
+    case SC_WIDGET_PAGE_TAB: _scDrawPageTab (hDC, pWidget, r, bHovered); break;
+    case SC_WIDGET_LINK:     _scDrawLink    (hDC, pWidget, r, bHovered); break;
     default:
       break;
   }
@@ -1650,9 +1746,16 @@ _scEnsureLayout() {
   GetClientRect(gUI.hWindow, &cr);
   if (gUI.bNeedsLayout || cr.right != gUI.rcLastClient.right || cr.bottom != gUI.rcLastClient.bottom) {
     scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
+    RECT rcLogical = { 0, 0, _scUnscale(cr.right), _scUnscale(cr.bottom) };
     if (pPage->pfnLayout) {
-      RECT rcLogical = { 0, 0, _scUnscale(cr.right), _scUnscale(cr.bottom) };
       pPage->pfnLayout(pPage, rcLogical);
+    }
+    for (s32 i = 0; i < gUI.nSidebarWidgetCount; ++i) {
+      scWidget* pWidget = &gUI.aSidebarWidgets[i];
+      if (pWidget->eType == SC_WIDGET_LINK && pWidget->u.link.bAnchorBottom) {
+        pWidget->rcLayout.top = rcLogical.bottom - 30;
+        pWidget->rcLayout.bottom = rcLogical.bottom;
+      }
     }
     gUI.bNeedsLayout    = false;
     gUI.rcLastClient    = cr;
@@ -1677,52 +1780,18 @@ _scRenderCurrentPage(HDC hDC, RECT cr) {
 //------------------------------------------------------------------------
 // Rendering
 //------------------------------------------------------------------------
-scInternal RECT
-_scSidebarRect(s32 i) {
-  s32 iTop = 20 + i * 35;
-  return (RECT){ _scScale(10), _scScale(iTop), _scScale(140), _scScale(iTop + 30) };
-}
-
 scInternal void
 _scRenderSidebar(HDC hDC, RECT cr) {
-  scUITheme* t = &gUI.theme;
-
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  gpFillRectI(pGraphics, 0, 0, _scScale(SIDEBAR_WIDTH), cr.bottom, gpColor(t->dwSidebar, 255));
-
-  for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
-    RECT rcTab  = _scSidebarRect(i);
-    bool bActive = i == (s32)gUI.eCurrentPage;
-    bool bHot    = bActive || (i == (s32)gUI.eHoveredTab);
-
-    if (bHot) {
-      gpFillRound(pGraphics, rcTab, 5.0f * gUI.fUIScale, gpColor(bActive ? t->dwCardHover : t->dwCard, 255));
-    }
-    if (bActive) {
-      s32 iCenterY = (rcTab.top + rcTab.bottom) / 2;
-      RECT rcInd = { rcTab.left + _scScale(3), iCenterY - _scScale(8), rcTab.left + _scScale(6), iCenterY + _scScale(8) };
-      gpFillRound(pGraphics, rcInd, 1.5f * gUI.fUIScale, gpColor(t->dwAccent, 255));
-    }
-  }
+  gpFillRectI(pGraphics, 0, 0, _scScale(SIDEBAR_WIDTH), cr.bottom, gpColor(gUI.theme.dwSidebar, 255));
   gpGraphicsEnd(pGraphics);
 
   SetBkMode(hDC, TRANSPARENT);
-  for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
-    scPage* pPage = &gUI.aPages[i];
-    RECT rcTab    = _scSidebarRect(i);
-    bool bActive  = i == (s32)gUI.eCurrentPage;
-
-    SelectObject(hDC, bActive ? t->pBoldFont : t->pFont);
-    SetTextColor(hDC, bActive ? t->dwText : t->dwTextDim);
-    const wchar_t* wszName = scLocaleGet(pPage->szKey);
-    TextOutW(hDC, rcTab.left + _scScale(15), rcTab.top + _scScale(7), wszName, lstrlenW(wszName));
+  for (s32 i = 0; i < gUI.nSidebarWidgetCount; ++i) {
+    scWidget* pWidget = &gUI.aSidebarWidgets[i];
+    RECT r = _scWidgetRect(pWidget, 0);
+    _scDrawWidget(hDC, pWidget, r, i == gUI.iHoveredSidebarWidget);
   }
-
-  const wchar_t* wszVersion = SC_VERSION_STRING_FULL_W;
-  SelectObject(hDC, t->pFont);
-  SetTextColor(hDC, t->dwTextFaint);
-  RECT rcVersion = { 0, cr.bottom - _scScale(30), _scScale(SIDEBAR_WIDTH), cr.bottom };
-  DrawTextW(hDC, wszVersion, -1, &rcVersion, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 }
 
 scInternal void
@@ -1828,6 +1897,16 @@ _scRender(HDC hDC) {
 scInternal void
 _scOnWidgetClicked(scWidget* pWidget) {
   switch (pWidget->eType) {
+    case SC_WIDGET_PAGE_TAB: {
+      scUISetCurrentPage(pWidget->u.pageTab.ePage);
+      break;
+    }
+    case SC_WIDGET_LINK: {
+      if (pWidget->u.link.pfnClick) {
+        pWidget->u.link.pfnClick(pWidget->u.link.iParam);
+      }
+      break;
+    }
     case SC_WIDGET_TOGGLE: {
       *pWidget->u.toggle.pValue = !*pWidget->u.toggle.pValue;
       if (pWidget->u.toggle.pfnChange) {
@@ -1865,6 +1944,11 @@ _scOnWidgetClicked(scWidget* pWidget) {
 
 scInternal bool
 _scHandleMouseMove(POINT pt, RECT cr) {
+  gUI.vMousePos = pt;
+  s32 iPrevSidebarWidget = gUI.iHoveredSidebarWidget;
+  gUI.iHoveredSidebarWidget = _scSidebarWidgetAt(pt);
+  bool bSidebarHoverChanged = gUI.iHoveredSidebarWidget != iPrevSidebarWidget;
+
   if (gUI.drag.bActive) {
     s32 iDelta  = pt.y - gUI.drag.iStartY;
     s32 iScroll = gUI.drag.iStartScroll + (gUI.drag.iTrackRange > 0 ? (s32)((s64)iDelta * gUI.drag.iMaxScroll / gUI.drag.iTrackRange) : 0);
@@ -1873,7 +1957,7 @@ _scHandleMouseMove(POINT pt, RECT cr) {
       *gUI.drag.pValue = iScroll;
       InvalidateRect(gUI.hWindow, NULL, FALSE);
     }
-    return false;
+    return bSidebarHoverChanged;
   }
 
   if (gUI.iExpandedDropdown >= 0) {
@@ -1889,21 +1973,11 @@ _scHandleMouseMove(POINT pt, RECT cr) {
     } else {
       gUI.iDropdownHover = -1;
     }
-    return gUI.iDropdownHover != iPrevHover || gUI.bHoveredScroll != bPrevScroll;
+    return gUI.iDropdownHover != iPrevHover || gUI.bHoveredScroll != bPrevScroll || bSidebarHoverChanged;
   }
 
-  scPageID ePrevTab    = gUI.eHoveredTab;
-  s32      iPrevWidget = gUI.iHoveredWidget;
-  bool     bPrevScroll = gUI.bHoveredScroll;
-
-  gUI.eHoveredTab = SC_PAGE_NONE;
-  for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
-    RECT rcTab = _scSidebarRect(i);
-    if (PtInRect(&rcTab, pt)) {
-      gUI.eHoveredTab = (scPageID)i;
-      break;
-    }
-  }
+  s32  iPrevWidget = gUI.iHoveredWidget;
+  bool bPrevScroll = gUI.bHoveredScroll;
 
   scScrollGeom sg = _scPageScrollbar(cr);
   gUI.bHoveredScroll = sg.bVisible && PtInRect(&sg.rcThumb, pt);
@@ -1911,7 +1985,7 @@ _scHandleMouseMove(POINT pt, RECT cr) {
   s32 iHit = gUI.bHoveredScroll ? -1 : _scWidgetAt(&gUI.aPages[gUI.eCurrentPage], pt);
   gUI.iHoveredWidget = iHit;
 
-  return gUI.eHoveredTab != ePrevTab || gUI.iHoveredWidget != iPrevWidget || gUI.bHoveredScroll != bPrevScroll;
+  return bSidebarHoverChanged || gUI.iHoveredWidget != iPrevWidget || gUI.bHoveredScroll != bPrevScroll;
 }
 
 scInternal void
@@ -1937,19 +2011,17 @@ _scHandleLeftDown(POINT pt, RECT cr) {
     return;
   }
 
+  s32 iSidebarHit = _scSidebarWidgetAt(pt);
+  if (iSidebarHit >= 0) {
+    _scOnWidgetClicked(&gUI.aSidebarWidgets[iSidebarHit]);
+    return;
+  }
+
   scPage* pCurrent = &gUI.aPages[gUI.eCurrentPage];
   scScrollGeom sg = _scPageScrollbar(cr);
   if (_scScrollbarHit(sg, pt)) {
     _scBeginScrollDrag(&pCurrent->scroll.nScrollY, sg, pCurrent->scroll.nMaxScrollY, pt);
     return;
-  }
-
-  for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
-    RECT rcTab = _scSidebarRect(i);
-    if (PtInRect(&rcTab, pt)) {
-      scUISetCurrentPage((scPageID)i);
-      return;
-    }
   }
 
   scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
@@ -2151,13 +2223,16 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       RECT cr = _scEnsureLayout();
       if (_scHandleMouseMove(pt, cr)) {
         InvalidateRect(hWnd, NULL, FALSE);
-        TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hWnd, HOVER_DEFAULT };
+
+        TRACKMOUSEEVENT tme = {
+          sizeof(TRACKMOUSEEVENT), TME_LEAVE, hWnd, HOVER_DEFAULT
+        };
         TrackMouseEvent(&tme);
       }
       return 0;
     }
     case WM_MOUSELEAVE: {
-      gUI.eHoveredTab    = SC_PAGE_NONE;
+      gUI.iHoveredSidebarWidget = -1;
       gUI.iHoveredWidget = -1;
       gUI.bHoveredScroll = false;
       InvalidateRect(hWnd, NULL, FALSE);
@@ -2413,6 +2488,25 @@ _scOnLogPushed(void) {
 }
 
 scInternal void
+_scOnVersionLinkClicked(s32 iParam) {
+  (void)iParam;
+  char cLink[1024] = {0};  
+  snprintf(cLink, sizeof(cLink), "https://www.github.com/daniel-w0/screencap/releases/tag/%s", SC_VERSION_STRING);
+  ShellExecuteA(NULL, "open", cLink, NULL, NULL, SW_SHOW);
+}
+
+scInternal void
+_scSetupSidebar() {
+  gUI.nSidebarWidgetCount = 0;
+  gUI.iHoveredSidebarWidget = -1;
+  for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
+    RECT r = { 10, 20 + i * 35, 140, 50 + i * 35 };
+    _scSidebarPush(_scMakePageTab(r, (scPageID)i));
+  }
+  _scSidebarPush(_scMakeLink((RECT){ 0, 0, SIDEBAR_WIDTH, 30 }, SC_VERSION_STRING_FULL_W, _scOnVersionLinkClicked, 0, true));
+}
+
+scInternal void
 _scSetupPages() {
   scPage* pGeneral = &gUI.aPages[SC_PAGE_GENERAL];
   pGeneral->szKey     = "General";
@@ -2446,7 +2540,7 @@ void scUIOpenWindow() {
     OleInitialize(NULL);
 
     gUI.eCurrentPage      = SC_PAGE_GENERAL;
-    gUI.eHoveredTab       = SC_PAGE_NONE;
+    gUI.iHoveredSidebarWidget = -1;
     gUI.iHoveredWidget    = -1;
     gUI.iEditingHotkey    = -1;
     gUI.iExpandedDropdown = -1;
@@ -2454,6 +2548,7 @@ void scUIOpenWindow() {
   }
 
   _scSetupPages();
+  _scSetupSidebar();
 
   gUI.fUIScale = _scGetDPIScale();
   gUI.bNeedsLayout = true;
@@ -2517,6 +2612,10 @@ void scUICloseWindow() {
     gUI.aPages[i].nWidgetCount = 0;
     gUI.aPages[i].nWidgetCap   = 0;
   }
+  free(gUI.aSidebarWidgets);
+  gUI.aSidebarWidgets = NULL;
+  gUI.nSidebarWidgetCount = 0;
+  gUI.nSidebarWidgetCap = 0;
 
   if (gUI.hWindow) {
     gUI.hWindow = NULL;
@@ -2531,6 +2630,7 @@ void scUISetCurrentPage(scPageID ePageID) {
 
   gUI.imageDrag.bPending = false;
   gUI.eCurrentPage      = ePageID;
+  gUI.iHoveredSidebarWidget = -1;
   gUI.iHoveredWidget    = -1;
   gUI.iExpandedDropdown = -1;
   gUI.bNeedsLayout      = true;
