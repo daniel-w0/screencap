@@ -5,17 +5,13 @@
 #include "scUITheme.h"
 
 #include <windowsx.h>
-#include <dwmapi.h>
-
-#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
-#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
-#endif
 
 #define WM_SC_COLOR_PICKER_START_PICK (WM_APP + 0x3A0)
 #define SC_COLOR_PICKER_CLASS L"ScColorPickerWindow"
 #define SC_COLOR_PICKER_PREVIEW_CLASS L"ScColorPickerPreviewWindow"
 #define SC_COLOR_PICKER_WIDTH 500
 #define SC_COLOR_PICKER_HEIGHT 330
+#define SC_COLOR_PICKER_TITLEBAR_HEIGHT 38
 #define SC_COLOR_PICKER_HISTORY 8
 #define SC_COLOR_PICKER_ROWS 4
 #define SC_COLOR_PICKER_PREVIEW_WIDTH 190
@@ -23,6 +19,7 @@
 
 #define SC_PICKER_HIT_NONE 0
 #define SC_PICKER_HIT_PICK 1
+#define SC_PICKER_HIT_CLOSE 2
 #define SC_PICKER_HIT_SWATCH_BASE 10
 #define SC_PICKER_HIT_COPY_BASE 30
 
@@ -43,6 +40,7 @@ static struct scColorPickerContextTag* gColorPickerContext;
 #define SC_PICKER_ACCENT      (gColorPickerTheme.dwAccent)
 #define SC_PICKER_STROKE_SOFT (gColorPickerTheme.dwStrokeSoft)
 #define SC_PICKER_CARD_ACTIVE (gColorPickerTheme.dwCardActive)
+#define SC_PICKER_CLOSE_HOVER (gColorPickerTheme.dwError)
 
 typedef struct scColorPickerContextTag {
   HWND hWnd;
@@ -93,11 +91,6 @@ static void _scPickerRefreshTheme(HWND hWnd) {
   scUIThemeGet(&gColorPickerTheme, fontScale);
   gColorPickerThemeScale = scale;
   gColorPickerThemeReady = true;
-}
-
-static void _scPickerApplyTitleBarTheme(HWND hWnd) {
-  BOOL dark = gColorPickerTheme.bDark ? TRUE : FALSE;
-  DwmSetWindowAttribute(hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
 }
 
 static bool _scPickerEnsureGdiPlus(void) {
@@ -219,12 +212,16 @@ static void _scPickerText(HDC hDC, const wchar_t* text, RECT r, COLORREF color, 
   SelectObject(hDC, oldFont);
 }
 
+static RECT _scPickerTitleCloseRect(int clientWidth) {
+  return (RECT){ clientWidth - 48, 4, clientWidth - 4, SC_COLOR_PICKER_TITLEBAR_HEIGHT - 4 };
+}
+
 static RECT _scPickerPickRect(void) {
-  return (RECT){ 18, 16, 104, 58 };
+  return (RECT){ 18, SC_COLOR_PICKER_TITLEBAR_HEIGHT + 16, 104, SC_COLOR_PICKER_TITLEBAR_HEIGHT + 58 };
 }
 
 static RECT _scPickerRowRect(int index, int clientWidth) {
-  int top = 114 + index * 51;
+  int top = SC_COLOR_PICKER_TITLEBAR_HEIGHT + 114 + index * 51;
   return (RECT){ 18, top, clientWidth - 18, top + 42 };
 }
 
@@ -234,10 +231,13 @@ static RECT _scPickerCopyRect(int index, int clientWidth) {
 }
 
 static POINT _scPickerSwatchCenter(int index) {
-  return (POINT){ 150 + index * 38, 88 };
+  return (POINT){ 150 + index * 38, SC_COLOR_PICKER_TITLEBAR_HEIGHT + 88 };
 }
 
 static int _scPickerHitTest(scColorPickerContext* ctx, POINT pt, int clientWidth) {
+  RECT close = _scPickerTitleCloseRect(clientWidth);
+  if (PtInRect(&close, pt)) return SC_PICKER_HIT_CLOSE;
+
   RECT pick = _scPickerPickRect();
   if (PtInRect(&pick, pt)) return SC_PICKER_HIT_PICK;
 
@@ -274,11 +274,39 @@ static void _scPickerPaintContent(scColorPickerContext* ctx, HWND hWnd, HDC hDC)
 
   HFONT hFont = gColorPickerTheme.pFont;
   HFONT hSmallFont = gColorPickerTheme.pBoldFont;
+
+  RECT titleClose = _scPickerTitleCloseRect(width);
+  if (ctx->iHover == SC_PICKER_HIT_CLOSE) {
+    GpGraphics* titleGraphics = gpGraphicsBegin(hDC);
+    gpFillRound(titleGraphics, titleClose, 5.0f, gpColor(SC_PICKER_CLOSE_HOVER, 255));
+    gpGraphicsEnd(titleGraphics);
+  }
+  _scPickerFill(hDC, (RECT){ 0, SC_COLOR_PICKER_TITLEBAR_HEIGHT - 1, width, SC_COLOR_PICKER_TITLEBAR_HEIGHT }, SC_PICKER_STROKE_SOFT);
+
+  if (hSmallFont) {
+    RECT windowTitle = { 18, 0, width - 58, SC_COLOR_PICKER_TITLEBAR_HEIGHT };
+    _scPickerText(hDC, L"Color Picker", windowTitle, SC_PICKER_TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE, hSmallFont);
+  }
+
+  int closeCx = (titleClose.left + titleClose.right) / 2;
+  int closeCy = (titleClose.top + titleClose.bottom) / 2;
+  COLORREF closeColor = ctx->iHover == SC_PICKER_HIT_CLOSE ? RGB(255, 255, 255) : SC_PICKER_MUTED;
+  HPEN closePen = CreatePen(PS_SOLID, 2, closeColor);
+  if (closePen) {
+    HGDIOBJ oldPen = SelectObject(hDC, closePen);
+    MoveToEx(hDC, closeCx - 5, closeCy - 5, NULL);
+    LineTo(hDC, closeCx + 5, closeCy + 5);
+    MoveToEx(hDC, closeCx + 5, closeCy - 5, NULL);
+    LineTo(hDC, closeCx - 5, closeCy + 5);
+    SelectObject(hDC, oldPen);
+    DeleteObject(closePen);
+  }
+
   if (!hFont || !hSmallFont) return;
 
   RECT pick = _scPickerPickRect();
-  RECT current = { 112, 19, 148, 55 };
-  RECT divider = { 0, 68, width, 69 };
+  RECT current = { 112, SC_COLOR_PICKER_TITLEBAR_HEIGHT + 19, 148, SC_COLOR_PICKER_TITLEBAR_HEIGHT + 55 };
+  RECT divider = { 0, SC_COLOR_PICKER_TITLEBAR_HEIGHT + 68, width, SC_COLOR_PICKER_TITLEBAR_HEIGHT + 69 };
 
   _scPickerFill(hDC, divider, SC_PICKER_STROKE_SOFT);
   GpGraphics* graphics = gpGraphicsBegin(hDC);
@@ -301,19 +329,23 @@ static void _scPickerPaintContent(scColorPickerContext* ctx, HWND hWnd, HDC hDC)
     RECT row = _scPickerRowRect(i, width);
     RECT copy = _scPickerCopyRect(i, width);
     COLORREF fill = ctx->iHover == SC_PICKER_HIT_COPY_BASE + i ? SC_PICKER_PANEL_HOVER : SC_PICKER_PANEL;
+    bool bCopyHover = ctx->iHover == SC_PICKER_HIT_COPY_BASE + i;
     gpFillRound(graphics, row, 6.0f, gpColor(fill, 255));
-    gpFillRound(graphics, copy, 5.0f, gpColor(ctx->iHover == SC_PICKER_HIT_COPY_BASE + i ? SC_PICKER_PANEL_HOVER : SC_PICKER_CARD_ACTIVE, 255));
+    gpFillRound(graphics, copy, 5.0f, gpColor(bCopyHover ? SC_PICKER_PANEL_HOVER : SC_PICKER_CARD_ACTIVE, 255));
+    gpStrokeRound(graphics, copy, 5.0f,
+                  gpColor(bCopyHover ? SC_PICKER_ACCENT : SC_PICKER_STROKE_SOFT, 255),
+                  bCopyHover ? 1.5f : 1.0f);
   }
   gpGraphicsEnd(graphics);
 
   RECT pickText = { pick.left + 12, pick.top + 1, pick.right - 6, pick.bottom - 1 };
   _scPickerText(hDC, L"Pick", pickText, SC_PICKER_TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE, hFont);
 
-  RECT recentLabel = { 18, 74, 132, 101 };
+  RECT recentLabel = { 18, SC_COLOR_PICKER_TITLEBAR_HEIGHT + 74, 132, SC_COLOR_PICKER_TITLEBAR_HEIGHT + 101 };
   _scPickerText(hDC, L"Recent Colors", recentLabel, SC_PICKER_MUTED, DT_LEFT | DT_VCENTER | DT_SINGLELINE, hSmallFont);
 
-  RECT titleLabel = { 158, 15, width - 14, 31 };
-  RECT titleValue = { 158, 31, width - 14, 57 };
+  RECT titleLabel = { 158, SC_COLOR_PICKER_TITLEBAR_HEIGHT + 15, width - 14, SC_COLOR_PICKER_TITLEBAR_HEIGHT + 31 };
+  RECT titleValue = { 158, SC_COLOR_PICKER_TITLEBAR_HEIGHT + 31, width - 14, SC_COLOR_PICKER_TITLEBAR_HEIGHT + 57 };
   _scPickerText(hDC, L"CURRENT COLOUR", titleLabel, SC_PICKER_MUTED, DT_LEFT | DT_VCENTER | DT_SINGLELINE, hSmallFont);
 
   scColorStrings strings;
@@ -332,6 +364,9 @@ static void _scPickerPaintContent(scColorPickerContext* ctx, HWND hWnd, HDC hDC)
     _scPickerText(hDC, L"Copy", copyText, SC_PICKER_TEXT, DT_CENTER | DT_VCENTER | DT_SINGLELINE, hSmallFont);
   }
 
+  GpGraphics* borderGraphics = gpGraphicsBegin(hDC);
+  gpStrokeRound(borderGraphics, client, 7.0f, gpColor(SC_PICKER_BORDER, 255), 1.0f);
+  gpGraphicsEnd(borderGraphics);
 }
 
 static void _scPickerPaint(scColorPickerContext* ctx, HWND hWnd, HDC hDC) {
@@ -542,7 +577,6 @@ static LRESULT CALLBACK _scColorPickerWndProc(HWND hWnd, UINT uMsg, WPARAM wPara
     case WM_SETTINGCHANGE:
     case WM_THEMECHANGED:
       _scPickerRefreshTheme(hWnd);
-      _scPickerApplyTitleBarTheme(hWnd);
       InvalidateRect(hWnd, NULL, FALSE);
       if (ctx && ctx->hPreviewWnd && IsWindow(ctx->hPreviewWnd)) InvalidateRect(ctx->hPreviewWnd, NULL, FALSE);
       return 0;
@@ -602,12 +636,31 @@ static LRESULT CALLBACK _scColorPickerWndProc(HWND hWnd, UINT uMsg, WPARAM wPara
       }
       break;
     }
+    case WM_LBUTTONDOWN: {
+      POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+      RECT client;
+      GetClientRect(hWnd, &client);
+      RECT closeRect = _scPickerTitleCloseRect(client.right);
+      if (pt.y >= 0 && pt.y < SC_COLOR_PICKER_TITLEBAR_HEIGHT &&
+          !PtInRect(&closeRect, pt)) {
+        ReleaseCapture();
+        SendMessageW(hWnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+        return 0;
+      }
+      return DefWindowProcW(hWnd, uMsg, wParam, lParam);
+    }
     case WM_LBUTTONUP: {
       if (!ctx) return 0;
       RECT client;
       GetClientRect(hWnd, &client);
       POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
       int hit = _scPickerHitTest(ctx, pt, client.right);
+
+      if (hit == SC_PICKER_HIT_CLOSE) {
+        ShowWindow(hWnd, SW_HIDE);
+        return 0;
+      }
+      if (pt.y >= 0 && pt.y < SC_COLOR_PICKER_TITLEBAR_HEIGHT) return 0;
 
       if (hit == SC_PICKER_HIT_PICK) {
         ctx->bPicking = true;
@@ -666,13 +719,10 @@ static HWND _scColorPickerCreateWindow(scColorPickerContext* ctx) {
     gColorPickerClassRegistered = true;
   }
 
-  RECT r = { 0, 0, SC_COLOR_PICKER_WIDTH, SC_COLOR_PICKER_HEIGHT };
-  DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+  DWORD style = WS_POPUP;
   DWORD exStyle = WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
-  AdjustWindowRectEx(&r, style, FALSE, exStyle);
-
-  int windowWidth = r.right - r.left;
-  int windowHeight = r.bottom - r.top;
+  int windowWidth = SC_COLOR_PICKER_WIDTH;
+  int windowHeight = SC_COLOR_PICKER_HEIGHT + SC_COLOR_PICKER_TITLEBAR_HEIGHT;
   RECT work;
   SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
   int x = work.left + ((work.right - work.left) - windowWidth) / 2;
@@ -692,7 +742,8 @@ static HWND _scColorPickerCreateWindow(scColorPickerContext* ctx) {
     return NULL;
   }
 
-  _scPickerApplyTitleBarTheme(hWnd);
+  HRGN region = CreateRoundRectRgn(0, 0, windowWidth + 1, windowHeight + 1, 14, 14);
+  if (region && !SetWindowRgn(hWnd, region, TRUE)) DeleteObject(region);
   return hWnd;
 }
 
@@ -700,6 +751,7 @@ scInternal bool
 cbOnHotkeyPressed(scCaptureContext* pCtx) {
   if (!pCtx) return true;
   pCtx->bShouldUseMagnifier = false;
+  pCtx->bShowCoordinates = false;
 
   _scPickerRefreshTheme(gColorPickerContext ? gColorPickerContext->hWnd : NULL);
   if (!_scPickerEnsureGdiPlus()) {

@@ -103,6 +103,7 @@ typedef struct {
   scHotkeyID eHotkeyID;
 
   bool bShouldUseMagnifier;
+  bool bShowCoordinates;
 
   // Modifiable by handler:
   void* pUser;

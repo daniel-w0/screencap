@@ -382,7 +382,7 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       }
 
       // "W x H" size label.
-      if (pCtx->stSelectedRect.w > 0 && pCtx->stSelectedRect.h > 0) {
+      if (pCtx->bShowCoordinates && pCtx->stSelectedRect.w > 0 && pCtx->stSelectedRect.h > 0) {
         HFONT hOldFont = SelectObject(hMemDC, GetStockObject(DEFAULT_GUI_FONT));
 
         char szSize[64];
@@ -564,6 +564,7 @@ _scBeginCaptureContext() {
   }
   gApp->pCaptureContext = (scCaptureContext*)calloc(1, sizeof(scCaptureContext));
   gApp->pCaptureContext->bShouldUseMagnifier = true; // default to true, only thing that doesn't use it is the color picker.
+  gApp->pCaptureContext->bShowCoordinates = true;
   gApp->pCaptureContext->eHotkeyID = SC_HOTKEY_INVALID;
   return gApp->pCaptureContext != NULL;
 }
