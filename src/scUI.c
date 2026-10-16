@@ -721,7 +721,7 @@ _scDrawToggle(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
   f32 fInset = 3.0f * gUI.fUIScale;
   f32 fThumb = (pill.bottom - pill.top) - fInset * 2.0f;
   f32 fThumbX = bOn ? (pill.right - fInset - fThumb) : (pill.left + fInset);
-  COLORREF dwThumb = bOn ? (_scColorIsLight(t->dwAccent) ? RGB(0, 0, 0) : RGB(255, 255, 255)) : t->dwPillOff;
+  COLORREF dwThumb = bOn ? (scColorIsLight(t->dwAccent) ? RGB(0, 0, 0) : RGB(255, 255, 255)) : t->dwPillOff;
   gpFillEllipse(pGraphics, fThumbX, pill.top + fInset, fThumb, fThumb, gpColor(dwThumb, 255));
   gpGraphicsEnd(pGraphics);
 
@@ -2302,8 +2302,8 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     }
     case WM_SETTINGCHANGE: {
       if (gApp->bIsGeWin10 && lParam && wcscmp((const wchar_t*)lParam, L"ImmersiveColorSet") == 0) {
-        float fUIScale = _scGetDPIScale(gUI.hWindow);
-        if (_scIsWindowsDarkTheme() != gUI.theme.bDark || _scGetSystemAccentColor() != gUI.theme.dwAccent || gUI.fUIScale != fUIScale) {
+        float fUIScale = scGetDPIScale(gUI.hWindow);
+        if (scIsWindowsDarkTheme() != gUI.theme.bDark || scGetSystemAccentColor() != gUI.theme.dwAccent || gUI.fUIScale != fUIScale) {
           gUI.fUIScale = fUIScale;
           scUIThemeGet(&gUI.theme, _scScale(15));
           BOOL bDark = gUI.theme.bDark;
@@ -2402,7 +2402,7 @@ void scUIOpenWindow() {
   _scSetupPages();
   _scSetupSidebar();
 
-  gUI.fUIScale = _scGetDPIScale(gUI.hWindow);
+  gUI.fUIScale = scGetDPIScale(gUI.hWindow);
   gUI.bNeedsLayout = true;
   scUIThemeGet(&gUI.theme, _scScale(15));
 

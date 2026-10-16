@@ -34,11 +34,11 @@ typedef struct {
 
 void scUIThemeGet(scUITheme* pTheme, s32 iFontScale);
 
-f32 _scGetDPIScale();
-s32 _scMix(s32 x, s32 y, f32 f);
-COLORREF _scBlendColor(COLORREF a, COLORREF b, f32 f);
-bool _scColorIsLight(COLORREF c);
-bool _scIsWindowsDarkTheme();
-COLORREF _scGetSystemAccentColor();
+f32 scGetDPIScale();
+s32 scMix(s32 x, s32 y, f32 f);
+COLORREF scBlendColor(COLORREF a, COLORREF b, f32 f);
+bool scColorIsLight(COLORREF c);
+bool scIsWindowsDarkTheme();
+COLORREF scGetSystemAccentColor();
 
 #endif // SC_UI_THEME_H

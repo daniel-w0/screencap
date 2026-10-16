@@ -114,9 +114,9 @@ static void _scPickerDestroyTheme(void) {
 }
 
 static void _scPickerRefreshTheme(HWND hWnd) {
-  f32 scale = _scGetDPIScale(hWnd);
-  bool dark = _scIsWindowsDarkTheme();
-  COLORREF accent = _scGetSystemAccentColor();
+  f32 scale = scGetDPIScale(hWnd);
+  bool dark = scIsWindowsDarkTheme();
+  COLORREF accent = scGetSystemAccentColor();
 
   if (gColorPickerThemeReady &&
       gColorPickerTheme.bDark == dark &&
