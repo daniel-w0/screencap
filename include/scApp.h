@@ -22,6 +22,7 @@ typedef enum {
   SC_HOTKEY_ACTIVE_MONITOR,
   SC_HOTKEY_FALLBACK_SCREENSHOT,
   SC_HOTKEY_RECORD,
+  SC_HOTKEY_COLORPICKER,
   _SC_HOTKEY_COUNT,
   SC_HOTKEY_INVALID
 } scHotkeyID;
@@ -38,7 +39,8 @@ static const char* scHotkeyIdNames[_SC_HOTKEY_COUNT] = {
   "active_window",
   "current_monitor",
   "fallback_screenshot",
-  "record"
+  "record",
+  "colorpicker"
 };
 
 static const char* scCaptureActionNames[_SC_HOTKEY_COUNT] = {
@@ -48,7 +50,8 @@ static const char* scCaptureActionNames[_SC_HOTKEY_COUNT] = {
   "Take Screenshot (Window)",
   "Take Screenshot (Desktop)",
   "Take Screenshot (Alt)",
-  "Start/Stop Recording"
+  "Start/Stop Recording",
+  "Color Picker"
 };
 
 typedef struct {
@@ -98,6 +101,8 @@ typedef struct {
   // Public
   scRect stSelectedRect;
   scHotkeyID eHotkeyID;
+
+  bool bShouldUseMagnifier;
 
   // Modifiable by handler:
   void* pUser;

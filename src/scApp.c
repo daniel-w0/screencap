@@ -198,18 +198,20 @@ _scPaintMagnifier(scCaptureContext* pCtx, HDC hMemDC) {
 scInternal void
 _scHandleCaptureCancel(scCaptureContext* pCtx) {
   if (pCtx->bMouseDown) {
-    // Cancel the in-progress drag, but stay in capture mode.
     ReleaseCapture();
     pCtx->bMouseDown = false;
-    pCtx->bDragging  = false;
+    pCtx->bDragging = false;
     POINT stPoint;
     GetCursorPos(&stPoint);
     _scUpdateHoverRect(pCtx, stPoint);
     InvalidateRect(pCtx->hOverlayWindow, NULL, FALSE);
   } else {
-    // Cancel the whole capture.
     ShowWindow(pCtx->hOverlayWindow, SW_HIDE);
-    scDestroyCaptureContext(gApp->pCaptureContext);
+    if (gApp->pActiveHandler &&
+        gApp->pActiveHandler->cbOnCaptureCancelled) {
+      gApp->pActiveHandler->cbOnCaptureCancelled(pCtx);
+    }
+    scDestroyCaptureContext(pCtx);
   }
 }
 
@@ -266,7 +268,9 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
       }
 
-      _scUpdateMagnifier(pCtx, stPoint);
+      if (pCtx->bShouldUseMagnifier) {
+        _scUpdateMagnifier(pCtx, stPoint);
+      }
       InvalidateRect(hWnd, NULL, FALSE);
       return 0;
     }
@@ -408,7 +412,9 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         SelectObject(hMemDC, hOldFont);
       }
 
-      _scPaintMagnifier(pCtx, hMemDC);
+      if (pCtx->bShouldUseMagnifier) {
+        _scPaintMagnifier(pCtx, hMemDC);
+      }
 
       // Present.
       BitBlt(hDC, 0, 0, cr.right, cr.bottom, hMemDC, 0, 0, SRCCOPY);
@@ -557,6 +563,7 @@ _scBeginCaptureContext() {
     scDestroyCaptureContext(gApp->pCaptureContext);
   }
   gApp->pCaptureContext = (scCaptureContext*)calloc(1, sizeof(scCaptureContext));
+  gApp->pCaptureContext->bShouldUseMagnifier = true; // default to true, only thing that doesn't use it is the color picker.
   gApp->pCaptureContext->eHotkeyID = SC_HOTKEY_INVALID;
   return gApp->pCaptureContext != NULL;
 }
@@ -1291,10 +1298,11 @@ bool scClipboardSetImage(scClipboard* pCb, scImage* pImg) {
 // Other Application
 bool scCtxRequestCaptureArea(scCaptureContext* pCtx) {
   scAssert(pCtx, "pCtx is null!");
-  if (!_scCtxCreateCaptureWindow(gApp->pCaptureContext)) {
+  if (!pCtx || pCtx != gApp->pCaptureContext) {
+    scLogError("Capture-area request used a non-active context");
     return false;
   }
-  return true;
+  return _scCtxCreateCaptureWindow(pCtx);
 }
 
 bool scCtxCopyToImage(scCaptureContext* pCtx, scImage* pOutImage, scRect rect) {
@@ -1318,6 +1326,7 @@ extern scCaptureHandler scOcrHandler;
 extern scCaptureHandler scActiveWindowHandler;
 extern scCaptureHandler scActiveMonitorHandler;
 extern scCaptureHandler scRecordHandler;
+extern scCaptureHandler scColorPickerHandler;
 
 void scAppSetupCallbackHandler() {
   scHotkey* pHotkeys = gApp->config.aHotkeys;
@@ -1334,4 +1343,5 @@ void scAppSetupCallbackHandler() {
   _scRegisterHandler(SC_HOTKEY_ACTIVE_MONITOR, &scActiveMonitorHandler);
   _scRegisterHandler(SC_HOTKEY_FALLBACK_SCREENSHOT, &scScreenshotHandler);
   _scRegisterHandler(SC_HOTKEY_RECORD, &scRecordHandler);
+  _scRegisterHandler(SC_HOTKEY_COLORPICKER, &scColorPickerHandler);
 }

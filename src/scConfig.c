@@ -87,6 +87,7 @@ _scConfigCreateDefaults(scAppConfig* pOutConfig) {
   pOutConfig->aHotkeys[SC_HOTKEY_ACTIVE_MONITOR]      = (scHotkey){ .eID = SC_HOTKEY_ACTIVE_MONITOR      , .uModifiers = MOD_CONTROL,            .uKey = VK_SNAPSHOT, .bRegistered = false };
   pOutConfig->aHotkeys[SC_HOTKEY_FALLBACK_SCREENSHOT] = (scHotkey){ .eID = SC_HOTKEY_FALLBACK_SCREENSHOT, .uModifiers = MOD_CONTROL | MOD_ALT,   .uKey = 'C',         .bRegistered = false };
   pOutConfig->aHotkeys[SC_HOTKEY_RECORD]              = (scHotkey){ .eID = SC_HOTKEY_RECORD              , .uModifiers = MOD_SHIFT,              .uKey = VK_SNAPSHOT, .bRegistered = false };
+  pOutConfig->aHotkeys[SC_HOTKEY_COLORPICKER]         = (scHotkey){ .eID = SC_HOTKEY_COLORPICKER         , .uModifiers = MOD_SHIFT | MOD_ALT,    .uKey = 'C',         .bRegistered = false };
 
   pOutConfig->iFFmpegFramerate = 24;
   _scGetDefaultSaveRootPath(pOutConfig->wszSavePath); // defaults to current directory if fails
