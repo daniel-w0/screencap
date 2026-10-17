@@ -2380,9 +2380,11 @@ _scHandleLeftDown(POINT pt, RECT cr) {
       _scOnWidgetClicked(pWidget);
       return;
     }
-    gUI.imageDrag.bPending      = true;
-    gUI.imageDrag.iWidgetIndex  = iHit;
-    gUI.imageDrag.ptStart       = pt;
+
+    gUI.imageDrag.bPending = true;
+    gUI.imageDrag.iWidgetIndex = iHit;
+    gUI.imageDrag.ptStart = pt;
+    SetCapture(gUI.hWindow);
     return;
   }
 
@@ -2544,8 +2546,14 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         if (abs(dx) > GetSystemMetrics(SM_CXDRAG) || abs(dy) > GetSystemMetrics(SM_CYDRAG)) {
           s32 iIdx = gUI.imageDrag.iWidgetIndex;
           gUI.imageDrag.bPending = false;
+
+          if (GetCapture() == hWnd) {
+            ReleaseCapture();
+          }
+
           scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
-          if (iIdx >= 0 && iIdx < pPage->nWidgetCount && pPage->aWidgets[iIdx].eType == SC_WIDGET_IMAGE) {
+          if (iIdx >= 0 && iIdx < pPage->nWidgetCount &&
+              pPage->aWidgets[iIdx].eType == SC_WIDGET_IMAGE) {
             char szPath[MAX_PATH];
             strcpy_s(szPath, MAX_PATH, pPage->aWidgets[iIdx].szPath);
             _scStartImageDrag(szPath);
@@ -2599,6 +2607,11 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       if (gUI.imageDrag.bPending) {
         s32 iIdx = gUI.imageDrag.iWidgetIndex;
         gUI.imageDrag.bPending = false;
+
+        if (GetCapture() == hWnd) {
+          ReleaseCapture();
+        }
+
         scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
         if (iIdx >= 0 && iIdx < pPage->nWidgetCount) {
           _scOnWidgetClicked(&pPage->aWidgets[iIdx]);
@@ -2809,8 +2822,6 @@ void scUIOpenWindow() {
       scLogError("Failed to get gdiplus token, unable to show UI");
       return;
     }
-
-    OleInitialize(NULL);
 
     gUI.eCurrentPage      = SC_PAGE_GENERAL;
     gUI.iHoveredSidebarWidget = -1;

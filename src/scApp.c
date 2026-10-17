@@ -705,6 +705,13 @@ bool scAppInit() {
   scTimerStart(&startTimer);
 
   scLogInit();
+
+  HRESULT hr = OleInitialize(NULL);
+  if (FAILED(hr)) {
+    scLogError("OleInitialize failed: 0x%08lX", (unsigned long)hr);
+    return false;
+  }
+
   _scEnableDpiAwareness();
 
   gApp = (scApp*)malloc(sizeof(scApp));
