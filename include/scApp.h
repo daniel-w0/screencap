@@ -61,16 +61,34 @@ typedef struct {
   bool       bRegistered;
 } scHotkey;
 
+typedef enum {
+  SC_QUALITY_LOW = 0,
+  SC_QUALITY_MEDIUM,
+  SC_QUALITY_HIGH,
+  SC_QUALITY_COUNT
+} scRecordQuality;
+
+typedef enum {
+  SC_MAXRES_NATIVE = 0,
+  SC_MAXRES_1080P,
+  SC_MAXRES_720P,
+  SC_MAXRES_COUNT
+} scRecordMaxRes;
+
 typedef struct {
-  scHotkey aHotkeys[_SC_HOTKEY_COUNT];
-  wchar_t  wszSavePath[SC_PATH_MAX_LEN];
-  s32      iFFmpegFramerate;
-  char     sLanguageCode[16];
-  bool     bCopyToClipboard;
-  bool     bRunAtStartup;
-  bool     bPlaySoundOnAction;
-  bool     bShowNotification;
-  bool     bStartMinimized;
+  scHotkey        aHotkeys[_SC_HOTKEY_COUNT];
+  wchar_t         wszSavePath[SC_PATH_MAX_LEN];
+  s32             iFFmpegFramerate;
+  scRecordQuality eRecordQuality;
+  scRecordMaxRes  eRecordMaxRes;
+  bool            bRecordShowCursor;
+  bool            bRecordForceSoftware;
+  char            sLanguageCode[16];
+  bool            bCopyToClipboard;
+  bool            bRunAtStartup;
+  bool            bPlaySoundOnAction;
+  bool            bShowNotification;
+  bool            bStartMinimized;
 } scAppConfig;
 
 typedef struct {

@@ -90,6 +90,10 @@ _scConfigCreateDefaults(scAppConfig* pOutConfig) {
   pOutConfig->aHotkeys[SC_HOTKEY_COLORPICKER]         = (scHotkey){ .eID = SC_HOTKEY_COLORPICKER         , .uModifiers = MOD_SHIFT | MOD_ALT,    .uKey = 'C',         .bRegistered = false };
 
   pOutConfig->iFFmpegFramerate = 24;
+  pOutConfig->eRecordQuality = SC_QUALITY_HIGH;
+  pOutConfig->eRecordMaxRes = SC_MAXRES_NATIVE;
+  pOutConfig->bRecordShowCursor = true;
+  pOutConfig->bRecordForceSoftware = false;
   _scGetDefaultSaveRootPath(pOutConfig->wszSavePath); // defaults to current directory if fails
   _scGetSystemLanguage(pOutConfig->sLanguageCode); // defaults to en if fails
     
@@ -133,10 +137,18 @@ _scWriteConfig(scAppConfig* pConfig, wchar_t* wszPath) {
   WritePrivateProfileStringW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"show_notification",  pConfig->bShowNotification ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"start_minimized",    pConfig->bStartMinimized ? L"1" : L"0", wszActualPath);
+  WritePrivateProfileStringW(L"options", L"record_show_cursor", pConfig->bRecordShowCursor ? L"1" : L"0", wszActualPath);
+  WritePrivateProfileStringW(L"options", L"record_force_software", pConfig->bRecordForceSoftware ? L"1" : L"0", wszActualPath);
 
-  wchar_t wszFramerate[16];
-  _snwprintf_s(wszFramerate, 16, _TRUNCATE, L"%d", pConfig->iFFmpegFramerate);
-  WritePrivateProfileStringW(L"options", L"record_framerate", wszFramerate, wszActualPath);
+  wchar_t wszValue[16];
+  _snwprintf_s(wszValue, 16, _TRUNCATE, L"%d", pConfig->iFFmpegFramerate);
+  WritePrivateProfileStringW(L"options", L"record_framerate", wszValue, wszActualPath);
+
+  _snwprintf_s(wszValue, 16, _TRUNCATE, L"%d", (int)pConfig->eRecordQuality);
+  WritePrivateProfileStringW(L"options", L"record_quality", wszValue, wszActualPath);
+
+  _snwprintf_s(wszValue, 16, _TRUNCATE, L"%d", (int)pConfig->eRecordMaxRes);
+  WritePrivateProfileStringW(L"options", L"record_max_res", wszValue, wszActualPath);
 
   wchar_t wszLang[16];
   MultiByteToWideChar(CP_UTF8, 0, pConfig->sLanguageCode, -1, wszLang, 16);
@@ -185,7 +197,18 @@ _scConfigReadInto(scAppConfig* pConfig, wchar_t* wszPath) {
   pConfig->bPlaySoundOnAction = GetPrivateProfileIntW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction, wszActualPath) != 0;
   pConfig->bShowNotification  = GetPrivateProfileIntW(L"options", L"show_notification",  pConfig->bShowNotification, wszActualPath) != 0;
   pConfig->bStartMinimized    = GetPrivateProfileIntW(L"options", L"start_minimized",    pConfig->bStartMinimized, wszActualPath) != 0;
+  pConfig->bRecordShowCursor     = GetPrivateProfileIntW(L"options", L"record_show_cursor",    pConfig->bRecordShowCursor, wszActualPath) != 0;
+  pConfig->bRecordForceSoftware  = GetPrivateProfileIntW(L"options", L"record_force_software", pConfig->bRecordForceSoftware, wszActualPath) != 0;
   pConfig->iFFmpegFramerate   = GetPrivateProfileIntW(L"options", L"record_framerate",  pConfig->iFFmpegFramerate, wszActualPath);
+  if (pConfig->iFFmpegFramerate < 1 || pConfig->iFFmpegFramerate > 120) pConfig->iFFmpegFramerate = 30;
+
+  UINT uQuality = GetPrivateProfileIntW(L"options", L"record_quality", (UINT)pConfig->eRecordQuality, wszActualPath);
+  if (uQuality >= SC_QUALITY_COUNT) uQuality = SC_QUALITY_HIGH;
+  pConfig->eRecordQuality = (scRecordQuality)uQuality;
+
+  UINT uMaxRes = GetPrivateProfileIntW(L"options", L"record_max_res", (UINT)pConfig->eRecordMaxRes, wszActualPath);
+  if (uMaxRes >= SC_MAXRES_COUNT) uMaxRes = SC_MAXRES_NATIVE;
+  pConfig->eRecordMaxRes = (scRecordMaxRes)uMaxRes;
 
   wchar_t wszDefaultLang[16];
   MultiByteToWideChar(CP_UTF8, 0, pConfig->sLanguageCode, -1, wszDefaultLang, 16);

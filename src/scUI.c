@@ -1204,14 +1204,43 @@ _scOnLanguageSelected(s32 iIndex) {
   InvalidateRect(gUI.hWindow, NULL, TRUE);
 }
 
-static const char* const kFramerateOptions[] = { "24", "30", "60" };
-static const s32         kFramerateValues[]  = { 24, 30, 60 };
+static const char* const kFramerateOptions[] = { "60", "30", "24" };
+static const s32         kFramerateValues[]  = { 60, 30, 24 };
+
+static const char* const kRecordQualityOptions[] = { "High", "Medium", "Low" };
+static const s32         kRecordQualityValues[]  = { SC_QUALITY_HIGH, SC_QUALITY_MEDIUM, SC_QUALITY_LOW };
+
+static const char* const kRecordResOptions[] = { "Native", "1080p", "720p" };
+static const s32         kRecordResValues[]  = { SC_MAXRES_NATIVE, SC_MAXRES_1080P, SC_MAXRES_720P };
+
 #define SC_FRAMERATE_COUNT 3
 
 scInternal void
 _scOnFramerateSet(s32 iIndex) {
   if (iIndex >= 0 && iIndex < SC_FRAMERATE_COUNT) {
     gApp->config.iFFmpegFramerate = kFramerateValues[iIndex];
+    scSaveConfig();
+  }
+  gUI.iExpandedDropdown = -1;
+  gUI.bNeedsLayout = true;
+  InvalidateRect(gUI.hWindow, NULL, TRUE);
+}
+
+scInternal void
+_scOnRecordQualitySet(s32 iIndex) {
+  if (iIndex >= 0 && iIndex < SC_QUALITY_COUNT) {
+    gApp->config.eRecordQuality = kRecordQualityValues[iIndex];
+    scSaveConfig();
+  }
+  gUI.iExpandedDropdown = -1;
+  gUI.bNeedsLayout = true;
+  InvalidateRect(gUI.hWindow, NULL, TRUE);
+}
+
+scInternal void
+_scOnRecordResSet(s32 iIndex) {
+  if (iIndex >= 0 && iIndex < SC_MAXRES_COUNT) {
+    gApp->config.eRecordMaxRes = kRecordResValues[iIndex];
     scSaveConfig();
   }
   gUI.iExpandedDropdown = -1;
@@ -1270,6 +1299,35 @@ _scLayoutSettings(scPage* pPage, RECT rc) {
     _scPagePush(pPage, _scMakeDropdown((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Recording Framerate"), kFramerateOptions, SC_FRAMERATE_COUNT, iSelected, _scOnFramerateSet));
     iY += 45;
   }
+
+  { // Record Quality
+    s32 iSelected = 0;
+    for (s32 i = 0; i < SC_QUALITY_COUNT; ++i) {
+      if (kRecordQualityValues[i] == gApp->config.eRecordQuality) {
+        iSelected = i;
+        break;
+      }
+    }
+    _scPagePush(pPage, _scMakeDropdown((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Recording Quality"), kRecordQualityOptions, SC_QUALITY_COUNT, iSelected, _scOnRecordQualitySet));
+    iY += 45;
+  }
+
+  { // Record Resolution
+    s32 iSelected = 0;
+    for (s32 i = 0; i < SC_MAXRES_COUNT; ++i) {
+      if (kRecordResValues[i] == gApp->config.eRecordMaxRes) {
+        iSelected = i;
+        break;
+      }
+    }
+    _scPagePush(pPage, _scMakeDropdown((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Recording Output Resolution"), kRecordResOptions, SC_MAXRES_COUNT, iSelected, _scOnRecordResSet));
+    iY += 45;
+  }
+
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Show Cursor (Recording)"), &gApp->config.bRecordShowCursor, NULL));
+  iY += 45;
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Force Software Encoding"), &gApp->config.bRecordForceSoftware, NULL));
+  iY += 45;
 
   // Rest of the options
   _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Copy screenshot to Clipboard"), &gApp->config.bCopyToClipboard, NULL));
