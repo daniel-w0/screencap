@@ -60,3 +60,16 @@ workspace "screencap"
 
     filter "files:**.cc"
       flags { "NoPCH" }
+
+    filter "configurations:Release"
+      optimize "Speed"
+      linktimeoptimization "On"
+      buildoptions {
+        "/Gy"
+      }
+      linkoptions {
+        "/OPT:REF",
+        "/OPT:ICF"
+      }
+
+    filter {}
