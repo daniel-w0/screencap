@@ -1715,6 +1715,190 @@ _scLayoutLogs(scPage* pPage, RECT rc) {
                                      : _scClamp(pPage->scroll.nScrollY, 0, pPage->scroll.nMaxScrollY);
 }
 
+scInternal void
+_scLayoutCredits(scPage* pPage, RECT rc) {
+  typedef struct {
+    const wchar_t* pName;
+    const wchar_t* pText;
+  } scLicenseExample;
+
+  static const scLicenseExample kLicenses[] = {
+    {
+      L"synthesthea (https://art.synthesthea.com/)",
+      L"Screenshot sounds"
+    },
+    {
+      L"miniaudio (MIT-0)",
+      L"Copyright 2025 David Reid\n"
+      L"\n"
+      L"Permission is hereby granted, free of charge, to any person obtaining a copy of\n"
+      L"this software and associated documentation files (the \"Software\"), to deal in\n"
+      L"the Software without restriction, including without limitation the rights to\n"
+      L"use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies\n"
+      L"of the Software, and to permit persons to whom the Software is furnished to do\n"
+      L"so.\n"
+      L"\n"
+      L"THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n"
+      L"IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n"
+      L"FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n"
+      L"AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n"
+      L"LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n"
+      L"OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n"
+      L"SOFTWARE."
+    },
+    {
+      L"stb (MIT)",
+      L"Copyright (c) 2017 Sean Barrett\n"
+      L"\n"
+      L"Permission is hereby granted, free of charge, to any person obtaining a copy of\n"
+      L"this software and associated documentation files (the \"Software\"), to deal in\n"
+      L"the Software without restriction, including without limitation the rights to\n"
+      L"use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies\n"
+      L"of the Software, and to permit persons to whom the Software is furnished to do\n"
+      L"so, subject to the following conditions:\n"
+      L"\n"
+      L"The above copyright notice and this permission notice shall be included in all\n"
+      L"copies or substantial portions of the Software.\n"
+      L"\n"
+      L"THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n"
+      L"IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n"
+      L"FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n"
+      L"AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n"
+      L"LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n"
+      L"OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n"
+      L"SOFTWARE."
+    }
+  };
+
+  pPage->nWidgetCount = 0;
+
+  s32 iY = 20;
+  s32 iTextWidth = rc.right - 20 - (CONTENT_LEFT + 10);
+
+  if (iTextWidth < 1) {
+    iTextWidth = 1;
+  }
+
+  HDC hMeasureDC = GetDC(NULL);
+  HGDIOBJ hOldFont = NULL;
+
+  if (hMeasureDC) {
+    hOldFont = SelectObject(hMeasureDC, gUI.theme.pFont);
+  }
+
+  _scPagePush(pPage, _scMakeLabel(
+    (RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 30 },
+    L"Credits and Third-Party Licenses", true
+  ));
+  iY += 30;
+
+  for (s32 iLicense = 0;
+       iLicense < (s32)(sizeof(kLicenses) / sizeof(kLicenses[0]));
+       ++iLicense) {
+    _scPagePush(pPage, _scMakeLabel(
+      (RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 26 },
+      kLicenses[iLicense].pName, true
+    ));
+    iY += 26;
+
+    const wchar_t* pText = kLicenses[iLicense].pText;
+
+    while (*pText) {
+      if (*pText == L'\n') {
+        ++pText;
+        //iY += 22;
+        continue;
+      }
+
+      while (*pText == L' ' || *pText == L'\t') {
+        ++pText;
+      }
+
+      if (!*pText) {
+        break;
+      }
+
+      wchar_t szLine[128];
+      s32 iLen = 0;
+      s32 iLastSpace = -1;
+
+      while (pText[iLen] &&
+             pText[iLen] != L'\n' &&
+             iLen < (s32)(sizeof(szLine) / sizeof(szLine[0])) - 1) {
+        SIZE extent = { 0, 0 };
+        bool bFits = true;
+
+        if (hMeasureDC) {
+          if (GetTextExtentPoint32W(
+                hMeasureDC, pText, iLen + 1, &extent)) {
+            bFits = extent.cx <= iTextWidth;
+          }
+        }
+
+        if (!bFits) {
+          break;
+        }
+
+        if (pText[iLen] == L' ' || pText[iLen] == L'\t') {
+          iLastSpace = iLen;
+        }
+
+        ++iLen;
+      }
+
+      if (iLen > 0 &&
+          pText[iLen] != L'\0' &&
+          pText[iLen] != L'\n' &&
+          iLastSpace > 0) {
+        iLen = iLastSpace;
+      }
+
+      if (iLen <= 0) {
+        iLen = 1;
+      }
+
+      for (s32 i = 0; i < iLen; ++i) {
+        szLine[i] = pText[i];
+      }
+      szLine[iLen] = L'\0';
+
+      _scPagePush(pPage, _scMakeLabel(
+        (RECT){ CONTENT_LEFT + 10, iY, rc.right - 20, iY + 22 },
+        szLine, false
+      ));
+
+      iY += 22;
+      pText += iLen;
+
+      while (*pText == L' ' || *pText == L'\t') {
+        ++pText;
+      }
+    }
+
+    iY += 10;
+  }
+
+  if (hMeasureDC) {
+    if (hOldFont) {
+      SelectObject(hMeasureDC, hOldFont);
+    }
+    ReleaseDC(NULL, hMeasureDC);
+  }
+
+  pPage->scroll.nContentH   = iY + 20;
+  pPage->scroll.nMaxScrollY = pPage->scroll.nContentH - rc.bottom;
+
+  if (pPage->scroll.nMaxScrollY < 0) {
+    pPage->scroll.nMaxScrollY = 0;
+  }
+
+  pPage->scroll.nScrollY = _scClamp(
+    pPage->scroll.nScrollY,
+    0,
+    pPage->scroll.nMaxScrollY
+  );
+}
+
 scInternal RECT
 _scEnsureLayout() {
   RECT cr;
@@ -2433,6 +2617,10 @@ _scSetupPages() {
   scPage* pLogs = &gUI.aPages[SC_PAGE_LOGS];
   pLogs->szKey     = "Logs";
   pLogs->pfnLayout = _scLayoutLogs;
+
+  scPage* pCredits = &gUI.aPages[SC_PAGE_CREDITS];
+  pCredits->szKey     = "Credits";
+  pCredits->pfnLayout = _scLayoutCredits;
 }
 
 void scUIOpenWindow() {

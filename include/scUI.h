@@ -8,6 +8,7 @@ typedef enum {
   SC_PAGE_SETTINGS,
   SC_PAGE_GALLERY,
   SC_PAGE_LOGS,
+  SC_PAGE_CREDITS,
   _SC_PAGE_COUNT,
   SC_PAGE_NONE
 } scPageID;
