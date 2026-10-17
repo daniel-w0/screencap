@@ -8,6 +8,7 @@
 
 #define WM_SC_COLOR_PICKER_START_PICK (WM_APP + 0x3A0)
 #define WM_SC_COLOR_PICKER_ZOOM (WM_APP + 0x3A1)
+#define WM_SC_COLOR_PICKER_LENS_CONTROL (WM_APP + 0x3A2)
 #define SC_COLOR_PICKER_CLASS L"ScColorPickerWindow"
 #define SC_COLOR_PICKER_PREVIEW_CLASS L"ScColorPickerPreviewWindow"
 #define SC_COLOR_PICKER_WIDTH 500
@@ -17,8 +18,8 @@
 #define SC_COLOR_PICKER_ROWS 4
 #define SC_COLOR_PICKER_PREVIEW_WIDTH 148
 #define SC_COLOR_PICKER_PREVIEW_HEIGHT 46
-#define SC_COLOR_PICKER_MAGNIFIER_CELLS 11
-#define SC_COLOR_PICKER_ZOOM_MAX 5
+#define SC_COLOR_PICKER_MAGNIFIER_CELLS 18
+#define SC_COLOR_PICKER_ZOOM_MAX 10
 
 #define SC_PICKER_HIT_NONE 0
 #define SC_PICKER_HIT_PICK 1
@@ -33,6 +34,7 @@ static bool gColorPickerClassRegistered;
 static bool gColorPickerPreviewClassRegistered;
 static ULONG_PTR gColorPickerGdiPlusToken;
 static HHOOK gColorPickerMouseHook;
+static HHOOK gColorPickerKeyboardHook;
 static struct scColorPickerContextTag* gColorPickerContext;
 
 #define SC_PICKER_BG          (gColorPickerTheme.dwBackground)
@@ -60,6 +62,9 @@ typedef struct scColorPickerContextTag {
   bool bHasPreviewColor;
   POINT ptPreview;
   POINT ptCursor;
+  POINT ptLensOrigin;
+  POINT ptLensCell;
+  bool bLensControl;
   int iZoom;
   int iPreviewWidth;
   int iPreviewHeight;
@@ -87,12 +92,36 @@ static LRESULT CALLBACK _scPickerLowLevelMouseProc(int nCode, WPARAM wParam, LPA
   return CallNextHookEx(gColorPickerMouseHook, nCode, wParam, lParam);
 }
 
+static LRESULT CALLBACK _scPickerLowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+  if (nCode == HC_ACTION && gColorPickerContext && gColorPickerContext->bPicking) {
+    bool bKeyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
+    bool bKeyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
+    KBDLLHOOKSTRUCT* key = (KBDLLHOOKSTRUCT*)lParam;
+    if ((bKeyDown || bKeyUp) &&
+        (key->vkCode == VK_SHIFT || key->vkCode == VK_LSHIFT || key->vkCode == VK_RSHIFT)) {
+      HWND hTarget = gColorPickerContext->hPreviewWnd && IsWindow(gColorPickerContext->hPreviewWnd)
+        ? gColorPickerContext->hPreviewWnd : gColorPickerContext->hWnd;
+      if (hTarget && IsWindow(hTarget)) {
+        PostMessageW(hTarget, WM_SC_COLOR_PICKER_LENS_CONTROL, bKeyDown ? TRUE : FALSE, (LPARAM)key->vkCode);
+      }
+    }
+  }
+  return CallNextHookEx(gColorPickerKeyboardHook, nCode, wParam, lParam);
+}
+
 static void _scPickerStartMouseHook(void) {
   if (!gColorPickerMouseHook) {
     gColorPickerMouseHook = SetWindowsHookExW(WH_MOUSE_LL, _scPickerLowLevelMouseProc,
                                                GetModuleHandleW(NULL), 0);
     if (!gColorPickerMouseHook) {
       scLogError("Failed to install color picker mouse wheel hook: %lu", GetLastError());
+    }
+  }
+  if (!gColorPickerKeyboardHook) {
+    gColorPickerKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, _scPickerLowLevelKeyboardProc,
+                                                  GetModuleHandleW(NULL), 0);
+    if (!gColorPickerKeyboardHook) {
+      scLogError("Failed to install color picker keyboard hook: %lu", GetLastError());
     }
   }
 }
@@ -102,6 +131,11 @@ static void _scPickerStopMouseHook(void) {
     UnhookWindowsHookEx(gColorPickerMouseHook);
     gColorPickerMouseHook = NULL;
   }
+  if (gColorPickerKeyboardHook) {
+    UnhookWindowsHookEx(gColorPickerKeyboardHook);
+    gColorPickerKeyboardHook = NULL;
+  }
+  if (gColorPickerContext) gColorPickerContext->bLensControl = false;
 }
 
 static void _scPickerDestroyTheme(void) {
@@ -456,6 +490,7 @@ static void _scPickerHidePreview(scColorPickerContext* ctx) {
 }
 
 static void _scPickerHandleZoom(scColorPickerContext* ctx, int delta);
+static void _scPickerSetLensControl(scColorPickerContext* ctx, bool bEnable);
 
 static int _scPickerMagnifierCellSize(const scColorPickerContext* ctx) {
   return 5 + ctx->iZoom * 2;
@@ -490,8 +525,10 @@ static void _scPickerDrawMagnifier(scColorPickerContext* ctx, HDC hDC, RECT clie
   _scPickerFill(hDC, lens, SC_PICKER_PANEL);
 
   if (ctx->pCapture && ctx->pCapture->hFrozenDC) {
-    int sourceX = ctx->ptCursor.x - ctx->pCapture->vCaptureRegion.x - SC_COLOR_PICKER_MAGNIFIER_CELLS / 2;
-    int sourceY = ctx->ptCursor.y - ctx->pCapture->vCaptureRegion.y - SC_COLOR_PICKER_MAGNIFIER_CELLS / 2;
+    int sourceX = (ctx->bLensControl ? ctx->ptLensOrigin.x : ctx->ptCursor.x - SC_COLOR_PICKER_MAGNIFIER_CELLS / 2)
+      - ctx->pCapture->vCaptureRegion.x;
+    int sourceY = (ctx->bLensControl ? ctx->ptLensOrigin.y : ctx->ptCursor.y - SC_COLOR_PICKER_MAGNIFIER_CELLS / 2)
+      - ctx->pCapture->vCaptureRegion.y;
     int oldStretchMode = SetStretchBltMode(hDC, COLORONCOLOR);
     StretchBlt(hDC, left, top, lensSide, lensSide,
                ctx->pCapture->hFrozenDC, sourceX, sourceY,
@@ -513,11 +550,13 @@ static void _scPickerDrawMagnifier(scColorPickerContext* ctx, HDC hDC, RECT clie
     DeleteObject(gridPen);
   }
 
+  int selectedCellX = ctx->bLensControl ? (int)ctx->ptLensCell.x : SC_COLOR_PICKER_MAGNIFIER_CELLS / 2;
+  int selectedCellY = ctx->bLensControl ? (int)ctx->ptLensCell.y : SC_COLOR_PICKER_MAGNIFIER_CELLS / 2;
   RECT center = {
-    left + (SC_COLOR_PICKER_MAGNIFIER_CELLS / 2) * cellSize,
-    top + (SC_COLOR_PICKER_MAGNIFIER_CELLS / 2) * cellSize,
-    left + (SC_COLOR_PICKER_MAGNIFIER_CELLS / 2 + 1) * cellSize,
-    top + (SC_COLOR_PICKER_MAGNIFIER_CELLS / 2 + 1) * cellSize
+    left + selectedCellX * cellSize,
+    top + selectedCellY * cellSize,
+    left + (selectedCellX + 1) * cellSize,
+    top + (selectedCellY + 1) * cellSize
   };
   HPEN accentPen = CreatePen(PS_SOLID, 2, SC_PICKER_ACCENT);
   if (accentPen) {
@@ -553,6 +592,22 @@ static LRESULT CALLBACK _scColorPickerPreviewWndProc(HWND hWnd, UINT uMsg, WPARA
       return 1;
     case WM_SC_COLOR_PICKER_ZOOM:
       _scPickerHandleZoom(ctx, (int)(INT_PTR)wParam);
+      return 0;
+    case WM_SC_COLOR_PICKER_LENS_CONTROL:
+      if (ctx) {
+        bool bShiftDown = wParam != 0;
+        if (!wParam) {
+          if ((UINT_PTR)lParam == VK_LSHIFT) {
+            bShiftDown = (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
+          } else if ((UINT_PTR)lParam == VK_RSHIFT) {
+            bShiftDown = (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0;
+          } else {
+            bShiftDown = (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
+                         (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
+          }
+        }
+        _scPickerSetLensControl(ctx, bShiftDown && ctx->iZoom > 0);
+      }
       return 0;
     case WM_PAINT: {
       PAINTSTRUCT ps;
@@ -695,8 +750,88 @@ static void _scPickerShowPreview(scColorPickerContext* ctx, POINT pt, bool bColo
   }
 }
 
+static void _scPickerSetLensControl(scColorPickerContext* ctx, bool bEnable) {
+  if (!ctx || !ctx->bPicking) return;
+
+  if (!bEnable || ctx->iZoom <= 0) {
+    if (!ctx->bLensControl) return;
+
+    /* Return to normal tracking without moving or constraining the OS cursor. */
+    ctx->bLensControl = false;
+    POINT target;
+    if (GetCursorPos(&target)) {
+      ctx->ptCursor = target;
+      COLORREF color;
+      if (ctx->pCapture && _scPickerSample(ctx->pCapture, target, &color)) {
+        ctx->previewColor = color;
+        ctx->bHasPreviewColor = true;
+      }
+      _scPickerShowPreview(ctx, target, true);
+    }
+    if (ctx->hPreviewWnd && IsWindow(ctx->hPreviewWnd))
+      InvalidateRect(ctx->hPreviewWnd, NULL, FALSE);
+    return;
+  }
+
+  if (ctx->bLensControl) return;
+
+  /* Usually the preview is already visible. Only create/place it if needed. */
+  if (!ctx->hPreviewWnd || !IsWindow(ctx->hPreviewWnd) ||
+      !IsWindowVisible(ctx->hPreviewWnd)) {
+    POINT target;
+    if (GetCursorPos(&target)) ctx->ptCursor = target;
+    COLORREF color;
+    if (ctx->pCapture && _scPickerSample(ctx->pCapture, ctx->ptCursor, &color)) {
+      ctx->previewColor = color;
+      ctx->bHasPreviewColor = true;
+    }
+    _scPickerShowPreview(ctx, ctx->ptCursor, true);
+  }
+  if (!ctx->hPreviewWnd || !IsWindow(ctx->hPreviewWnd) ||
+      !IsWindowVisible(ctx->hPreviewWnd)) {
+    return;
+  }
+
+  /* Freeze the image currently shown in the lens. Do not move the window,
+   * clip the mouse, or warp the native cursor. */
+  POINT target = ctx->ptCursor;
+  int virtualLeft = GetSystemMetrics(SM_XVIRTUALSCREEN);
+  int virtualTop = GetSystemMetrics(SM_YVIRTUALSCREEN);
+  int virtualRight = virtualLeft + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+  int virtualBottom = virtualTop + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+  int originX = target.x - SC_COLOR_PICKER_MAGNIFIER_CELLS / 2;
+  int originY = target.y - SC_COLOR_PICKER_MAGNIFIER_CELLS / 2;
+  if (originX < virtualLeft) originX = virtualLeft;
+  if (originY < virtualTop) originY = virtualTop;
+  if (originX + SC_COLOR_PICKER_MAGNIFIER_CELLS > virtualRight)
+    originX = virtualRight - SC_COLOR_PICKER_MAGNIFIER_CELLS;
+  if (originY + SC_COLOR_PICKER_MAGNIFIER_CELLS > virtualBottom)
+    originY = virtualBottom - SC_COLOR_PICKER_MAGNIFIER_CELLS;
+
+  ctx->ptLensOrigin = (POINT){ originX, originY };
+  ctx->ptLensCell = (POINT){ target.x - originX, target.y - originY };
+  ctx->bLensControl = true;
+
+  COLORREF color;
+  if (ctx->pCapture && _scPickerSample(ctx->pCapture, target, &color)) {
+    ctx->previewColor = color;
+    ctx->bHasPreviewColor = true;
+  }
+  InvalidateRect(ctx->hPreviewWnd, NULL, FALSE);
+}
+
 static void _scPickerHandleZoom(scColorPickerContext* ctx, int delta) {
   if (!ctx || !ctx->bPicking || !delta) return;
+
+  bool bWasLensControl = ctx->bLensControl;
+  POINT lensTarget = ctx->ptCursor;
+  if (bWasLensControl) {
+    lensTarget.x = ctx->ptLensOrigin.x + ctx->ptLensCell.x;
+    lensTarget.y = ctx->ptLensOrigin.y + ctx->ptLensCell.y;
+    /* Preserve the selected source pixel while changing the magnification. */
+    ctx->bLensControl = false;
+    ctx->ptCursor = lensTarget;
+  }
 
   int steps = delta / WHEEL_DELTA;
   if (steps == 0) steps = delta > 0 ? 1 : -1;
@@ -704,6 +839,28 @@ static void _scPickerHandleZoom(scColorPickerContext* ctx, int delta) {
   ctx->iZoom += steps;
   if (ctx->iZoom < 0) ctx->iZoom = 0;
   if (ctx->iZoom > SC_COLOR_PICKER_ZOOM_MAX) ctx->iZoom = SC_COLOR_PICKER_ZOOM_MAX;
+
+  if (bWasLensControl && ctx->iZoom > 0) {
+    /* Resize in place: Shift still means the preview window stays put. */
+    int width, height;
+    _scPickerGetPreviewSize(ctx, &width, &height);
+    bool bSizeChanged = ctx->iPreviewWidth != width || ctx->iPreviewHeight != height;
+    ctx->bLensControl = true;
+    COLORREF color;
+    if (ctx->pCapture && _scPickerSample(ctx->pCapture, lensTarget, &color)) {
+      ctx->previewColor = color;
+      ctx->bHasPreviewColor = true;
+    }
+    if (bSizeChanged) {
+      SetWindowPos(ctx->hPreviewWnd, HWND_TOPMOST, ctx->ptPreview.x, ctx->ptPreview.y,
+                   width, height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+      _scPickerSetPreviewRegion(ctx->hPreviewWnd, width, height);
+      ctx->iPreviewWidth = width;
+      ctx->iPreviewHeight = height;
+    }
+    InvalidateRect(ctx->hPreviewWnd, NULL, FALSE);
+    return;
+  }
 
   POINT pt;
   if (GetCursorPos(&pt)) {
@@ -716,6 +873,11 @@ static void _scPickerHandleZoom(scColorPickerContext* ctx, int delta) {
     _scPickerShowPreview(ctx, pt, true);
   } else if (oldZoom != ctx->iZoom && ctx->hPreviewWnd && IsWindow(ctx->hPreviewWnd)) {
     InvalidateRect(ctx->hPreviewWnd, NULL, FALSE);
+  }
+
+  if (ctx->iZoom > 0 &&
+      ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) || (GetAsyncKeyState(VK_RSHIFT) & 0x8000))) {
+    _scPickerSetLensControl(ctx, true);
   }
 }
 
@@ -762,6 +924,22 @@ static LRESULT CALLBACK _scColorPickerWndProc(HWND hWnd, UINT uMsg, WPARAM wPara
       return 1;
     case WM_SC_COLOR_PICKER_ZOOM:
       _scPickerHandleZoom(ctx, (int)(INT_PTR)wParam);
+      return 0;
+    case WM_SC_COLOR_PICKER_LENS_CONTROL:
+      if (ctx) {
+        bool bShiftDown = wParam != 0;
+        if (!wParam) {
+          if ((UINT_PTR)lParam == VK_LSHIFT) {
+            bShiftDown = (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
+          } else if ((UINT_PTR)lParam == VK_RSHIFT) {
+            bShiftDown = (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0;
+          } else {
+            bShiftDown = (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
+                         (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
+          }
+        }
+        _scPickerSetLensControl(ctx, bShiftDown && ctx->iZoom > 0);
+      }
       return 0;
     case WM_SC_COLOR_PICKER_START_PICK: {
       if (!ctx || !ctx->bPicking) return 0;
@@ -989,6 +1167,7 @@ cbOnAreaSelected(scCaptureContext* pCtx) {
   };
   COLORREF color;
 
+  _scPickerSetLensControl(ctx, false);
   _scPickerStopMouseHook();
   ctx->bPicking = false;
   ctx->pCapture = NULL;
@@ -1039,6 +1218,7 @@ cbOnCaptureCancelled(scCaptureContext* pCtx) {
   if (!pCtx || !pCtx->pUser) return;
 
   scColorPickerContext* ctx = (scColorPickerContext*)pCtx->pUser;
+  _scPickerSetLensControl(ctx, false);
   _scPickerStopMouseHook();
   pCtx->pUser = NULL;
   ctx->pCapture = NULL;
@@ -1076,6 +1256,30 @@ _scColorPickerSnapSelection(scCaptureContext* pCtx, scRect rcInput, bool bDraggi
   POINT pt;
   if (!GetCursorPos(&pt)) return false;
 
+  bool bCellChanged = false;
+  if (ctx->bLensControl) {
+    int cellSize = _scPickerMagnifierCellSize(ctx);
+    int lensSide = SC_COLOR_PICKER_MAGNIFIER_CELLS * cellSize;
+    int lensLeft = ctx->ptPreview.x + ((ctx->iPreviewWidth - lensSide) / 2);
+    int lensTop = ctx->ptPreview.y + 6;
+    RECT lensRect = { lensLeft, lensTop, lensLeft + lensSide, lensTop + lensSide };
+
+    if (PtInRect(&lensRect, pt)) {
+      int cellX = (pt.x - lensLeft) / cellSize;
+      int cellY = (pt.y - lensTop) / cellSize;
+      if (cellX < 0) cellX = 0;
+      if (cellX >= SC_COLOR_PICKER_MAGNIFIER_CELLS) cellX = SC_COLOR_PICKER_MAGNIFIER_CELLS - 1;
+      if (cellY < 0) cellY = 0;
+      if (cellY >= SC_COLOR_PICKER_MAGNIFIER_CELLS) cellY = SC_COLOR_PICKER_MAGNIFIER_CELLS - 1;
+      bCellChanged = ctx->ptLensCell.x != cellX || ctx->ptLensCell.y != cellY;
+      ctx->ptLensCell = (POINT){ cellX, cellY };
+      pt = (POINT){ ctx->ptLensOrigin.x + cellX, ctx->ptLensOrigin.y + cellY };
+    } else {
+      /* Outside the frozen lens, keep the last cell selected. */
+      pt = ctx->ptCursor;
+    }
+  }
+
   *pOut = (scRect){ pt.x, pt.y, 1, 1 };
   ctx->ptCursor = pt;
   COLORREF color;
@@ -1083,10 +1287,15 @@ _scColorPickerSnapSelection(scCaptureContext* pCtx, scRect rcInput, bool bDraggi
     bool bColorChanged = !ctx->bHasPreviewColor || ctx->previewColor != color;
     ctx->previewColor = color;
     ctx->bHasPreviewColor = true;
-    _scPickerShowPreview(ctx, pt, bColorChanged);
+    if (ctx->bLensControl) {
+      if ((bColorChanged || bCellChanged) && ctx->hPreviewWnd && IsWindow(ctx->hPreviewWnd))
+        InvalidateRect(ctx->hPreviewWnd, NULL, FALSE);
+    } else {
+      _scPickerShowPreview(ctx, pt, bColorChanged);
+    }
   } else {
     ctx->bHasPreviewColor = false;
-    _scPickerHidePreview(ctx);
+    if (!ctx->bLensControl) _scPickerHidePreview(ctx);
   }
 
   (void)rcInput;
