@@ -1,23 +1,9 @@
-/*
- * Native screen recorder for Screencap.
- *
- * Replaces the FFmpeg-process implementation with:
- *   DXGI Desktop Duplication (preferred) or GDI/BitBlt fallback -> CPU-readable
- *   BGRA frames -> CPU BGRA-to-NV12 conversion -> Media Foundation Sink Writer
- *   (H.264/MP4). If an encoder rejects a large native frame size, recording
- *   retries at a downscaled <=1920x1080 output while retaining full-size capture.
- *
- * This is intentionally a correctness-first implementation. Frames are copied
- * from the GPU to system memory before being passed to Media Foundation. A
- * later optimisation can use a GPU-backed Media Foundation sample path.
- *
- */
-
 #include "pch.h"
 #include "scApp.h"
 #include "scLogging.h"
 #include "scAssert.h"
 #include "scUI.h"
+#include "scAudio.h"
 
 #define COBJMACROS
 #include <windows.h>
@@ -43,6 +29,8 @@
 #define SC_RECORD_ACQUIRE_TIMEOUT_MS 10
 #define SC_RECORD_RECREATE_RETRIES 50
 #define SC_RECORD_RECREATE_DELAY_MS 100
+#define SC_RECORD_AUDIO_CHUNK_FRAMES 2048
+#define SC_RECORD_AUDIO_BLOCK_ALIGN (SC_AUDIO_CHANNELS * 2)
 
 typedef struct {
   HANDLE hCaptureThread;
@@ -69,7 +57,7 @@ typedef struct {
 
   /* Shared latest-frame slot. Capture publishes into this buffer; the writer
      takes a snapshot for each output frame. Audio callbacks must never use
-     this lock; future audio should use its own lock-free/bounded PCM queue. */
+     this lock; audio has its own mix buffer and lock. */
   CRITICAL_SECTION csFrame;
   bool bFrameLockInitialized;
   BYTE* pLatestPixels;
@@ -85,6 +73,11 @@ typedef struct {
   bool bUseFragmented;
   UINT32 nH264Profile;
   bool bTagColor;
+  scAudioCapture* pAudio;
+  bool bAudio;
+  bool bAudioFailed;
+  DWORD anAudioStreams[SC_AUDIO_MAX_TRACKS];
+  bool abAudioTracks[SC_AUDIO_MAX_TRACKS];
 
   LARGE_INTEGER qpcFrequency;
   LARGE_INTEGER qpcStart; /* shared A/V timeline origin */
@@ -320,6 +313,61 @@ _scEncoderQualityVsSpeed(const scRecordContext* pCtx) {
 }
 
 static HRESULT
+_scAddAudioStream(IMFSinkWriter* pWriter, DWORD* pdwStreamIndex, bool* pbAddedStream) {
+  const struct { const GUID* key; UINT32 value; } outputAttributes[] = {
+    { &MF_MT_AUDIO_BITS_PER_SAMPLE, 16 },
+    { &MF_MT_AUDIO_SAMPLES_PER_SECOND, SC_AUDIO_SAMPLE_RATE },
+    { &MF_MT_AUDIO_NUM_CHANNELS, SC_AUDIO_CHANNELS },
+    { &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 24000 },
+    { &MF_MT_AAC_PAYLOAD_TYPE, 0 },
+    { &MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, 0x29 }
+  };
+  const struct { const GUID* key; UINT32 value; } inputAttributes[] = {
+    { &MF_MT_AUDIO_BITS_PER_SAMPLE, 16 },
+    { &MF_MT_AUDIO_SAMPLES_PER_SECOND, SC_AUDIO_SAMPLE_RATE },
+    { &MF_MT_AUDIO_NUM_CHANNELS, SC_AUDIO_CHANNELS },
+    { &MF_MT_AUDIO_BLOCK_ALIGNMENT, SC_RECORD_AUDIO_BLOCK_ALIGN },
+    { &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, SC_AUDIO_SAMPLE_RATE * SC_RECORD_AUDIO_BLOCK_ALIGN }
+  };
+  HRESULT hr;
+  IMFMediaType* pOutputType = NULL;
+  IMFMediaType* pInputType = NULL;
+  size_t i;
+
+  *pbAddedStream = false;
+  hr = MFCreateMediaType(&pOutputType);
+  if (FAILED(hr)) goto cleanup;
+  hr = IMFMediaType_SetGUID(pOutputType, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+  if (FAILED(hr)) goto cleanup;
+  hr = IMFMediaType_SetGUID(pOutputType, &MF_MT_SUBTYPE, &MFAudioFormat_AAC);
+  if (FAILED(hr)) goto cleanup;
+  for (i = 0; i < ARRAYSIZE(outputAttributes); ++i) {
+    hr = IMFMediaType_SetUINT32(pOutputType, outputAttributes[i].key, outputAttributes[i].value);
+    if (FAILED(hr)) goto cleanup;
+  }
+  hr = IMFSinkWriter_AddStream(pWriter, pOutputType, pdwStreamIndex);
+  if (FAILED(hr)) goto cleanup;
+  *pbAddedStream = true;
+
+  hr = MFCreateMediaType(&pInputType);
+  if (FAILED(hr)) goto cleanup;
+  hr = IMFMediaType_SetGUID(pInputType, &MF_MT_MAJOR_TYPE, &MFMediaType_Audio);
+  if (FAILED(hr)) goto cleanup;
+  hr = IMFMediaType_SetGUID(pInputType, &MF_MT_SUBTYPE, &MFAudioFormat_PCM);
+  if (FAILED(hr)) goto cleanup;
+  for (i = 0; i < ARRAYSIZE(inputAttributes); ++i) {
+    hr = IMFMediaType_SetUINT32(pInputType, inputAttributes[i].key, inputAttributes[i].value);
+    if (FAILED(hr)) goto cleanup;
+  }
+  hr = IMFSinkWriter_SetInputMediaType(pWriter, *pdwStreamIndex, pInputType, NULL);
+
+cleanup:
+  if (pInputType) IMFMediaType_Release(pInputType);
+  if (pOutputType) IMFMediaType_Release(pOutputType);
+  return hr;
+}
+
+static HRESULT
 _scCreateSinkWriterForContainer(scRecordContext* pCtx, bool bFragmented,
                                 IMFSinkWriter** ppWriter, DWORD* pdwStreamIndex) {
   HRESULT hr = S_OK;
@@ -332,6 +380,8 @@ _scCreateSinkWriterForContainer(scRecordContext* pCtx, bool bFragmented,
      important on older Windows 7 display drivers, which may expose an encoder
      that does not accept the requested size or format. */
   for (attempt = pCtx->bForceSoftware ? 1 : 0; attempt < 2; ++attempt) {
+    memset(pCtx->anAudioStreams, 0, sizeof(pCtx->anAudioStreams));
+    memset(pCtx->abAudioTracks, 0, sizeof(pCtx->abAudioTracks));
     const bool bEnableHardware = (attempt == 0);
     const bool bHD = (pCtx->nEncodeWidth >= 1280 || pCtx->nEncodeHeight >= 720);
     const char* szFailedAt = "MFCreateAttributes";
@@ -479,6 +529,32 @@ _scCreateSinkWriterForContainer(scRecordContext* pCtx, bool bFragmented,
       goto attempt_cleanup;
     }
 
+    if (pCtx->bAudio && pCtx->pAudio) {
+      bool bHaveAudioStream = false;
+      for (uint32_t iTrack = 0; iTrack < SC_AUDIO_MAX_TRACKS; ++iTrack) {
+        if (!scAudioCaptureHasTrack(pCtx->pAudio, iTrack)) {
+          continue;
+        }
+
+        bool bAddedStream = false;
+        szFailedAt = "add AAC audio stream";
+        hr = _scAddAudioStream(pWriter, &pCtx->anAudioStreams[iTrack], &bAddedStream);
+        if (FAILED(hr)) {
+          if (!bHaveAudioStream || bAddedStream) {
+            pCtx->bAudioFailed = true;
+            goto attempt_cleanup;
+          }
+          scLogWarn("Recording: MP4 sink rejected audio track %u (HRESULT 0x%08lX); remaining tracks will be omitted",
+                    iTrack, (unsigned long)hr);
+          hr = S_OK;
+          break;
+        }
+
+        pCtx->abAudioTracks[iTrack] = true;
+        bHaveAudioStream = true;
+      }
+    }
+
     szFailedAt = "IMFSinkWriter_BeginWriting";
     hr = IMFSinkWriter_BeginWriting(pWriter);
     if (FAILED(hr)) {
@@ -537,7 +613,7 @@ _scCreateSinkWriterForSettings(scRecordContext* pCtx, IMFSinkWriter** ppWriter, 
 
   if (pCtx->bUseFragmented) {
     hr = _scCreateSinkWriterForContainer(pCtx, true, ppWriter, pdwStreamIndex);
-    if (SUCCEEDED(hr)) return hr;
+    if (SUCCEEDED(hr) || pCtx->bAudioFailed) return hr;
     scLogInfo("Recording: fragmented MP4 setup failed (HRESULT 0x%08lX); trying standard MP4",
               (unsigned long)hr);
     if (!DeleteFileW(pCtx->wszSavePath) && GetLastError() != ERROR_FILE_NOT_FOUND) {
@@ -561,22 +637,32 @@ _scCreateSinkWriter(scRecordContext* pCtx, IMFSinkWriter** ppWriter, DWORD* pdwS
     { 0, false }
   };
   HRESULT hr = E_FAIL;
-  size_t i;
+  size_t i = 0;
 
-  for (i = 0; i < ARRAYSIZE(steps); ++i) {
+  while (i < ARRAYSIZE(steps)) {
     pCtx->nH264Profile = steps[i].profile;
     pCtx->bTagColor = steps[i].color;
     hr = _scCreateSinkWriterForSettings(pCtx, ppWriter, pdwStreamIndex);
     if (SUCCEEDED(hr)) {
-      scLogInfo("Recording: H.264 profile %u, color tagging %s",
-                (unsigned)pCtx->nH264Profile, pCtx->bTagColor ? "on" : "off");
+      scLogInfo("Recording: H.264 profile %u, color tagging %s, audio %s",
+                (unsigned)pCtx->nH264Profile, pCtx->bTagColor ? "on" : "off",
+                pCtx->bAudio ? "AAC tracks" : "none");
       return hr;
+    }
+    if (pCtx->bAudio && pCtx->bAudioFailed) {
+      scLogWarn("Recording: unable to add AAC audio stream (HRESULT 0x%08lX); recording without audio",
+                (unsigned long)hr);
+      pCtx->bAudio = false;
+      pCtx->bAudioFailed = false;
+      if (!DeleteFileW(pCtx->wszSavePath) && GetLastError() != ERROR_FILE_NOT_FOUND) return hr;
+      continue;
     }
     if (i + 1 < ARRAYSIZE(steps)) {
       scLogInfo("Recording: encoder setup failed (HRESULT 0x%08lX); retrying with more conservative settings",
                 (unsigned long)hr);
       if (!DeleteFileW(pCtx->wszSavePath) && GetLastError() != ERROR_FILE_NOT_FOUND) return hr;
     }
+    ++i;
   }
   return hr;
 }
@@ -1324,6 +1410,99 @@ cleanup:
   return 0;
 }
 
+static LARGE_INTEGER
+_scGetStopQpc(scRecordContext* pCtx) {
+  LARGE_INTEGER qpc;
+  if (InterlockedCompareExchange(&pCtx->bQpcStopSet, 0, 0) != 0) return pCtx->qpcStop;
+  if (!QueryPerformanceCounter(&qpc)) qpc.QuadPart = 0;
+  return qpc;
+}
+
+static HRESULT
+_scWriteAudioChunk(IMFSinkWriter* pWriter, DWORD dwStreamIndex,
+                   const int16_t* pSamples, uint32_t frames, int64_t firstFrame) {
+  HRESULT hr;
+  IMFMediaBuffer* pBuffer = NULL;
+  IMFSample* pSample = NULL;
+  BYTE* pDestination = NULL;
+  DWORD maxLength = 0;
+  DWORD currentLength = 0;
+  const DWORD cbChunk = frames * SC_RECORD_AUDIO_BLOCK_ALIGN;
+
+  hr = MFCreateMemoryBuffer(cbChunk, &pBuffer);
+  if (FAILED(hr)) goto cleanup;
+  hr = IMFMediaBuffer_Lock(pBuffer, &pDestination, &maxLength, &currentLength);
+  if (FAILED(hr)) goto cleanup;
+  if (maxLength < cbChunk) {
+    hr = E_FAIL;
+    IMFMediaBuffer_Unlock(pBuffer);
+    goto cleanup;
+  }
+  memcpy(pDestination, pSamples, cbChunk);
+  hr = IMFMediaBuffer_Unlock(pBuffer);
+  if (FAILED(hr)) goto cleanup;
+  hr = IMFMediaBuffer_SetCurrentLength(pBuffer, cbChunk);
+  if (FAILED(hr)) goto cleanup;
+  hr = MFCreateSample(&pSample);
+  if (FAILED(hr)) goto cleanup;
+  hr = IMFSample_AddBuffer(pSample, pBuffer);
+  if (FAILED(hr)) goto cleanup;
+  hr = IMFSample_SetSampleTime(pSample, (firstFrame * SC_RECORD_HNS_PER_SECOND) / SC_AUDIO_SAMPLE_RATE);
+  if (FAILED(hr)) goto cleanup;
+  hr = IMFSample_SetSampleDuration(pSample, ((int64_t)frames * SC_RECORD_HNS_PER_SECOND) / SC_AUDIO_SAMPLE_RATE);
+  if (FAILED(hr)) goto cleanup;
+  hr = IMFSinkWriter_WriteSample(pWriter, dwStreamIndex, pSample);
+
+cleanup:
+  if (pSample) IMFSample_Release(pSample);
+  if (pBuffer) IMFMediaBuffer_Release(pBuffer);
+  return hr;
+}
+
+static void
+_scPumpAudio(scRecordContext* pCtx, IMFSinkWriter* pWriter, bool bFinal) {
+  int16_t aChunk[SC_RECORD_AUDIO_CHUNK_FRAMES * SC_AUDIO_CHANNELS];
+  LARGE_INTEGER qpc;
+  int64_t target;
+
+  if (!pCtx->pAudio) return;
+  if (bFinal) qpc = _scGetStopQpc(pCtx);
+  else if (!QueryPerformanceCounter(&qpc)) return;
+
+  target = scAudioCaptureQpcToFrame(pCtx->pAudio, qpc.QuadPart);
+  if (!bFinal) target -= SC_AUDIO_MARGIN_FRAMES;
+
+  for (uint32_t iTrack = 0; iTrack < SC_AUDIO_MAX_TRACKS; ++iTrack) {
+    if (!scAudioCaptureHasTrack(pCtx->pAudio, iTrack)) {
+      continue;
+    }
+
+    for (;;) {
+      int64_t firstFrame = 0;
+      const uint32_t frames = scAudioCapturePull(pCtx->pAudio, iTrack, target, aChunk,
+                                                 SC_RECORD_AUDIO_CHUNK_FRAMES, &firstFrame);
+      HRESULT hr;
+      if (frames == 0) break;
+      if (!pCtx->abAudioTracks[iTrack]) continue;
+
+      hr = _scWriteAudioChunk(pWriter, pCtx->anAudioStreams[iTrack], aChunk, frames, firstFrame);
+      if (FAILED(hr)) {
+        scLogError("Recording: writing audio track %u to MP4 failed (HRESULT 0x%08lX)",
+                   iTrack, (unsigned long)hr);
+        pCtx->abAudioTracks[iTrack] = false;
+      }
+    }
+  }
+
+  pCtx->bAudio = false;
+  for (uint32_t iTrack = 0; iTrack < SC_AUDIO_MAX_TRACKS; ++iTrack) {
+    if (pCtx->abAudioTracks[iTrack]) {
+      pCtx->bAudio = true;
+      break;
+    }
+  }
+}
+
 static DWORD WINAPI
 _scWriterThreadProc(void* pParam) {
   scRecordContext* pCtx = (scRecordContext*)pParam;
@@ -1458,6 +1637,8 @@ startup_finished:
     LONGLONG elapsedQpc;
     LONGLONG dueFrameIndex;
 
+    _scPumpAudio(pCtx, pWriter, false);
+
     if (!QueryPerformanceCounter(&qpcNow)) {
       hrRun = HRESULT_FROM_WIN32(GetLastError());
       if (SUCCEEDED(hrRun)) hrRun = E_FAIL;
@@ -1548,6 +1729,7 @@ startup_finished:
                       pCtx->qpcFrequency.QuadPart;
         if (ms < 1) ms = 1;
         if (ms > 1000) ms = 1000;
+        if (pCtx->pAudio && ms > 10) ms = 10;
         timeoutMs = (DWORD)ms;
       }
       WaitForSingleObject(pCtx->hStopEvent, timeoutMs);
@@ -1585,6 +1767,8 @@ cleanup:
     if (FAILED(hr)) hrRun = hr;
     else ++pCtx->nFramesWritten;
   }
+  if (pCtx->pAudio) scAudioCaptureStop(pCtx->pAudio);
+  if (pWriter && bRunStarted && SUCCEEDED(hrRun)) _scPumpAudio(pCtx, pWriter, true);
   if (pPendingSample) IMFSample_Release(pPendingSample);
   if (pWriter) {
     HRESULT hrFinalize = IMFSinkWriter_Finalize(pWriter);
@@ -1607,6 +1791,10 @@ cleanup:
 
 static void
 _scCloseRecordingResources(scRecordContext* pCtx) {
+  if (pCtx->pAudio) {
+    scAudioCaptureDestroy(pCtx->pAudio);
+    pCtx->pAudio = NULL;
+  }
   #define _CLOSE_RESOURCE(r) { CloseHandle(r); r = NULL; }
   _CLOSE_RESOURCE(pCtx->hCaptureThread);
   _CLOSE_RESOURCE(pCtx->hWriterThread);
@@ -1737,6 +1925,10 @@ _startRecording(scRecordContext* pCtx, scRect rect) {
     return false;
   }
 
+  pCtx->bAudioFailed = false;
+  pCtx->pAudio = gApp->config.bCaptureAudio ? scAudioCaptureStart() : NULL;
+  pCtx->bAudio = pCtx->pAudio != NULL;
+
   pCtx->hCaptureThread = CreateThread(NULL, 0, _scCaptureThreadProc, pCtx, 0, NULL);
   if (!pCtx->hCaptureThread) {
     scLogError("Failed to start recording: capture CreateThread failed: %lu", GetLastError());
@@ -1800,6 +1992,7 @@ _startRecording(scRecordContext* pCtx, scRect rect) {
     return false;
   }
   pCtx->qpcStart = qpcStart;
+  if (pCtx->pAudio) scAudioCaptureSetTimeline(pCtx->pAudio, qpcStart, pCtx->qpcFrequency);
   SetEvent(pCtx->hRunEvent);
 
   pCtx->bStarted = true;

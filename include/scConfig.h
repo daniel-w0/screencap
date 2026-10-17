@@ -5,6 +5,6 @@
 
 bool scConfigLoad(void);
 void scSaveConfig(void);
-void scSetRunOnStartup(bool bEnable);
+void scSetRunOnStartup(bool bEnable, s32 _);
 
 #endif // SC_CONFIG_H

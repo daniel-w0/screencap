@@ -35,7 +35,7 @@ workspace "screencap"
     }
 
     defines { "SC_PLATFORM_WINDOWS", "_CRT_SECURE_NO_WARNINGS" }
-    links { "dwmapi", "winmm", "uxtheme", "comctl32", "gdiplus", "delayimp", "runtimeobject", "shlwapi" }
+    links { "dwmapi", "winmm", "uxtheme", "comctl32", "gdiplus", "delayimp", "runtimeobject", "shlwapi", "d3d11", "dxgi", "dxguid", "mf", "mfuuid", "mfplat", "mfreadwrite", "wmcodecdspuuid", "strmiids" }
 
   filter {}
 

@@ -78,11 +78,17 @@ typedef enum {
 typedef struct {
   scHotkey        aHotkeys[_SC_HOTKEY_COUNT];
   wchar_t         wszSavePath[SC_PATH_MAX_LEN];
+
+  // recording
   s32             iFFmpegFramerate;
   scRecordQuality eRecordQuality;
   scRecordMaxRes  eRecordMaxRes;
   bool            bRecordShowCursor;
   bool            bRecordForceSoftware;
+  char            szSelectedAudioDevices[SC_AUDIO_DEVICES_STRSIZE];
+  bool            bCaptureAudio;
+
+  // other
   char            sLanguageCode[16];
   bool            bCopyToClipboard;
   bool            bRunAtStartup;
@@ -179,7 +185,7 @@ void scAppDestroy();
 void scAppRunHandlerFromActionID(scHotkeyID iHotkeyID);
 
 void scSaveConfig();
-void scSetRunOnStartup(bool bEnable);
+void scSetRunOnStartup(bool bEnable, s32 _);
 
 //------------------------------------------------------------------------
 // Utils

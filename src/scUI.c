@@ -8,6 +8,7 @@
 #include "scLocale.h"
 #include "stb_image.h"
 #include "scUITheme.h"
+#include "scAudio.h"
 
 #include <windowsx.h>
 #include <shobjidl.h>
@@ -43,11 +44,15 @@ typedef struct {
   char         szPath[MAX_PATH]; // should be wchar_t...
   union {
     struct { bool bBold; }             label;
-    struct { bool* pValue; void (*pfnChange)(bool bValue); } toggle;
+    struct { bool* pValue; s32 iParam; void (*pfnChange)(bool bValue, s32 iParam); } toggle;
     struct {
       const char* const* aOptions;
       s32                nOptionCount;
       s32                iSelected;
+      s32                iParam;
+      s32                nBoxWidth;
+      s32                nBoxInset;
+      bool               bCompact;
       void (*pfnSelect)(s32 iIndex);
     } dropdown;
     struct { void (*pfnClick)(s32 iParam); s32 iParam; } button;
@@ -557,11 +562,12 @@ _scMakeLabel(RECT rcLayout, const wchar_t* wszText, bool bBold) {
 }
 
 scInternal scWidget
-_scMakeToggle(RECT rcLayout, const wchar_t* wszText, bool* pValue, void (*pfnChange)(bool bValue)) {
+_scMakeToggle(RECT rcLayout, const wchar_t* wszText, bool* pValue, s32 iParam, void (*pfnChange)(bool bValue, s32 iParam)) {
   scWidget w = { 0 };
-  w.eType            = SC_WIDGET_TOGGLE;
-  w.rcLayout         = rcLayout;
-  w.u.toggle.pValue  = pValue;
+  w.eType              = SC_WIDGET_TOGGLE;
+  w.rcLayout           = rcLayout;
+  w.u.toggle.pValue    = pValue;
+  w.u.toggle.iParam    = iParam;
   w.u.toggle.pfnChange = pfnChange;
   wcscpy_s(w.wszText, 128, wszText);
   return w;
@@ -605,8 +611,22 @@ _scMakeDropdown(RECT rcLayout, const wchar_t* wszLabel, const char* const* aOpti
   w.u.dropdown.aOptions     = aOptions;
   w.u.dropdown.nOptionCount = nOptionCount;
   w.u.dropdown.iSelected    = iSelected;
+  w.u.dropdown.nBoxWidth    = 150;
+  w.u.dropdown.nBoxInset    = 15;
   w.u.dropdown.pfnSelect    = pfnSelect;
   wcscpy_s(w.wszText, 128, wszLabel);
+  return w;
+}
+
+scInternal scWidget
+_scMakeDropdownWithParam(RECT rcLayout, const wchar_t* wszLabel, const char* const* aOptions,
+                         s32 nOptionCount, s32 iSelected, void (*pfnSelect)(s32 iIndex),
+                         s32 iParam, s32 nBoxWidth, s32 nBoxInset, bool bCompact) {
+  scWidget w = _scMakeDropdown(rcLayout, wszLabel, aOptions, nOptionCount, iSelected, pfnSelect);
+  w.u.dropdown.iParam = iParam;
+  w.u.dropdown.nBoxWidth = nBoxWidth;
+  w.u.dropdown.nBoxInset = nBoxInset;
+  w.u.dropdown.bCompact = bCompact;
   return w;
 }
 
@@ -655,6 +675,14 @@ _scWidgetRect(scWidget* pWidget, s32 iScrollY) {
 scInternal RECT
 _scWidgetScaledRect(scPage* pPage, scWidget* pWidget) {
   return _scWidgetRect(pWidget, pPage->scroll.nScrollY);
+}
+
+scInternal RECT
+_scDropdownBoxRect(scWidget* pWidget, RECT r) {
+  s32 nWidth = pWidget->u.dropdown.nBoxWidth > 0 ? pWidget->u.dropdown.nBoxWidth : 150;
+  s32 nInset = pWidget->u.dropdown.nBoxInset >= 0 ? pWidget->u.dropdown.nBoxInset : 15;
+  return (RECT){ r.right - _scScale(nWidth + nInset), r.top + _scScale(6),
+                 r.right - _scScale(nInset), r.bottom - _scScale(6) };
 }
 
 scInternal bool
@@ -753,11 +781,13 @@ _scDrawDropdown(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
   bool bExpanded = gUI.iExpandedDropdown >= 0 && gUI.iExpandedDropdown < pPage->nWidgetCount &&
                    &pPage->aWidgets[gUI.iExpandedDropdown] == pWidget;
 
-  RECT box = { r.right - _scScale(165), r.top + _scScale(6), r.right - _scScale(15), r.bottom - _scScale(6) };
+  RECT box = _scDropdownBoxRect(pWidget, r);
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  gpFillRound(pGraphics, r, _scRoundRad(), gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
-  gpStrokeRound(pGraphics, r, _scRoundRad(), gpColor(t->dwStrokeSoft, 255), 1.0f);
+  if (!pWidget->u.dropdown.bCompact) {
+    gpFillRound(pGraphics, r, _scRoundRad(), gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
+    gpStrokeRound(pGraphics, r, _scRoundRad(), gpColor(t->dwStrokeSoft, 255), 1.0f);
+  }
 
   f32 fBoxRad = 4.0f * gUI.fUIScale;
   gpFillRound(pGraphics, box, fBoxRad, gpColor(t->dwBackground, 255));
@@ -766,13 +796,24 @@ _scDrawDropdown(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
 
   SelectObject(hDC, t->pFont);
   SetTextColor(hDC, t->dwText);
-  TextOutW(hDC, r.left + _scScale(15), r.top + _scScale(10), pWidget->wszText, lstrlenW(pWidget->wszText));
+  if (!pWidget->u.dropdown.bCompact) {
+    TextOutW(hDC, r.left + _scScale(15), r.top + _scScale(10), pWidget->wszText, lstrlenW(pWidget->wszText));
+  }
 
   s32 iSelected = pWidget->u.dropdown.iSelected;
   if (iSelected >= 0 && iSelected < pWidget->u.dropdown.nOptionCount) {
-    wchar_t wszValue[64];
-    MultiByteToWideChar(CP_UTF8, 0, pWidget->u.dropdown.aOptions[iSelected], -1, wszValue, 64);
-    TextOutW(hDC, box.left + _scScale(10), box.top + _scScale(5), wszValue, lstrlenW(wszValue));
+    wchar_t wszValue[128] = { 0 };
+    if (MultiByteToWideChar(CP_UTF8, 0, pWidget->u.dropdown.aOptions[iSelected],
+                            -1, wszValue, ARRAYSIZE(wszValue)) > 0) {
+      RECT rcValue = {
+        box.left + _scScale(10),
+        box.top + _scScale(2),
+        box.right - _scScale(24),
+        box.bottom - _scScale(2)
+      };
+      DrawTextW(hDC, wszValue, -1, &rcValue,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
   }
 
   SetTextColor(hDC, t->dwTextDim);
@@ -1078,9 +1119,10 @@ _scDropdownGeom(scWidget* pWidget, RECT cr) {
   if (iMaxVisible < 1) iMaxVisible = 1;
   dg.nVisible = nOptions < iMaxVisible ? nOptions : iMaxVisible;
 
-  dg.rcBox.left   = r.right - _scScale(165);
-  dg.rcBox.top    = r.bottom - _scScale(6);
-  dg.rcBox.right  = r.right - _scScale(15);
+  RECT rcDropdown = _scDropdownBoxRect(pWidget, r);
+  dg.rcBox.left   = rcDropdown.left;
+  dg.rcBox.top    = rcDropdown.bottom;
+  dg.rcBox.right  = rcDropdown.right;
   dg.rcBox.bottom = dg.rcBox.top + dg.nVisible * dg.iItemHeight;
 
   dg.bHasScroll = nOptions > dg.nVisible;
@@ -1149,9 +1191,18 @@ _scRenderDropdownPopup(HDC hDC, RECT cr) {
     if (iBottom <= dg.rcBox.top || iTop >= dg.rcBox.bottom) {
       continue;
     }
-    wchar_t wszOption[64];
-    MultiByteToWideChar(CP_UTF8, 0, pWidget->u.dropdown.aOptions[i], -1, wszOption, 64);
-    TextOutW(hDC, dg.rcBox.left + _scScale(12), iTop + _scScale(5), wszOption, lstrlenW(wszOption));
+    wchar_t wszOption[128] = { 0 };
+    if (MultiByteToWideChar(CP_UTF8, 0, pWidget->u.dropdown.aOptions[i],
+                            -1, wszOption, ARRAYSIZE(wszOption)) > 0) {
+      RECT rcOption = {
+        dg.rcBox.left + _scScale(12),
+        iTop + _scScale(2),
+        dg.rcBox.right - _scScale(dg.bHasScroll ? 12 : 5),
+        iBottom - _scScale(2)
+      };
+      DrawTextW(hDC, wszOption, -1, &rcOption,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
   }
 
   SelectClipRgn(hDC, NULL);
@@ -1214,6 +1265,78 @@ static const char* const kRecordResOptions[] = { "Native", "1080p", "720p" };
 static const s32         kRecordResValues[]  = { SC_MAXRES_NATIVE, SC_MAXRES_1080P, SC_MAXRES_720P };
 
 #define SC_FRAMERATE_COUNT 3
+
+scInternal void
+_scRequestNewLayout(bool unused0, s32 iParam) {
+  gUI.bNeedsLayout = true;
+}
+
+static const char* const kAudioTrackOptions[] = { "0", "1", "2", "3", "4", "5", "6", "7" };
+
+static const char** gAudioDeviceOptions;
+static uint32_t gAudioDeviceOptionsCap;
+
+scInternal bool
+_scBuildAudioDeviceOptions(void) {
+  uint32_t nRequired = gAudio.deviceCount + 1;
+  if (nRequired > gAudioDeviceOptionsCap) {
+    const char** aOptions = (const char**)realloc(gAudioDeviceOptions, nRequired * sizeof(char*));
+    if (!aOptions) {
+      return false;
+    }
+    gAudioDeviceOptions = aOptions;
+    gAudioDeviceOptionsCap = nRequired;
+  }
+
+  gAudioDeviceOptions[0] = "";
+  for (uint32_t i = 0; i < gAudio.deviceCount; ++i) {
+    gAudioDeviceOptions[i + 1] = gAudio.pCaptureDevices[i].szName;
+  }
+  return true;
+}
+
+scInternal void
+_scOnAudioDeviceSelected(s32 iIndex) {
+  scPage* pPage = &gUI.aPages[SC_PAGE_SETTINGS];
+  if (gUI.iExpandedDropdown >= 0 && gUI.iExpandedDropdown < pPage->nWidgetCount) {
+    scWidget* pWidget = &pPage->aWidgets[gUI.iExpandedDropdown];
+    if (pWidget->eType == SC_WIDGET_DROPDOWN) {
+      scAudioSelectionSetDevice((uint32_t)pWidget->u.dropdown.iParam, iIndex - 1);
+    }
+  }
+  gUI.bNeedsLayout = true;
+  InvalidateRect(gUI.hWindow, NULL, TRUE);
+}
+
+scInternal void
+_scOnAudioTrackSelected(s32 iIndex) {
+  scPage* pPage = &gUI.aPages[SC_PAGE_SETTINGS];
+  if (gUI.iExpandedDropdown >= 0 && gUI.iExpandedDropdown < pPage->nWidgetCount) {
+    scWidget* pWidget = &pPage->aWidgets[gUI.iExpandedDropdown];
+    if (pWidget->eType == SC_WIDGET_DROPDOWN) {
+      scAudioSelectionSetTrack((uint32_t)pWidget->u.dropdown.iParam, iIndex);
+    }
+  }
+  gUI.bNeedsLayout = true;
+  InvalidateRect(gUI.hWindow, NULL, TRUE);
+}
+
+scInternal void
+_scOnAudioAddDevice(s32 iParam) {
+  (void)iParam;
+  if (scAudioSelectionAdd()) {
+    gUI.bNeedsLayout = true;
+    InvalidateRect(gUI.hWindow, NULL, TRUE);
+  }
+}
+
+scInternal void
+_scOnAudioRemoveDevice(s32 iParam) {
+  scAudioSelectionRemove((uint32_t)iParam);
+  gUI.iExpandedDropdown = -1;
+  gUI.bNeedsLayout = true;
+  InvalidateRect(gUI.hWindow, NULL, TRUE);
+}
 
 scInternal void
 _scOnFramerateSet(s32 iIndex) {
@@ -1324,23 +1447,75 @@ _scLayoutSettings(scPage* pPage, RECT rc) {
     iY += 45;
   }
 
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Show Cursor (Recording)"), &gApp->config.bRecordShowCursor, NULL));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Show Cursor (Recording)"), &gApp->config.bRecordShowCursor, 0, NULL));
   iY += 45;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Force Software Encoding"), &gApp->config.bRecordForceSoftware, NULL));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Force Software Encoding"), &gApp->config.bRecordForceSoftware, 0, NULL));
   iY += 45;
 
+  { // Audio Devices
+    _scPagePush(pPage, _scMakeToggle((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Capture Audio"), &gApp->config.bCaptureAudio, 0, _scRequestNewLayout));
+    iY += 45;
+
+    if (gApp->config.bCaptureAudio) {
+      bool bHaveDeviceOptions = _scBuildAudioDeviceOptions();
+      const char* const* aDeviceOptions = bHaveDeviceOptions ? gAudioDeviceOptions : NULL;
+      s32 nDeviceOptions = bHaveDeviceOptions ? (s32)gAudio.deviceCount + 1 : 0;
+      s32 nDeviceRight = rc.right - 110;
+      s32 nDeviceBoxWidth = nDeviceRight - (CONTENT_LEFT + 20);
+
+      for (uint32_t i = 0; i < gAudio.selectionCount; ++i) {
+        s32 iSelected = 0;
+        if (gAudio.aSelections[i].iDevice >= 0 &&
+            (uint32_t)gAudio.aSelections[i].iDevice < gAudio.deviceCount) {
+          iSelected = gAudio.aSelections[i].iDevice + 1;
+        }
+
+        _scPagePush(pPage, _scMakeDropdownWithParam(
+          (RECT){ CONTENT_LEFT + 20, iY, nDeviceRight, iY + 40 },
+          L"", aDeviceOptions, nDeviceOptions, iSelected,
+          _scOnAudioDeviceSelected, (s32)i, nDeviceBoxWidth, 0, true));
+
+        _scPagePush(pPage, _scMakeDropdownWithParam(
+          (RECT){ rc.right - 100, iY, rc.right - 55, iY + 40 },
+          L"", kAudioTrackOptions, ARRAYSIZE(kAudioTrackOptions),
+          gAudio.aSelections[i].iTrack, _scOnAudioTrackSelected,
+          (s32)i, 45, 0, true));
+
+        _scPagePush(pPage, _scMakeButton(
+          (RECT){ rc.right - 48, iY + 4, rc.right - 20, iY + 36 },
+          L"-", _scOnAudioRemoveDevice, (s32)i));
+
+        iY += 42;
+      }
+
+      if (gAudio.selectionCount < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
+        _scPagePush(pPage, _scMakeButton(
+          (RECT){ CONTENT_LEFT + 20, iY, CONTENT_LEFT + 150, iY + 35 },
+          scLocaleGet("Add Device"), _scOnAudioAddDevice, 0));
+        iY += 42;
+      }
+    }
+  }
+
+  iY += 20;
+
   // Rest of the options
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Copy screenshot to Clipboard"), &gApp->config.bCopyToClipboard, NULL));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Copy screenshot to Clipboard"), &gApp->config.bCopyToClipboard, 0, NULL));
   iY += 45;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Run on Startup"), &gApp->config.bRunAtStartup, scSetRunOnStartup));
+  _scPagePush(pPage, _scMakeToggle(
+    (RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 },
+    scLocaleGet("Run on Startup"),
+    &gApp->config.bRunAtStartup,
+    0,
+    scSetRunOnStartup));
   iY += 45;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Play sound on capture"), &gApp->config.bPlaySoundOnAction, NULL));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Play sound on capture"), &gApp->config.bPlaySoundOnAction, 0, NULL));
   iY += 45;
   if (gApp->bIsGeWin10) {
-    _scPagePush(pPage, _scMakeToggle((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Show notification on capture"), &gApp->config.bShowNotification, NULL));
+    _scPagePush(pPage, _scMakeToggle((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Show notification on capture"), &gApp->config.bShowNotification, 0, NULL));
     iY += 45;
   }
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Start Minimized"), &gApp->config.bStartMinimized, NULL));
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Start Minimized"), &gApp->config.bStartMinimized, 0, NULL));
   iY += 45;
 
   _scPagePush(pPage, _scMakeLabel((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, L"Input Settings", true));
@@ -2069,7 +2244,7 @@ _scOnWidgetClicked(scWidget* pWidget) {
     case SC_WIDGET_TOGGLE: {
       *pWidget->u.toggle.pValue = !*pWidget->u.toggle.pValue;
       if (pWidget->u.toggle.pfnChange) {
-        pWidget->u.toggle.pfnChange(*pWidget->u.toggle.pValue);
+        pWidget->u.toggle.pfnChange(*pWidget->u.toggle.pValue, pWidget->u.toggle.iParam);
       }
       scSaveConfig();
       InvalidateRect(gUI.hWindow, NULL, FALSE);
@@ -2192,7 +2367,7 @@ _scHandleLeftDown(POINT pt, RECT cr) {
   scWidget* pWidget = &pPage->aWidgets[iHit];
   if (pWidget->eType == SC_WIDGET_DROPDOWN) {
     RECT r = _scWidgetScaledRect(pPage, pWidget);
-    RECT box = { r.right - _scScale(165), r.top + _scScale(6), r.right - _scScale(15), r.bottom - _scScale(6) };
+    RECT box = _scDropdownBoxRect(pWidget, r);
     if (PtInRect(&box, pt)) {
       gUI.iExpandedDropdown = iHit;
       gUI.iDropdownScrollY  = 0;
@@ -2584,7 +2759,7 @@ _scOnLogPushed(void) {
 scInternal void
 _scOnVersionLinkClicked(s32 iParam) {
   (void)iParam;
-  char cLink[1024] = {0};  
+  char cLink[1024] = {0};
   snprintf(cLink, sizeof(cLink), "https://www.github.com/daniel-w0/screencap/releases/tag/%s", SC_VERSION_STRING);
   ShellExecuteA(NULL, "open", cLink, NULL, NULL, SW_SHOW);
 }
@@ -2711,6 +2886,9 @@ void scUICloseWindow() {
     gUI.aPages[i].nWidgetCap   = 0;
   }
   free(gUI.aSidebarWidgets);
+  free(gAudioDeviceOptions);
+  gAudioDeviceOptions = NULL;
+  gAudioDeviceOptionsCap = 0;
   gUI.aSidebarWidgets = NULL;
   gUI.nSidebarWidgetCount = 0;
   gUI.nSidebarWidgetCap = 0;
@@ -2747,4 +2925,8 @@ void scUIOnCaptureSaved(const wchar_t* wszPath) {
     gUI.bNeedsLayout = true;
     InvalidateRect(gUI.hWindow, NULL, FALSE);
   }
+}
+
+void scUIOnAudioDevicesUpdated() {
+  gUI.bNeedsLayout = true;
 }

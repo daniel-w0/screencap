@@ -89,11 +89,15 @@ _scConfigCreateDefaults(scAppConfig* pOutConfig) {
   pOutConfig->aHotkeys[SC_HOTKEY_RECORD]              = (scHotkey){ .eID = SC_HOTKEY_RECORD              , .uModifiers = MOD_SHIFT,              .uKey = VK_SNAPSHOT, .bRegistered = false };
   pOutConfig->aHotkeys[SC_HOTKEY_COLORPICKER]         = (scHotkey){ .eID = SC_HOTKEY_COLORPICKER         , .uModifiers = MOD_SHIFT | MOD_ALT,    .uKey = 'C',         .bRegistered = false };
 
-  pOutConfig->iFFmpegFramerate = 24;
-  pOutConfig->eRecordQuality = SC_QUALITY_HIGH;
-  pOutConfig->eRecordMaxRes = SC_MAXRES_NATIVE;
-  pOutConfig->bRecordShowCursor = true;
+  pOutConfig->iFFmpegFramerate     = 60;
+  pOutConfig->eRecordQuality       = SC_QUALITY_HIGH;
+  pOutConfig->eRecordMaxRes        = SC_MAXRES_NATIVE;
+  pOutConfig->bRecordShowCursor    = true;
   pOutConfig->bRecordForceSoftware = false;
+
+  pOutConfig->szSelectedAudioDevices[0] = '\0';
+  pOutConfig->bCaptureAudio             = false;
+
   _scGetDefaultSaveRootPath(pOutConfig->wszSavePath); // defaults to current directory if fails
   _scGetSystemLanguage(pOutConfig->sLanguageCode); // defaults to en if fails
     
@@ -131,6 +135,12 @@ _scWriteConfig(scAppConfig* pConfig, wchar_t* wszPath) {
   }
 
   _scConfigWriteVersion(wszActualPath);
+
+  wchar_t wszSelectedDevices[SC_AUDIO_DEVICES_STRSIZE];
+  MultiByteToWideChar(CP_UTF8, 0, pConfig->szSelectedAudioDevices, -1, wszSelectedDevices, ARRAYSIZE(wszSelectedDevices));
+  WritePrivateProfileStringW(L"options", L"selected_audio_devices", wszSelectedDevices, wszActualPath);
+
+  WritePrivateProfileStringW(L"options", L"capture_audio",      pConfig->bCaptureAudio ? L"1" : L"0", wszActualPath);
 
   WritePrivateProfileStringW(L"options", L"copy_to_clipboard", pConfig->bCopyToClipboard ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"run_on_startup",    pConfig->bRunAtStartup ? L"1" : L"0", wszActualPath);
@@ -192,6 +202,7 @@ _scConfigReadInto(scAppConfig* pConfig, wchar_t* wszPath) {
     wszActualPath = wszLocalPath;
   }
 
+  pConfig->bCaptureAudio      = GetPrivateProfileIntW(L"options", L"capture_audio", pConfig->bCaptureAudio, wszActualPath) != 0;
   pConfig->bCopyToClipboard   = GetPrivateProfileIntW(L"options", L"copy_to_clipboard", pConfig->bCopyToClipboard, wszActualPath) != 0;
   pConfig->bRunAtStartup      = GetPrivateProfileIntW(L"options", L"run_on_startup",    pConfig->bRunAtStartup, wszActualPath) != 0;
   pConfig->bPlaySoundOnAction = GetPrivateProfileIntW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction, wszActualPath) != 0;
@@ -209,6 +220,12 @@ _scConfigReadInto(scAppConfig* pConfig, wchar_t* wszPath) {
   UINT uMaxRes = GetPrivateProfileIntW(L"options", L"record_max_res", (UINT)pConfig->eRecordMaxRes, wszActualPath);
   if (uMaxRes >= SC_MAXRES_COUNT) uMaxRes = SC_MAXRES_NATIVE;
   pConfig->eRecordMaxRes = (scRecordMaxRes)uMaxRes;
+
+  wchar_t wszDefaultSelectedDevices[SC_AUDIO_DEVICES_STRSIZE];
+  wchar_t wszSelectedDevices[SC_AUDIO_DEVICES_STRSIZE];
+  MultiByteToWideChar(CP_UTF8, 0, pConfig->szSelectedAudioDevices, -1, wszDefaultSelectedDevices, SC_AUDIO_DEVICES_STRSIZE);
+  GetPrivateProfileStringW(L"options", L"selected_audio_devices", wszDefaultSelectedDevices, wszSelectedDevices, SC_AUDIO_DEVICES_STRSIZE, wszActualPath);
+  WideCharToMultiByte(CP_UTF8, 0, wszSelectedDevices, -1, pConfig->szSelectedAudioDevices, sizeof(pConfig->szSelectedAudioDevices), NULL, NULL);
 
   wchar_t wszDefaultLang[16];
   MultiByteToWideChar(CP_UTF8, 0, pConfig->sLanguageCode, -1, wszDefaultLang, 16);
@@ -359,7 +376,7 @@ void scSaveConfig() {
   scLogInfo("Config saved");
 }
 
-void scSetRunOnStartup(bool bEnable) {
+void scSetRunOnStartup(bool bEnable, s32 _) {
   HKEY hKey;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE, &hKey) != ERROR_SUCCESS) {
     return;

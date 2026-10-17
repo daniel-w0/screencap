@@ -8,6 +8,7 @@
 #include "scNotification.h"
 #include "scConfig.h"
 #include "scTimer.h"
+#include "scAudio.h"
 #include "stb_image_write.h"
 #include "stb_image.h"
 
@@ -715,7 +716,7 @@ bool scAppInit() {
     return false;
   }
 
-  scSetRunOnStartup(gApp->config.bRunAtStartup);
+  scSetRunOnStartup(gApp->config.bRunAtStartup, 0);
 
   scLocaleInit();
 
@@ -730,6 +731,8 @@ bool scAppInit() {
   scTrayInitialize();
 
   _scClipboardInit(&gApp->stClipboard);
+
+  scAudioInit();
 
   scAppRegisterHotkeys();
   scAppSetupCallbackHandler();
