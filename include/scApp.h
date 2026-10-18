@@ -44,8 +44,8 @@ static const char* scHotkeyIdNames[_SC_HOTKEY_COUNT] = {
 };
 
 static const char* scCaptureActionNames[_SC_HOTKEY_COUNT] = {
-  "Take Screenshot",
-  "Take Screenshot (Clipboard)",
+  "Take Screenshot (Selection)",
+  "Take Screenshot (Only copy to clipboard)",
   "OCR Capture",
   "Take Screenshot (Window)",
   "Take Screenshot (Desktop)",
