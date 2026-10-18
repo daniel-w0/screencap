@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <time.h>
+#include <math.h>
 
 #include "embed/screenshot_sound.h"
 #include "embed/screenshot_sound_quick.h"

@@ -19,4 +19,7 @@ void scUISetCurrentPage(scPageID ePageID);
 void scUIOnCaptureSaved(const wchar_t* wszPath);
 void scUIOnAudioDevicesUpdated();
 
+// Utility
+HICON scGetThemedIcon(int iWidth, int iHeight, COLORREF crAccent, bool bThemed);
+
 #endif // SC_UI_H

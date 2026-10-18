@@ -7,6 +7,7 @@
 #include "scGdiPlus.h"
 #include "scLocale.h"
 #include "stb_image.h"
+#include "scTray.h"
 #include "scUITheme.h"
 #include "scAudio.h"
 
@@ -131,6 +132,9 @@ typedef struct {
   bool      bRegisteredClass;
   f32       fUIScale;
 
+  HICON hIconBig;
+  HICON hIconSmall;
+
   scPage   aPages[_SC_PAGE_COUNT];
   scWidget* aSidebarWidgets;
   s32       nSidebarWidgetCount;
@@ -187,6 +191,176 @@ scInternal s32 _scScale(s32 nVal)   { return (s32)(nVal * gUI.fUIScale); }
 scInternal s32 _scUnscale(s32 nVal) { return (s32)(nVal / gUI.fUIScale); }
 scInternal s32 _scClamp(s32 v, s32 lo, s32 hi) { return v < lo ? lo : (v > hi ? hi : v); }
 scInternal f32 _scRoundRad() { return 6.0f * gUI.fUIScale; }
+
+#define ICON_BASE_HUE 140.0f
+#define ICON_BASE_SAT 0.80f
+#define ICON_BASE_VAL 0.90f
+
+scInternal void
+_scRGBToHSV(float r, float g, float b, float* h, float* s, float* v) {
+  float fMax = fmaxf(r, fmaxf(g, b));
+  float fMin = fminf(r, fminf(g, b));
+  float fD   = fMax - fMin;
+
+  *v = fMax;
+  *s = (fMax <= 0.0f) ? 0.0f : fD / fMax;
+
+  if (fD <= 0.0f) {
+    *h = 0.0f;
+  } else if (fMax == r) {
+    *h = 60.0f * fmodf((g - b) / fD, 6.0f);
+  } else if (fMax == g) {
+    *h = 60.0f * (((b - r) / fD) + 2.0f);
+  } else {
+    *h = 60.0f * (((r - g) / fD) + 4.0f);
+  }
+  if (*h < 0.0f) *h += 360.0f;
+}
+
+scInternal void
+_scHSVToRGB(float h, float s, float v, float* r, float* g, float* b) {
+  float fC = v * s;
+  float fX = fC * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
+  float fM = v - fC;
+  float fR = 0, fG = 0, fB = 0;
+
+  if      (h < 60.0f)  { fR = fC; fG = fX; }
+  else if (h < 120.0f) { fR = fX; fG = fC; }
+  else if (h < 180.0f) { fG = fC; fB = fX; }
+  else if (h < 240.0f) { fG = fX; fB = fC; }
+  else if (h < 300.0f) { fR = fX; fB = fC; }
+  else                 { fR = fC; fB = fX; }
+
+  *r = fR + fM;
+  *g = fG + fM;
+  *b = fB + fM;
+}
+
+HICON scGetThemedIcon(int iWidth, int iHeight, COLORREF crAccent, bool bThemed) {
+  HICON hSrc = (HICON)LoadImageW(GetModuleHandle(NULL), MAKEINTRESOURCEW(IDI_APP_ICON),
+                                 IMAGE_ICON, iWidth, iHeight, LR_DEFAULTCOLOR);
+  if (!hSrc) {
+    scLogError("Failed to load icon: %d", GetLastError());
+    return NULL;
+  }
+
+  if (!bThemed) {
+    return hSrc;
+  }
+
+  ICONINFO ii = { 0 };
+  if (!GetIconInfo(hSrc, &ii)) {
+    DestroyIcon(hSrc);
+    return NULL;
+  }
+
+  HICON hResult = NULL;
+  BITMAP bm = { 0 };
+  GetObject(ii.hbmColor, sizeof(bm), &bm);
+
+  BITMAPINFO bi = { 0 };
+  bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth       = bm.bmWidth;
+  bi.bmiHeader.biHeight      = -bm.bmHeight; // top-down
+  bi.bmiHeader.biPlanes      = 1;
+  bi.bmiHeader.biBitCount    = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+
+  int      iCount  = bm.bmWidth * bm.bmHeight;
+  uint32_t* pPixels = (uint32_t*)malloc((size_t)iCount * sizeof(uint32_t));
+  HDC      hDC     = GetDC(NULL);
+
+  if (pPixels && GetDIBits(hDC, ii.hbmColor, 0, bm.bmHeight, pPixels, &bi, DIB_RGB_COLORS)) {
+    // Hue of the accent color
+    // HSV of the accent color
+    float fAccentH, fAccentS, fAccentV;
+    _scRGBToHSV(GetRValue(crAccent) / 255.0f, GetGValue(crAccent) / 255.0f,
+                GetBValue(crAccent) / 255.0f, &fAccentH, &fAccentS, &fAccentV);
+
+    // Measure the icon's dominant hue (circular mean, weighted by saturation * alpha)
+    float fSumX = 0.0f, fSumY = 0.0f;
+    for (int i = 0; i < iCount; i++) {
+      uint32_t px = pPixels[i];
+      float    fA = ((px >> 24) & 0xFF) / 255.0f;
+      float    r  = ((px >> 16) & 0xFF) / 255.0f;
+      float    g  = ((px >> 8)  & 0xFF) / 255.0f;
+      float    b  = ( px        & 0xFF) / 255.0f;
+
+      float h, s, v;
+      _scRGBToHSV(r, g, b, &h, &s, &v);
+
+      float fW   = s * v * fA;
+      float fRad = h * (3.14159265f / 180.0f);
+      fSumX += cosf(fRad) * fW;
+      fSumY += sinf(fRad) * fW;
+    }
+
+    float fBaseH = atan2f(fSumY, fSumX) * (180.0f / 3.14159265f);
+    if (fBaseH < 0.0f) fBaseH += 360.0f;
+
+    float fShift = fAccentH - fBaseH;
+
+    float fSatScale = fAccentS / ICON_BASE_SAT;
+    float fValScale = fAccentV / ICON_BASE_VAL;
+
+    for (int i = 0; i < iCount; i++) {
+      uint32_t px = pPixels[i];
+      uint8_t  a  = (px >> 24) & 0xFF;
+      float    r  = ((px >> 16) & 0xFF) / 255.0f;
+      float    g  = ((px >> 8)  & 0xFF) / 255.0f;
+      float    b  = ( px        & 0xFF) / 255.0f;
+
+      float h, s, v;
+      _scRGBToHSV(r, g, b, &h, &s, &v);
+
+      h = fmodf(h + fShift + 360.0f, 360.0f);
+
+      // Weight the value scale by saturation so white/gray details
+      // (highlights, outlines) keep their brightness
+      v = fminf(1.0f, v * (1.0f + (fValScale - 1.0f) * s));
+      s = fminf(1.0f, s * fSatScale);
+
+      _scHSVToRGB(h, s, v, &r, &g, &b);
+
+      pPixels[i] = ((uint32_t)a << 24)
+                 | ((uint32_t)(r * 255.0f + 0.5f) << 16)
+                 | ((uint32_t)(g * 255.0f + 0.5f) << 8)
+                 |  (uint32_t)(b * 255.0f + 0.5f);
+    }
+
+    SetDIBits(hDC, ii.hbmColor, 0, bm.bmHeight, pPixels, &bi, DIB_RGB_COLORS);
+    hResult = CreateIconIndirect(&ii);
+  }
+
+  ReleaseDC(NULL, hDC);
+  free(pPixels);
+  DeleteObject(ii.hbmColor);
+  DeleteObject(ii.hbmMask);
+  DestroyIcon(hSrc);
+  return hResult;
+}
+
+scInternal void
+_scUpdateWindowIcon(HWND hWnd, bool bThemed) {
+  COLORREF crAccent = gUI.theme.dwAccent;
+
+  HICON hBig   = scGetThemedIcon(GetSystemMetrics(SM_CXICON),   GetSystemMetrics(SM_CYICON),   crAccent, bThemed);
+  HICON hSmall = scGetThemedIcon(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), crAccent, bThemed);
+  if (!hBig || !hSmall) {
+    if (hBig)   DestroyIcon(hBig);
+    if (hSmall) DestroyIcon(hSmall);
+    return; // keep whatever icon is currently set
+  }
+
+  SendMessageW(hWnd, WM_SETICON, ICON_BIG,   (LPARAM)hBig);
+  SendMessageW(hWnd, WM_SETICON, ICON_SMALL, (LPARAM)hSmall);
+
+  // Destroy the old ones only after they've been replaced
+  if (gUI.hIconBig)   DestroyIcon(gUI.hIconBig);
+  if (gUI.hIconSmall) DestroyIcon(gUI.hIconSmall);
+  gUI.hIconBig   = hBig;
+  gUI.hIconSmall = hSmall;
+}
 
 scInternal HRESULT STDMETHODCALLTYPE
 _scDropSourceQueryInterface(IDropSource* pThis, REFIID riid, void** ppv) {
@@ -1271,6 +1445,12 @@ _scRequestNewLayout(bool unused0, s32 iParam) {
   gUI.bNeedsLayout = true;
 }
 
+scInternal void
+_scUpdateIconOption(bool bEnabled, s32 _) {
+  _scUpdateWindowIcon(gUI.hWindow, bEnabled);
+  scTrayUpdateIcon();
+}
+
 static const char* const kAudioTrackOptions[] = { "0", "1", "2", "3", "4", "5", "6", "7" };
 
 static const char** gAudioDeviceOptions;
@@ -1516,6 +1696,9 @@ _scLayoutSettings(scPage* pPage, RECT rc) {
     iY += 45;
   }
   _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Start Minimized"), &gApp->config.bStartMinimized, 0, NULL));
+  iY += 45;
+
+  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Icon uses Accent Color"), &gApp->config.bAccentIcon, 0, _scUpdateIconOption));
   iY += 45;
 
   _scPagePush(pPage, _scMakeLabel((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, L"Input Settings", true));
@@ -2738,6 +2921,9 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
           scUIThemeGet(&gUI.theme, _scScale(15));
           BOOL bDark = gUI.theme.bDark;
           DwmSetWindowAttribute(hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &bDark, sizeof(bDark));
+          if (gApp->config.bAccentIcon) {
+            _scUpdateWindowIcon(hWnd, true);
+          }
           InvalidateRect(hWnd, NULL, TRUE);
         }
       }
@@ -2869,6 +3055,9 @@ void scUIOpenWindow() {
     if (gApp->bIsGeWin10) {
       BOOL bDark = gUI.theme.bDark;
       DwmSetWindowAttribute(gUI.hWindow, DWMWA_USE_IMMERSIVE_DARK_MODE, &bDark, sizeof(bDark));
+    }
+    if (gApp->config.bAccentIcon) {
+      _scUpdateWindowIcon(gUI.hWindow, true);
     }
     scLogDebug("Created main window");
   } else {

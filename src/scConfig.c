@@ -106,6 +106,7 @@ _scConfigCreateDefaults(scAppConfig* pOutConfig) {
   pOutConfig->bPlaySoundOnAction = true;
   pOutConfig->bShowNotification  = true;
   pOutConfig->bStartMinimized    = true;
+  pOutConfig->bAccentIcon        = true;
 }
 
 scInternal void
@@ -147,6 +148,7 @@ _scWriteConfig(scAppConfig* pConfig, wchar_t* wszPath) {
   WritePrivateProfileStringW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"show_notification",  pConfig->bShowNotification ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"start_minimized",    pConfig->bStartMinimized ? L"1" : L"0", wszActualPath);
+  WritePrivateProfileStringW(L"options", L"icon_matches_accent_color", pConfig->bAccentIcon ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"record_show_cursor", pConfig->bRecordShowCursor ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"record_force_software", pConfig->bRecordForceSoftware ? L"1" : L"0", wszActualPath);
 
@@ -208,6 +210,7 @@ _scConfigReadInto(scAppConfig* pConfig, wchar_t* wszPath) {
   pConfig->bPlaySoundOnAction = GetPrivateProfileIntW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction, wszActualPath) != 0;
   pConfig->bShowNotification  = GetPrivateProfileIntW(L"options", L"show_notification",  pConfig->bShowNotification, wszActualPath) != 0;
   pConfig->bStartMinimized    = GetPrivateProfileIntW(L"options", L"start_minimized",    pConfig->bStartMinimized, wszActualPath) != 0;
+  pConfig->bAccentIcon    = GetPrivateProfileIntW(L"options", L"icon_matches_accent_color",    pConfig->bAccentIcon, wszActualPath) != 0;
   pConfig->bRecordShowCursor     = GetPrivateProfileIntW(L"options", L"record_show_cursor",    pConfig->bRecordShowCursor, wszActualPath) != 0;
   pConfig->bRecordForceSoftware  = GetPrivateProfileIntW(L"options", L"record_force_software", pConfig->bRecordForceSoftware, wszActualPath) != 0;
   pConfig->iFFmpegFramerate   = GetPrivateProfileIntW(L"options", L"record_framerate",  pConfig->iFFmpegFramerate, wszActualPath);

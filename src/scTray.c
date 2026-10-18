@@ -4,6 +4,7 @@
 #include "scUI.h"
 #include "scLocale.h"
 #include "scLogging.h"
+#include "scUITheme.h"
 #include "scAssert.h"
 
 #define WM_TRAYICON (WM_USER + 1)
@@ -16,6 +17,29 @@ enum {
 };
 
 #define TRAY_ACTION_ID(action) (action + (_TRAY_MENU_LAST_ACTION_IDX))
+
+static void
+_scTraySetIcon(bool bThemed) {
+  int   iSize = GetSystemMetrics(SM_CXSMICON);
+  HICON hNew  = scGetThemedIcon(iSize, iSize, gTray.dwAccent, bThemed);
+  if (!hNew) {
+    return;
+  }
+
+  NOTIFYICONDATAA nid = { 0 };
+  nid.cbSize = sizeof(NOTIFYICONDATAA);
+  nid.hWnd   = gTray.hWindow;
+  nid.uID    = 1;
+  nid.uFlags = NIF_ICON;
+  nid.hIcon  = hNew;
+
+  if (Shell_NotifyIconA(NIM_MODIFY, &nid)) {
+    if (gTray.hIcon) DestroyIcon(gTray.hIcon);
+    gTray.hIcon = hNew;
+  } else {
+    DestroyIcon(hNew);
+  }
+}
 
 LRESULT CALLBACK TrayUtilityWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
   switch (msg) {
@@ -71,7 +95,21 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
           nid.hWnd   = hWnd;
           nid.uID    = 1;
           Shell_NotifyIconA(NIM_DELETE, &nid);
+          if (gTray.hIcon) {
+            DestroyIcon(gTray.hIcon);
+            gTray.hIcon = NULL;
+          }
           PostQuitMessage(0);
+        }
+      }
+      return 0;
+    }
+    case WM_SETTINGCHANGE: {
+      COLORREF crAccent = scGetSystemAccentColor();
+      if (crAccent != gTray.dwAccent) {
+        gTray.dwAccent = crAccent;
+        if (gApp->config.bAccentIcon) {
+          _scTraySetIcon(true);
         }
       }
       return 0;
@@ -81,6 +119,8 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 }
 
 void scTrayInitialize() {
+  gTray.dwAccent = scGetSystemAccentColor();
+
   WNDCLASSEXA wc   = { 0 };
   wc.cbSize        = sizeof(WNDCLASSEXA);
   wc.lpfnWndProc   = TrayUtilityWndProc;
@@ -95,9 +135,9 @@ void scTrayInitialize() {
   }
 
   gTray.hWindow = CreateWindowExA(
-    0, "ScTrayUtilityWindow", NULL, 0,
+    WS_EX_TOOLWINDOW, "ScTrayUtilityWindow", NULL, WS_POPUP,
     0, 0, 0, 0,
-    HWND_MESSAGE,
+    NULL,
     NULL, GetModuleHandle(NULL), NULL
   );
   if (!gTray.hWindow) {
@@ -115,8 +155,15 @@ void scTrayInitialize() {
   nid.uFlags           = NIF_MESSAGE | NIF_ICON | NIF_TIP;
   nid.uCallbackMessage = WM_TRAYICON;
 
-  nid.hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_APP_ICON));
+  HICON hIcon = scGetThemedIcon(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
+                                gTray.dwAccent, gApp->config.bAccentIcon);
+  nid.hIcon   = hIcon ? hIcon : LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_APP_ICON));
+  gTray.hIcon = hIcon;
   strcpy_s(nid.szTip, sizeof(nid.szTip), "Screencap Utility");
 
   Shell_NotifyIconA(NIM_ADD, &nid);
+}
+
+void scTrayUpdateIcon() {
+  _scTraySetIcon(gApp->config.bAccentIcon);
 }

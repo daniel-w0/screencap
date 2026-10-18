@@ -95,6 +95,7 @@ typedef struct {
   bool            bPlaySoundOnAction;
   bool            bShowNotification;
   bool            bStartMinimized;
+  bool            bAccentIcon;
 } scAppConfig;
 
 typedef struct {
