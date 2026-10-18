@@ -5,6 +5,12 @@
 #include "scApp.h"
 #define MINIAUDIO_IMPLEMENTATION
 #define MA_NO_NULL
+#define MA_NO_MP3
+#define MA_NO_FLAC
+#define MA_NO_VORBIS
+#define MA_NO_M4A
+#define MA_NO_WAV
+#define MA_NO_DECODERS
 #include "miniaudio.h"
 
 scAudio gAudio;
