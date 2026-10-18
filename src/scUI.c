@@ -1,14 +1,15 @@
 #include "pch.h"
 #include "scTypes.h"
 #include "scUI.h"
+#include "scGui.h"
 #include "scApp.h"
 #include "scAssert.h"
 #include "scLogging.h"
 #include "scGdiPlus.h"
 #include "scLocale.h"
 #include "stb_image.h"
-#include "scTray.h"
 #include "scUITheme.h"
+#include "scTray.h"
 #include "scAudio.h"
 
 #include <windowsx.h>
@@ -21,95 +22,23 @@
 
 #define WM_HOTKEY_RECORDED (WM_APP + 100)
 #define WM_THUMB_LOADED    (WM_APP + 101)
+#define WM_LOG_PUSHED      (WM_APP + 102)
+#define WM_REBUILD_UI      (WM_APP + 103)
 
 #define SC_GALLERY_HISTORY_MAX 12 // For back and forward buttons on mouse, likely don't need much history.
 
 //------------------------------------------------------------------------
 // Types
 //------------------------------------------------------------------------
-typedef enum {
-  SC_WIDGET_LABEL,
-  SC_WIDGET_TOGGLE,
-  SC_WIDGET_DROPDOWN,
-  SC_WIDGET_BUTTON,
-  SC_WIDGET_HOTKEY,
-  SC_WIDGET_IMAGE,
-  SC_WIDGET_PAGE_TAB,
-  SC_WIDGET_LINK
-} scWidgetType;
-
-typedef struct {
-  scWidgetType eType;
-  RECT         rcLayout;
-  wchar_t      wszText[128];
-  char         szPath[MAX_PATH]; // should be wchar_t...
-  union {
-    struct { bool bBold; }             label;
-    struct { bool* pValue; s32 iParam; void (*pfnChange)(bool bValue, s32 iParam); } toggle;
-    struct {
-      const char* const* aOptions;
-      s32                nOptionCount;
-      s32                iSelected;
-      s32                iParam;
-      s32                nBoxWidth;
-      s32                nBoxInset;
-      bool               bCompact;
-      void (*pfnSelect)(s32 iIndex);
-    } dropdown;
-    struct { void (*pfnClick)(s32 iParam); s32 iParam; } button;
-    struct { scHotkeyID eHotkey; }     hotkey;
-    struct { bool bIsFolder; bool bIsUp; s32 nItemCount; } image;
-    struct { scPageID ePage; } pageTab;
-    struct { void (*pfnClick)(s32 iParam); s32 iParam; bool bAnchorBottom; } link;
-  } u;
-} scWidget;
-
-typedef struct {
-  s32 nScrollY;
-  s32 nMaxScrollY;
-  s32 nContentH;
-} scScrollContext;
-
-typedef struct {
-  bool bActive;
-  s32* pValue;
-  s32  iStartY;
-  s32  iStartScroll;
-  s32  iTrackRange;
-  s32  iMaxScroll;
-} scScrollDrag;
-
-typedef struct scPage {
-  const char*     szKey;
-  scWidget*       aWidgets;
-  s32             nWidgetCount;
-  s32             nWidgetCap;
-  scScrollContext scroll;
-  void (*pfnLayout)(struct scPage* pPage, RECT rcContent);
-} scPage;
-
 typedef struct {
   char    szPath[MAX_PATH];
   HBITMAP hBitmap;
 } scThumb;
 
 typedef struct {
-  bool bVisible;
-  RECT rcTrack;
-  RECT rcThumb;
-  s32  iTrackRange;
-} scScrollGeom;
-
-typedef struct {
   IDropSource base;
   LONG        cRef;
 } scDropSource;
-
-typedef struct {
-  bool bPending;
-  s32  iWidgetIndex;
-  POINT ptStart;
-} scImageDragPending;
 
 typedef struct scThumbTask {
   char szPath[MAX_PATH];
@@ -127,36 +56,47 @@ typedef struct {
 } scThumbQueue;
 
 typedef struct {
+  bool    bIsFolder;
+  bool    bIsUp;
+  s32     nItemCount;
+  wchar_t wszName[MAX_PATH];
+  char    szPath[MAX_PATH]; // should be wchar_t...
+} scGalleryItem;
+
+typedef struct {
+  const char* szText;
+  s32         nLen;
+  s32         iHeight;
+  s32         iTop;
+} scLogLine;
+
+typedef struct {
   scUITheme theme;
+  scGui*    pGui;
+  scNode*   pContent;
+  scNode*   pLogView;
   HWND      hWindow;
   bool      bRegisteredClass;
+  bool      bTrackingMouse;
+  LONG      lLogPending;
   f32       fUIScale;
 
   HICON hIconBig;
   HICON hIconSmall;
 
-  scPage   aPages[_SC_PAGE_COUNT];
-  scWidget* aSidebarWidgets;
-  s32       nSidebarWidgetCount;
-  s32       nSidebarWidgetCap;
-  scPageID  eCurrentPage;
-  s32       iHoveredSidebarWidget;
-  s32       iHoveredWidget;
+  scPageID eCurrentPage;
+  s32      aPageScrollY[_SC_PAGE_COUNT];
 
-  POINT vMousePos;
-
-  s32 iExpandedDropdown;
-  s32 iDropdownHover;
-  s32 iDropdownScrollY;
-
-  bool bNeedsLayout;
-  RECT rcLastClient;
+  HBITMAP hBackBitmap;
+  s32     iBackWidth;
+  s32     iBackHeight;
 
   s32 iEditingHotkey;
 
-  bool bHoveredScroll;
-  scScrollDrag drag;
-  scImageDragPending imageDrag;
+  scLogLine* aLogLines;
+  s32        nLogLines;
+  s32        nLogCap;
+  s32        iLogWidth;
 
   scThumbQueue qThumbQueue;
   scThumb* aThumbs;
@@ -177,20 +117,87 @@ static HHOOK gKeyboardHook;
 #define WINDOW_MIN_HEIGHT ((s32)340)
 
 #define SIDEBAR_WIDTH   150
-#define CONTENT_LEFT    160
-#define LOG_LINE_HEIGHT 20
+
+static const char* const kPageKeys[_SC_PAGE_COUNT] = { "General", "Settings", "Gallery", "Logs", "Credits" };
 
 scInternal void _scBeginHotkeyRecording(s32 iIndex);
 scInternal void _scCancelHotkeyRecording();
 scInternal void _scOnVersionLinkClicked(s32 iParam);
+scInternal void _scRebuild();
 
 //------------------------------------------------------------------------
 // Utility
 //------------------------------------------------------------------------
-scInternal s32 _scScale(s32 nVal)   { return (s32)(nVal * gUI.fUIScale); }
-scInternal s32 _scUnscale(s32 nVal) { return (s32)(nVal / gUI.fUIScale); }
-scInternal s32 _scClamp(s32 v, s32 lo, s32 hi) { return v < lo ? lo : (v > hi ? hi : v); }
+scInternal s32 _scScale(s32 nVal) { return (s32)(nVal * gUI.fUIScale); }
 scInternal f32 _scRoundRad() { return 6.0f * gUI.fUIScale; }
+
+scInternal s32
+_scCurrentScrollY() {
+  return gUI.pContent ? scGetScrollY(gUI.pContent) : 0;
+}
+
+scInternal void
+_scSavePageScroll() {
+  if (gUI.pContent) {
+    gUI.aPageScrollY[gUI.eCurrentPage] = scGetScrollY(gUI.pContent);
+  }
+}
+
+scInternal void
+_scHostInvalidate(void* pUser, const RECT* pRect) {
+  (void)pUser;
+  if (gUI.hWindow) {
+    InvalidateRect(gUI.hWindow, pRect, FALSE);
+  }
+}
+
+scInternal void
+_scHostCapture(void* pUser, bool bCapture) {
+  (void)pUser;
+  if (!gUI.hWindow) {
+    return;
+  }
+  if (bCapture) {
+    SetCapture(gUI.hWindow);
+  } else if (GetCapture() == gUI.hWindow) {
+    ReleaseCapture();
+  }
+}
+
+scInternal void
+_scHostValueChanged(void* pUser) {
+  (void)pUser;
+  scSaveConfig();
+}
+
+scInternal void
+_scApplyTheme() {
+  if (!gUI.pGui) {
+    return;
+  }
+  scUITheme* t = &gUI.theme;
+  scGuiTheme theme = { 0 };
+  theme.dwText        = t->dwText;
+  theme.dwTextDim     = t->dwTextDim;
+  theme.dwTextFaint   = t->dwTextFaint;
+  theme.dwBackground  = t->dwBackground;
+  theme.dwPanel       = t->dwSidebar;
+  theme.dwPopup       = t->dwPopup;
+  theme.dwCard        = t->dwCard;
+  theme.dwCardHover   = t->dwCardHover;
+  theme.dwCardActive  = t->dwCardActive;
+  theme.dwStroke      = t->dwStroke;
+  theme.dwStrokeSoft  = t->dwStrokeSoft;
+  theme.dwAccent      = t->dwAccent;
+  theme.dwAccentHover = t->dwAccentHover;
+  theme.dwAccentText  = scColorIsLight(t->dwAccent) ? RGB(0, 0, 0) : RGB(255, 255, 255);
+  theme.dwPillOff     = t->dwPillOff;
+  theme.dwScrollThumb = t->dwScrollThumb;
+  theme.hFont         = (HFONT)t->pFont;
+  theme.hBoldFont     = (HFONT)t->pBoldFont;
+  scGuiSetTheme(gUI.pGui, &theme);
+  scGuiSetScale(gUI.pGui, gUI.fUIScale);
+}
 
 #define ICON_BASE_HUE 140.0f
 #define ICON_BASE_SAT 0.80f
@@ -713,292 +720,14 @@ scInternal void _scShutdownThumbWorker() {
 }
 
 //------------------------------------------------------------------------
-// Widgets
+// Custom node drawing
 //------------------------------------------------------------------------
-scInternal scWidget*
-_scPagePush(scPage* pPage, scWidget widget) {
-  if (pPage->nWidgetCount >= pPage->nWidgetCap) {
-    pPage->nWidgetCap = pPage->nWidgetCap ? pPage->nWidgetCap * 2 : 8;
-    pPage->aWidgets   = (scWidget*)realloc(pPage->aWidgets, pPage->nWidgetCap * sizeof(scWidget));
-  }
-  pPage->aWidgets[pPage->nWidgetCount] = widget;
-  return &pPage->aWidgets[pPage->nWidgetCount++];
-}
-
-scInternal scWidget
-_scMakeLabel(RECT rcLayout, const wchar_t* wszText, bool bBold) {
-  scWidget w = { 0 };
-  w.eType        = SC_WIDGET_LABEL;
-  w.rcLayout     = rcLayout;
-  w.u.label.bBold = bBold;
-  wcscpy_s(w.wszText, 128, wszText);
-  return w;
-}
-
-scInternal scWidget
-_scMakeToggle(RECT rcLayout, const wchar_t* wszText, bool* pValue, s32 iParam, void (*pfnChange)(bool bValue, s32 iParam)) {
-  scWidget w = { 0 };
-  w.eType              = SC_WIDGET_TOGGLE;
-  w.rcLayout           = rcLayout;
-  w.u.toggle.pValue    = pValue;
-  w.u.toggle.iParam    = iParam;
-  w.u.toggle.pfnChange = pfnChange;
-  wcscpy_s(w.wszText, 128, wszText);
-  return w;
-}
-
-scInternal scWidget
-_scMakeButton(RECT rcLayout, const wchar_t* wszText, void (*pfnClick)(s32 iParam), s32 iParam) {
-  scWidget w = { 0 };
-  w.eType           = SC_WIDGET_BUTTON;
-  w.rcLayout        = rcLayout;
-  w.u.button.pfnClick = pfnClick;
-  w.u.button.iParam   = iParam;
-  wcscpy_s(w.wszText, 128, wszText);
-  return w;
-}
-
-scInternal scWidget
-_scMakeHotkey(RECT rcLayout, scHotkeyID eHotkey) {
-  scWidget w = { 0 };
-  w.eType          = SC_WIDGET_HOTKEY;
-  w.rcLayout       = rcLayout;
-  w.u.hotkey.eHotkey = eHotkey;
-  return w;
-}
-
-scInternal scWidget
-_scMakeImage(RECT rcLayout, const wchar_t* wszName, const char* szPath) {
-  scWidget w = { 0 };
-  w.eType    = SC_WIDGET_IMAGE;
-  w.rcLayout = rcLayout;
-  wcscpy_s(w.wszText, 128, wszName);
-  strcpy_s(w.szPath, MAX_PATH, szPath);
-  return w;
-}
-
-scInternal scWidget
-_scMakeDropdown(RECT rcLayout, const wchar_t* wszLabel, const char* const* aOptions, s32 nOptionCount, s32 iSelected, void (*pfnSelect)(s32 iIndex)) {
-  scWidget w = { 0 };
-  w.eType                 = SC_WIDGET_DROPDOWN;
-  w.rcLayout              = rcLayout;
-  w.u.dropdown.aOptions     = aOptions;
-  w.u.dropdown.nOptionCount = nOptionCount;
-  w.u.dropdown.iSelected    = iSelected;
-  w.u.dropdown.nBoxWidth    = 150;
-  w.u.dropdown.nBoxInset    = 15;
-  w.u.dropdown.pfnSelect    = pfnSelect;
-  wcscpy_s(w.wszText, 128, wszLabel);
-  return w;
-}
-
-scInternal scWidget
-_scMakeDropdownWithParam(RECT rcLayout, const wchar_t* wszLabel, const char* const* aOptions,
-                         s32 nOptionCount, s32 iSelected, void (*pfnSelect)(s32 iIndex),
-                         s32 iParam, s32 nBoxWidth, s32 nBoxInset, bool bCompact) {
-  scWidget w = _scMakeDropdown(rcLayout, wszLabel, aOptions, nOptionCount, iSelected, pfnSelect);
-  w.u.dropdown.iParam = iParam;
-  w.u.dropdown.nBoxWidth = nBoxWidth;
-  w.u.dropdown.nBoxInset = nBoxInset;
-  w.u.dropdown.bCompact = bCompact;
-  return w;
-}
-
-scInternal scWidget
-_scMakePageTab(RECT rcLayout, scPageID ePage) {
-  scWidget w = { 0 };
-  w.eType = SC_WIDGET_PAGE_TAB;
-  w.rcLayout = rcLayout;
-  w.u.pageTab.ePage = ePage;
-  return w;
-}
-
-scInternal scWidget
-_scMakeLink(RECT rcLayout, const wchar_t* wszText, void (*pfnClick)(s32 iParam), s32 iParam, bool bAnchorBottom) {
-  scWidget w = { 0 };
-  w.eType = SC_WIDGET_LINK;
-  w.rcLayout = rcLayout;
-  w.u.link.pfnClick = pfnClick;
-  w.u.link.iParam = iParam;
-  w.u.link.bAnchorBottom = bAnchorBottom;
-  wcscpy_s(w.wszText, 128, wszText);
-  return w;
-}
-
-scInternal scWidget*
-_scSidebarPush(scWidget widget) {
-  if (gUI.nSidebarWidgetCount >= gUI.nSidebarWidgetCap) {
-    gUI.nSidebarWidgetCap = gUI.nSidebarWidgetCap ? gUI.nSidebarWidgetCap * 2 : 8;
-    gUI.aSidebarWidgets = (scWidget*)realloc(gUI.aSidebarWidgets, gUI.nSidebarWidgetCap * sizeof(scWidget));
-  }
-  gUI.aSidebarWidgets[gUI.nSidebarWidgetCount] = widget;
-  return &gUI.aSidebarWidgets[gUI.nSidebarWidgetCount++];
-}
-
-scInternal RECT
-_scWidgetRect(scWidget* pWidget, s32 iScrollY) {
-  RECT r = pWidget->rcLayout;
-  return (RECT){
-    _scScale(r.left),
-    _scScale(r.top - iScrollY),
-    _scScale(r.right),
-    _scScale(r.bottom - iScrollY)
-  };
-}
-
-scInternal RECT
-_scWidgetScaledRect(scPage* pPage, scWidget* pWidget) {
-  return _scWidgetRect(pWidget, pPage->scroll.nScrollY);
-}
-
-scInternal RECT
-_scDropdownBoxRect(scWidget* pWidget, RECT r) {
-  s32 nWidth = pWidget->u.dropdown.nBoxWidth > 0 ? pWidget->u.dropdown.nBoxWidth : 150;
-  s32 nInset = pWidget->u.dropdown.nBoxInset >= 0 ? pWidget->u.dropdown.nBoxInset : 15;
-  return (RECT){ r.right - _scScale(nWidth + nInset), r.top + _scScale(6),
-                 r.right - _scScale(nInset), r.bottom - _scScale(6) };
-}
-
-scInternal bool
-_scWidgetIsInteractive(scWidgetType eType) {
-  return eType == SC_WIDGET_TOGGLE || eType == SC_WIDGET_BUTTON ||
-         eType == SC_WIDGET_HOTKEY || eType == SC_WIDGET_IMAGE ||
-         eType == SC_WIDGET_DROPDOWN || eType == SC_WIDGET_PAGE_TAB ||
-         eType == SC_WIDGET_LINK;
-}
-
-scInternal s32
-_scSidebarWidgetAt(POINT pt) {
-  for (s32 i = gUI.nSidebarWidgetCount - 1; i >= 0; --i) {
-    scWidget* pWidget = &gUI.aSidebarWidgets[i];
-    if (_scWidgetIsInteractive(pWidget->eType)) {
-      RECT r = _scWidgetRect(pWidget, 0);
-      if (PtInRect(&r, pt)) {
-        return i;
-      }
-    }
-  }
-  return -1;
-}
-
-scInternal s32
-_scWidgetAt(scPage* pPage, POINT pt) {
-  for (s32 i = 0; i < pPage->nWidgetCount; ++i) {
-    if (!_scWidgetIsInteractive(pPage->aWidgets[i].eType)) {
-      continue;
-    }
-    RECT r = _scWidgetScaledRect(pPage, &pPage->aWidgets[i]);
-    if (PtInRect(&r, pt)) {
-      return i;
-    }
-  }
-  return -1;
-}
-
 scInternal void
-_scDrawLabel(HDC hDC, scWidget* pWidget, RECT r) {
-  SelectObject(hDC, pWidget->u.label.bBold ? gUI.theme.pBoldFont : gUI.theme.pFont);
-  SetTextColor(hDC, gUI.theme.dwText);
-  TextOutW(hDC, r.left, r.top, pWidget->wszText, lstrlenW(pWidget->wszText));
-}
-
-scInternal void
-_scDrawToggle(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
+_scDrawHotkey(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered) {
   scUITheme* t = &gUI.theme;
-  bool bOn = *pWidget->u.toggle.pValue;
-
-  GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  gpFillRound(pGraphics, r, _scRoundRad(), gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
-  gpStrokeRound(pGraphics, r, _scRoundRad(), gpColor(t->dwStrokeSoft, 255), 1.0f);
-
-  RECT pill = { r.right - _scScale(55), r.top + _scScale(10), r.right - _scScale(15), r.top + _scScale(30) };
-  f32 fPillRad = (pill.bottom - pill.top) / 2.0f;
-  if (bOn) {
-    gpFillRound(pGraphics, pill, fPillRad, gpColor(bHovered ? t->dwAccentHover : t->dwAccent, 255));
-  } else {
-    gpFillRound(pGraphics, pill, fPillRad, gpColor(t->dwCardActive, 255));
-    gpStrokeRound(pGraphics, pill, fPillRad, gpColor(t->dwPillOff, 255), 1.0f);
-  }
-
-  f32 fInset = 3.0f * gUI.fUIScale;
-  f32 fThumb = (pill.bottom - pill.top) - fInset * 2.0f;
-  f32 fThumbX = bOn ? (pill.right - fInset - fThumb) : (pill.left + fInset);
-  COLORREF dwThumb = bOn ? (scColorIsLight(t->dwAccent) ? RGB(0, 0, 0) : RGB(255, 255, 255)) : t->dwPillOff;
-  gpFillEllipse(pGraphics, fThumbX, pill.top + fInset, fThumb, fThumb, gpColor(dwThumb, 255));
-  gpGraphicsEnd(pGraphics);
-
-  SelectObject(hDC, t->pFont);
-  SetTextColor(hDC, t->dwText);
-  TextOutW(hDC, r.left + _scScale(15), r.top + _scScale(10), pWidget->wszText, lstrlenW(pWidget->wszText));
-}
-
-scInternal void
-_scDrawButton(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
-  scUITheme* t = &gUI.theme;
-  f32 fRad = 4.0f * gUI.fUIScale;
-
-  GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  gpFillRound(pGraphics, r, fRad, gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
-  gpStrokeRound(pGraphics, r, fRad, gpColor(bHovered ? t->dwAccent : t->dwStroke, 255), 1.0f);
-  gpGraphicsEnd(pGraphics);
-
-  SelectObject(hDC, t->pFont);
-  SetTextColor(hDC, t->dwText);
-  RECT rText = r;
-  DrawTextW(hDC, pWidget->wszText, -1, &rText, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-}
-
-scInternal void
-_scDrawDropdown(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
-  scUITheme* t = &gUI.theme;
-  scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
-  bool bExpanded = gUI.iExpandedDropdown >= 0 && gUI.iExpandedDropdown < pPage->nWidgetCount &&
-                   &pPage->aWidgets[gUI.iExpandedDropdown] == pWidget;
-
-  RECT box = _scDropdownBoxRect(pWidget, r);
-
-  GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  if (!pWidget->u.dropdown.bCompact) {
-    gpFillRound(pGraphics, r, _scRoundRad(), gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
-    gpStrokeRound(pGraphics, r, _scRoundRad(), gpColor(t->dwStrokeSoft, 255), 1.0f);
-  }
-
-  f32 fBoxRad = 4.0f * gUI.fUIScale;
-  gpFillRound(pGraphics, box, fBoxRad, gpColor(t->dwBackground, 255));
-  gpStrokeRound(pGraphics, box, fBoxRad, gpColor((bExpanded || bHovered) ? t->dwAccent : t->dwStroke, 255), bExpanded ? 1.5f : 1.0f);
-  gpGraphicsEnd(pGraphics);
-
-  SelectObject(hDC, t->pFont);
-  SetTextColor(hDC, t->dwText);
-  if (!pWidget->u.dropdown.bCompact) {
-    TextOutW(hDC, r.left + _scScale(15), r.top + _scScale(10), pWidget->wszText, lstrlenW(pWidget->wszText));
-  }
-
-  s32 iSelected = pWidget->u.dropdown.iSelected;
-  if (iSelected >= 0 && iSelected < pWidget->u.dropdown.nOptionCount) {
-    wchar_t wszValue[128] = { 0 };
-    if (MultiByteToWideChar(CP_UTF8, 0, pWidget->u.dropdown.aOptions[iSelected],
-                            -1, wszValue, ARRAYSIZE(wszValue)) > 0) {
-      RECT rcValue = {
-        box.left + _scScale(10),
-        box.top + _scScale(2),
-        box.right - _scScale(24),
-        box.bottom - _scScale(2)
-      };
-      DrawTextW(hDC, wszValue, -1, &rcValue,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-    }
-  }
-
-  SetTextColor(hDC, t->dwTextDim);
-  TextOutW(hDC, box.right - _scScale(20), box.top + _scScale(5), L"\x25BC", 1);
-}
-
-scInternal void
-_scDrawHotkey(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
-  scUITheme* t = &gUI.theme;
-  scHotkey* pHk = &gApp->config.aHotkeys[pWidget->u.hotkey.eHotkey];
-  bool bEditing = (gUI.iEditingHotkey == (s32)pWidget->u.hotkey.eHotkey);
+  scHotkeyID eHotkey = *(scHotkeyID*)scGetUserData(pNode);
+  scHotkey* pHk = &gApp->config.aHotkeys[eHotkey];
+  bool bEditing = (gUI.iEditingHotkey == (s32)eHotkey);
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
   gpFillRound(pGraphics, r, _scRoundRad(), gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
@@ -1092,60 +821,28 @@ _scDrawFolderIcon(HDC hDC, RECT rImage, bool bUp, s32 nItemCount) {
 }
 
 scInternal void
-_scDrawPageTab(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
-  scUITheme* t = &gUI.theme;
-  bool bActive = pWidget->u.pageTab.ePage == gUI.eCurrentPage;
-
-  if (bActive || bHovered) {
-    GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-    gpFillRound(pGraphics, r, 5.0f * gUI.fUIScale, gpColor(bActive ? t->dwCardHover : t->dwCard, 255));
-    if (bActive) {
-      s32 iCenterY = (r.top + r.bottom) / 2;
-      RECT rcInd = { r.left + _scScale(3), iCenterY - _scScale(8), r.left + _scScale(6), iCenterY + _scScale(8) };
-      gpFillRound(pGraphics, rcInd, 1.5f * gUI.fUIScale, gpColor(t->dwAccent, 255));
-    }
-    gpGraphicsEnd(pGraphics);
-  }
-
-  SelectObject(hDC, bActive ? t->pBoldFont : t->pFont);
-  SetTextColor(hDC, bActive ? t->dwText : t->dwTextDim);
-  SetBkMode(hDC, TRANSPARENT);
-  const wchar_t* wszName = scLocaleGet(gUI.aPages[pWidget->u.pageTab.ePage].szKey);
-  TextOutW(hDC, r.left + _scScale(15), r.top + _scScale(7), wszName, lstrlenW(wszName));
-}
-
-scInternal void
-_scDrawLink(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
-  scUITheme* t = &gUI.theme;
-  HFONT hOldFont = (HFONT)SelectObject(hDC, t->pFont);
-  int iOldBkMode = SetBkMode(hDC, TRANSPARENT);
-  SetTextColor(hDC, bHovered ? t->dwAccent : t->dwTextFaint);
-  DrawTextW(hDC, pWidget->wszText, -1, &r, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-  SetBkMode(hDC, iOldBkMode);
-  SelectObject(hDC, hOldFont);
-}
-
-scInternal void
-_scDrawImage(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
+_scDrawGalleryItem(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered) {
   scUITheme* t = &gUI.theme;
   f32 fRad = 8.0f * gUI.fUIScale;
-  bool bIsUp     = pWidget->u.image.bIsUp;
-  bool bIsFolder = pWidget->u.image.bIsFolder;
+  scGalleryItem* pItem = (scGalleryItem*)scGetUserData(pNode);
+  bool bIsUp     = pItem->bIsUp;
+  bool bIsFolder = pItem->bIsFolder;
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
   gpFillRound(pGraphics, r, fRad, gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
   gpGraphicsEnd(pGraphics);
 
   HRGN hClip = CreateRoundRectRgn(r.left, r.top, r.right + 1, r.bottom + 1, (int)(fRad * 2), (int)(fRad * 2));
-  SelectClipRgn(hDC, hClip);
+  int iSavedDC = SaveDC(hDC);
+  ExtSelectClipRgn(hDC, hClip, RGN_AND);
   SetBkMode(hDC, TRANSPARENT);
 
   RECT rImage = { r.left + _scScale(2), r.top + _scScale(2), r.right - _scScale(2), r.bottom - _scScale(30) };
 
   if (bIsUp || bIsFolder) {
-    _scDrawFolderIcon(hDC, rImage, bIsUp, pWidget->u.image.nItemCount);
+    _scDrawFolderIcon(hDC, rImage, bIsUp, pItem->nItemCount);
   } else {
-    HBITMAP hThumb = _scThumbGet(pWidget->szPath);
+    HBITMAP hThumb = _scThumbGet(pItem->szPath);
     if (hThumb) {
       BITMAP bmp;
       GetObject(hThumb, sizeof(BITMAP), &bmp);
@@ -1176,18 +873,18 @@ _scDrawImage(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
     } else {
       SelectObject(hDC, t->pFont);
       SetTextColor(hDC, t->dwTextDim);
-      const wchar_t* wszExt = wcsrchr(pWidget->wszText, L'.');
-      DrawTextW(hDC, wszExt ? wszExt + 1 : pWidget->wszText, -1, &rImage, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      const wchar_t* wszExt = wcsrchr(pItem->wszName, L'.');
+      DrawTextW(hDC, wszExt ? wszExt + 1 : pItem->wszName, -1, &rImage, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
   }
 
   RECT rText = { r.left + _scScale(5), r.bottom - _scScale(30), r.right - _scScale(5), r.bottom };
   SelectObject(hDC, t->pFont);
   SetTextColor(hDC, t->dwText);
-  const wchar_t* wszLabel = bIsUp ? scLocaleGet("Back") : pWidget->wszText;
+  const wchar_t* wszLabel = bIsUp ? scLocaleGet("Back") : pItem->wszName;
   DrawTextW(hDC, wszLabel, -1, &rText, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-  SelectClipRgn(hDC, NULL);
+  RestoreDC(hDC, iSavedDC);
   DeleteObject(hClip);
 
   pGraphics = gpGraphicsBegin(hDC);
@@ -1195,528 +892,85 @@ _scDrawImage(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
   gpGraphicsEnd(pGraphics);
 }
 
-scInternal void
-_scDrawWidget(HDC hDC, scWidget* pWidget, RECT r, bool bHovered) {
-  switch (pWidget->eType) {
-    case SC_WIDGET_LABEL:    _scDrawLabel   (hDC, pWidget, r);           break;
-    case SC_WIDGET_TOGGLE:   _scDrawToggle  (hDC, pWidget, r, bHovered); break;
-    case SC_WIDGET_BUTTON:   _scDrawButton  (hDC, pWidget, r, bHovered); break;
-    case SC_WIDGET_HOTKEY:   _scDrawHotkey  (hDC, pWidget, r, bHovered); break;
-    case SC_WIDGET_IMAGE:    _scDrawImage   (hDC, pWidget, r, bHovered); break;
-    case SC_WIDGET_DROPDOWN: _scDrawDropdown(hDC, pWidget, r, bHovered); break;
-    case SC_WIDGET_PAGE_TAB: _scDrawPageTab (hDC, pWidget, r, bHovered); break;
-    case SC_WIDGET_LINK:     _scDrawLink    (hDC, pWidget, r, bHovered); break;
-    default:
-      break;
+scInternal COLORREF
+_scLogColor(scLogLevel eLevel) {
+  switch (eLevel) {
+    case SC_LOG_ERROR: return gUI.theme.dwError;
+    case SC_LOG_WARN:  return gUI.theme.dwWarn;
+    case SC_LOG_INFO:  return gUI.theme.dwText;
+    case SC_LOG_DEBUG:
+    default:           return gUI.theme.dwTextDim;
   }
 }
 
-//------------------------------------------------------------------------
-// Scrolling
-//------------------------------------------------------------------------
-scInternal scScrollGeom
-_scComputeScrollGeom(RECT rcTrack, s32 iContentH, s32 iViewportH, s32 iScroll, s32 iMaxScroll) {
-  scScrollGeom sg = { 0 };
-  if (iMaxScroll <= 0 || iContentH <= iViewportH) {
-    return sg;
+scInternal s32
+_scMeasureLogs(scNode* pNode, HDC hDC, s32 iWidth) {
+  s32 iCount = scLogStoreCount();
+  if (iCount > gUI.nLogCap) {
+    gUI.nLogCap   = iCount * 2;
+    gUI.aLogLines = (scLogLine*)realloc(gUI.aLogLines, gUI.nLogCap * sizeof(scLogLine));
   }
-  sg.bVisible = true;
-  sg.rcTrack  = rcTrack;
-
-  s32 iTrackH = rcTrack.bottom - rcTrack.top;
-  s32 iThumbH = _scClamp((s32)((s64)iTrackH * iViewportH / iContentH), _scScale(24), iTrackH);
-  sg.iTrackRange = iTrackH - iThumbH;
-
-  s32 iY = rcTrack.top + (s32)((s64)sg.iTrackRange * _scClamp(iScroll, 0, iMaxScroll) / iMaxScroll);
-  sg.rcThumb = (RECT){ rcTrack.left, iY, rcTrack.right, iY + iThumbH };
-  return sg;
-}
-
-scInternal scScrollGeom
-_scPageScrollbar(RECT cr) {
-  scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
-  if (pPage->scroll.nMaxScrollY <= 0) {
-    return (scScrollGeom){ 0 };
+  if (iWidth != gUI.iLogWidth) {
+    gUI.iLogWidth = iWidth;
+    gUI.nLogLines = 0;
   }
-  RECT rcTrack = { cr.right - _scScale(14), _scScale(8), cr.right - _scScale(6), cr.bottom - _scScale(8) };
-  return _scComputeScrollGeom(rcTrack, _scScale(pPage->scroll.nContentH), cr.bottom, pPage->scroll.nScrollY, pPage->scroll.nMaxScrollY);
-}
 
-scInternal void
-_scBeginScrollDrag(s32* pValue, scScrollGeom sg, s32 iMaxScroll, POINT pt) {
-  if (!PtInRect(&sg.rcThumb, pt)) {
-    s32 iThumbH = sg.rcThumb.bottom - sg.rcThumb.top;
-    s32 iRel    = pt.y - sg.rcTrack.top - iThumbH / 2;
-    *pValue = sg.iTrackRange > 0 ? _scClamp((s32)((s64)iRel * iMaxScroll / sg.iTrackRange), 0, iMaxScroll) : 0;
+  HGDIOBJ hOldFont = SelectObject(hDC, gUI.theme.pFont);
+  s32 iTop = 0;
+  for (s32 i = 0; i < iCount; ++i) {
+    scLogLevel eLevel;
+    const char* szText = scLogStoreGet(i, &eLevel);
+    if (!szText) {
+      szText = "";
+    }
+    s32 nLen = (s32)strlen(szText);
+
+    scLogLine* pLine = &gUI.aLogLines[i];
+    if (i >= gUI.nLogLines || pLine->szText != szText || pLine->nLen != nLen) {
+      RECT rc = { 0, 0, iWidth > 1 ? iWidth : 1, 0 };
+      DrawTextA(hDC, nLen ? szText : " ", nLen ? nLen : 1, &rc, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+      pLine->szText  = szText;
+      pLine->nLen    = nLen;
+      pLine->iHeight = rc.bottom + _scScale(4);
+    }
+    pLine->iTop = iTop;
+    iTop += pLine->iHeight;
   }
-  gUI.drag.bActive      = true;
-  gUI.drag.pValue       = pValue;
-  gUI.drag.iStartY      = pt.y;
-  gUI.drag.iStartScroll = *pValue;
-  gUI.drag.iTrackRange  = sg.iTrackRange;
-  gUI.drag.iMaxScroll   = iMaxScroll;
-  SetCapture(gUI.hWindow);
-  InvalidateRect(gUI.hWindow, NULL, FALSE);
-}
+  gUI.nLogLines = iCount;
 
-scInternal bool
-_scScrollbarHit(scScrollGeom sg, POINT pt) {
-  if (!sg.bVisible) {
-    return false;
-  }
-  RECT rcHit = sg.rcTrack;
-  InflateRect(&rcHit, _scScale(3), 0);
-  return PtInRect(&rcHit, pt);
-}
-
-//------------------------------------------------------------------------
-// Dropdown popup
-//------------------------------------------------------------------------
-typedef struct {
-  RECT         rcBox;
-  s32          iItemHeight;
-  s32          nVisible;
-  bool         bHasScroll;
-  s32          iMaxScroll;
-  scScrollGeom scroll;
-} scDropdownGeom;
-
-scInternal scDropdownGeom
-_scDropdownGeom(scWidget* pWidget, RECT cr) {
-  scDropdownGeom dg = { 0 };
-  s32 nOptions   = pWidget->u.dropdown.nOptionCount;
-  dg.iItemHeight = _scScale(28);
-
-  RECT r = _scWidgetScaledRect(&gUI.aPages[gUI.eCurrentPage], pWidget);
-  s32 iSpaceBelow = cr.bottom - r.bottom;
-  s32 iMaxVisible = (iSpaceBelow - _scScale(20)) / dg.iItemHeight;
-  if (iMaxVisible < 1) iMaxVisible = 1;
-  dg.nVisible = nOptions < iMaxVisible ? nOptions : iMaxVisible;
-
-  RECT rcDropdown = _scDropdownBoxRect(pWidget, r);
-  dg.rcBox.left   = rcDropdown.left;
-  dg.rcBox.top    = rcDropdown.bottom;
-  dg.rcBox.right  = rcDropdown.right;
-  dg.rcBox.bottom = dg.rcBox.top + dg.nVisible * dg.iItemHeight;
-
-  dg.bHasScroll = nOptions > dg.nVisible;
-  dg.iMaxScroll = dg.bHasScroll ? (nOptions - dg.nVisible) * 28 : 0;
-  if (dg.bHasScroll) {
-    RECT rcTrack = { dg.rcBox.right - _scScale(10), dg.rcBox.top + _scScale(4), dg.rcBox.right - _scScale(4), dg.rcBox.bottom - _scScale(4) };
-    dg.scroll = _scComputeScrollGeom(rcTrack, nOptions * dg.iItemHeight, dg.nVisible * dg.iItemHeight, gUI.iDropdownScrollY, dg.iMaxScroll);
-  }
-  return dg;
+  SelectObject(hDC, hOldFont);
+  return iTop;
 }
 
 scInternal void
-_scRenderDropdownPopup(HDC hDC, RECT cr) {
-  scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
-  if (gUI.iExpandedDropdown < 0 || gUI.iExpandedDropdown >= pPage->nWidgetCount) {
-    return;
-  }
-  scWidget* pWidget = &pPage->aWidgets[gUI.iExpandedDropdown];
-  if (pWidget->eType != SC_WIDGET_DROPDOWN) {
-    return;
-  }
+_scDrawLogs(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered) {
+  s32 nLines = gUI.nLogLines < scLogStoreCount() ? gUI.nLogLines : scLogStoreCount();
 
-  scUITheme* t = &gUI.theme;
-  scDropdownGeom dg = _scDropdownGeom(pWidget, cr);
-  f32 fRad = 6.0f * gUI.fUIScale;
-
-  GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  gpFillRound(pGraphics, dg.rcBox, fRad, gpColor(t->dwPopup, 255));
-  gpStrokeRound(pGraphics, dg.rcBox, fRad, gpColor(t->dwStroke, 255), 1.0f);
-  gpGraphicsEnd(pGraphics);
-
-  HRGN hRgn = CreateRoundRectRgn(dg.rcBox.left, dg.rcBox.top, dg.rcBox.right + 1, dg.rcBox.bottom + 1, (int)(fRad * 2), (int)(fRad * 2));
-  SelectClipRgn(hDC, hRgn);
-
-  pGraphics = gpGraphicsBegin(hDC);
-  for (s32 i = 0; i < pWidget->u.dropdown.nOptionCount; ++i) {
-    s32 iTop    = dg.rcBox.top + i * dg.iItemHeight - _scScale(gUI.iDropdownScrollY);
-    s32 iBottom = iTop + dg.iItemHeight;
-    if (iBottom <= dg.rcBox.top || iTop >= dg.rcBox.bottom) {
-      continue;
-    }
-    if (gUI.iDropdownHover == i) {
-      RECT rcItem = { dg.rcBox.left + _scScale(3), iTop + _scScale(1), dg.rcBox.right - _scScale(dg.bHasScroll ? 11 : 3), iBottom - _scScale(1) };
-      gpFillRound(pGraphics, rcItem, 4.0f * gUI.fUIScale, gpColor(t->dwCardHover, 255));
-    }
-    if (pWidget->u.dropdown.iSelected == i) {
-      s32 iCy = (iTop + iBottom) / 2;
-      RECT rcInd = { dg.rcBox.left + _scScale(3), iCy - _scScale(7), dg.rcBox.left + _scScale(6), iCy + _scScale(7) };
-      gpFillRound(pGraphics, rcInd, 1.5f * gUI.fUIScale, gpColor(t->dwAccent, 255));
-    }
-  }
-  if (dg.bHasScroll && dg.scroll.bVisible) {
-    f32 fScrollRad = (dg.scroll.rcTrack.right - dg.scroll.rcTrack.left) / 2.0f;
-    bool bHot = gUI.bHoveredScroll || gUI.drag.bActive;
-    gpFillRound(pGraphics, dg.scroll.rcTrack, fScrollRad, gpColor(t->dwScrollThumb, 32));
-    gpFillRound(pGraphics, dg.scroll.rcThumb, fScrollRad, gpColor(t->dwScrollThumb, bHot ? 230 : 150));
-  }
-  gpGraphicsEnd(pGraphics);
-
-  SelectObject(hDC, t->pFont);
-  SetTextColor(hDC, t->dwText);
+  SelectObject(hDC, gUI.theme.pFont);
   SetBkMode(hDC, TRANSPARENT);
-  for (s32 i = 0; i < pWidget->u.dropdown.nOptionCount; ++i) {
-    s32 iTop    = dg.rcBox.top + i * dg.iItemHeight - _scScale(gUI.iDropdownScrollY);
-    s32 iBottom = iTop + dg.iItemHeight;
-    if (iBottom <= dg.rcBox.top || iTop >= dg.rcBox.bottom) {
+  for (s32 i = 0; i < nLines; ++i) {
+    scLogLine* pLine = &gUI.aLogLines[i];
+    s32 iTop = r.top + pLine->iTop;
+    if (iTop + pLine->iHeight <= rcVisible.top) {
       continue;
     }
-    wchar_t wszOption[128] = { 0 };
-    if (MultiByteToWideChar(CP_UTF8, 0, pWidget->u.dropdown.aOptions[i],
-                            -1, wszOption, ARRAYSIZE(wszOption)) > 0) {
-      RECT rcOption = {
-        dg.rcBox.left + _scScale(12),
-        iTop + _scScale(2),
-        dg.rcBox.right - _scScale(dg.bHasScroll ? 12 : 5),
-        iBottom - _scScale(2)
-      };
-      DrawTextW(hDC, wszOption, -1, &rcOption,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    if (iTop >= rcVisible.bottom) {
+      break;
     }
+    scLogLevel eLevel;
+    const char* szText = scLogStoreGet(i, &eLevel);
+    if (!szText) {
+      continue;
+    }
+    SetTextColor(hDC, _scLogColor(eLevel));
+    RECT rcLine = { r.left, iTop, r.right, iTop + pLine->iHeight };
+    DrawTextA(hDC, szText, -1, &rcLine, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
   }
-
-  SelectClipRgn(hDC, NULL);
-  DeleteObject(hRgn);
 }
 
 //------------------------------------------------------------------------
-// Pages
+// Gallery
 //------------------------------------------------------------------------
-scInternal void
-_scOnBrowseClicked(s32 iParam) {
-  (void)iParam;
-  bool bComInit = SUCCEEDED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED));
-
-  IFileOpenDialog* pDialog = NULL;
-  if (SUCCEEDED(CoCreateInstance(&CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, &IID_IFileOpenDialog, (void**)&pDialog))) {
-    FILEOPENDIALOGOPTIONS dwOptions = 0;
-    pDialog->lpVtbl->GetOptions(pDialog, &dwOptions);
-    pDialog->lpVtbl->SetOptions(pDialog, dwOptions | FOS_PICKFOLDERS);
-
-    if (SUCCEEDED(pDialog->lpVtbl->Show(pDialog, gUI.hWindow))) {
-      IShellItem* pItem = NULL;
-      if (SUCCEEDED(pDialog->lpVtbl->GetResult(pDialog, &pItem))) {
-        PWSTR pszPath = NULL;
-        if (SUCCEEDED(pItem->lpVtbl->GetDisplayName(pItem, SIGDN_FILESYSPATH, &pszPath))) {
-          wcscpy_s(gApp->config.wszSavePath, SC_PATH_MAX_LEN, pszPath);
-          scSaveConfig();
-          CoTaskMemFree(pszPath);
-
-          gUI.aPages[SC_PAGE_GALLERY].scroll.nScrollY = 0;
-          gUI.bNeedsLayout = true;
-          InvalidateRect(gUI.hWindow, NULL, TRUE);
-        }
-        pItem->lpVtbl->Release(pItem);
-      }
-    }
-    pDialog->lpVtbl->Release(pDialog);
-  }
-
-  if (bComInit) {
-    CoUninitialize();
-  }
-}
-
-scInternal void
-_scOnLanguageSelected(s32 iIndex) {
-  scLocaleSet(scLocaleCode(iIndex));
-  gUI.iExpandedDropdown = -1;
-  gUI.bNeedsLayout = true;
-  InvalidateRect(gUI.hWindow, NULL, TRUE);
-}
-
-static const char* const kFramerateOptions[] = { "60", "30", "24" };
-static const s32         kFramerateValues[]  = { 60, 30, 24 };
-
-static const char* const kRecordQualityOptions[] = { "High", "Medium", "Low" };
-static const s32         kRecordQualityValues[]  = { SC_QUALITY_HIGH, SC_QUALITY_MEDIUM, SC_QUALITY_LOW };
-
-static const char* const kRecordResOptions[] = { "Native", "1080p", "720p" };
-static const s32         kRecordResValues[]  = { SC_MAXRES_NATIVE, SC_MAXRES_1080P, SC_MAXRES_720P };
-
-#define SC_FRAMERATE_COUNT 3
-
-scInternal void
-_scRequestNewLayout(bool unused0, s32 iParam) {
-  gUI.bNeedsLayout = true;
-}
-
-scInternal void
-_scUpdateIconOption(bool bEnabled, s32 _) {
-  _scUpdateWindowIcon(gUI.hWindow, bEnabled);
-  scTrayUpdateIcon();
-}
-
-static const char* const kAudioTrackOptions[] = { "0", "1", "2", "3", "4", "5", "6", "7" };
-
-static const char** gAudioDeviceOptions;
-static uint32_t gAudioDeviceOptionsCap;
-
-scInternal bool
-_scBuildAudioDeviceOptions(void) {
-  uint32_t nRequired = gAudio.deviceCount + 1;
-  if (nRequired > gAudioDeviceOptionsCap) {
-    const char** aOptions = (const char**)realloc(gAudioDeviceOptions, nRequired * sizeof(char*));
-    if (!aOptions) {
-      return false;
-    }
-    gAudioDeviceOptions = aOptions;
-    gAudioDeviceOptionsCap = nRequired;
-  }
-
-  gAudioDeviceOptions[0] = "";
-  for (uint32_t i = 0; i < gAudio.deviceCount; ++i) {
-    gAudioDeviceOptions[i + 1] = gAudio.pCaptureDevices[i].szName;
-  }
-  return true;
-}
-
-scInternal void
-_scOnAudioDeviceSelected(s32 iIndex) {
-  scPage* pPage = &gUI.aPages[SC_PAGE_SETTINGS];
-  if (gUI.iExpandedDropdown >= 0 && gUI.iExpandedDropdown < pPage->nWidgetCount) {
-    scWidget* pWidget = &pPage->aWidgets[gUI.iExpandedDropdown];
-    if (pWidget->eType == SC_WIDGET_DROPDOWN) {
-      scAudioSelectionSetDevice((uint32_t)pWidget->u.dropdown.iParam, iIndex - 1);
-    }
-  }
-  gUI.bNeedsLayout = true;
-  InvalidateRect(gUI.hWindow, NULL, TRUE);
-}
-
-scInternal void
-_scOnAudioTrackSelected(s32 iIndex) {
-  scPage* pPage = &gUI.aPages[SC_PAGE_SETTINGS];
-  if (gUI.iExpandedDropdown >= 0 && gUI.iExpandedDropdown < pPage->nWidgetCount) {
-    scWidget* pWidget = &pPage->aWidgets[gUI.iExpandedDropdown];
-    if (pWidget->eType == SC_WIDGET_DROPDOWN) {
-      scAudioSelectionSetTrack((uint32_t)pWidget->u.dropdown.iParam, iIndex);
-    }
-  }
-  gUI.bNeedsLayout = true;
-  InvalidateRect(gUI.hWindow, NULL, TRUE);
-}
-
-scInternal void
-_scOnAudioAddDevice(s32 iParam) {
-  (void)iParam;
-  if (scAudioSelectionAdd()) {
-    gUI.bNeedsLayout = true;
-    InvalidateRect(gUI.hWindow, NULL, TRUE);
-  }
-}
-
-scInternal void
-_scOnAudioRemoveDevice(s32 iParam) {
-  scAudioSelectionRemove((uint32_t)iParam);
-  gUI.iExpandedDropdown = -1;
-  gUI.bNeedsLayout = true;
-  InvalidateRect(gUI.hWindow, NULL, TRUE);
-}
-
-scInternal void
-_scOnFramerateSet(s32 iIndex) {
-  if (iIndex >= 0 && iIndex < SC_FRAMERATE_COUNT) {
-    gApp->config.iFFmpegFramerate = kFramerateValues[iIndex];
-    scSaveConfig();
-  }
-  gUI.iExpandedDropdown = -1;
-  gUI.bNeedsLayout = true;
-  InvalidateRect(gUI.hWindow, NULL, TRUE);
-}
-
-scInternal void
-_scOnRecordQualitySet(s32 iIndex) {
-  if (iIndex >= 0 && iIndex < SC_QUALITY_COUNT) {
-    gApp->config.eRecordQuality = kRecordQualityValues[iIndex];
-    scSaveConfig();
-  }
-  gUI.iExpandedDropdown = -1;
-  gUI.bNeedsLayout = true;
-  InvalidateRect(gUI.hWindow, NULL, TRUE);
-}
-
-scInternal void
-_scOnRecordResSet(s32 iIndex) {
-  if (iIndex >= 0 && iIndex < SC_MAXRES_COUNT) {
-    gApp->config.eRecordMaxRes = kRecordResValues[iIndex];
-    scSaveConfig();
-  }
-  gUI.iExpandedDropdown = -1;
-  gUI.bNeedsLayout = true;
-  InvalidateRect(gUI.hWindow, NULL, TRUE);
-}
-
-scInternal void
-_scLayoutGeneral(scPage* pPage, RECT rc) {
-  pPage->nWidgetCount = 0;
-  s32 iY = 20;
-  for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
-    if (i == SC_HOTKEY_OCR && !gApp->bIsGeWin10) {
-      continue;
-    }
-    _scPagePush(pPage, _scMakeButton((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 35 }, scLocaleGet(scCaptureActionNames[i]), scAppRunHandlerFromActionID, i));
-    iY += 40;
-  }
-
-  pPage->scroll.nContentH   = iY + 20;
-  pPage->scroll.nMaxScrollY = pPage->scroll.nContentH - rc.bottom;
-  if (pPage->scroll.nMaxScrollY < 0) {
-    pPage->scroll.nMaxScrollY = 0;
-  }
-  pPage->scroll.nScrollY = _scClamp(pPage->scroll.nScrollY, 0, pPage->scroll.nMaxScrollY);
-}
-
-scInternal void
-_scLayoutSettings(scPage* pPage, RECT rc) {
-  pPage->nWidgetCount = 0;
-  _scPagePush(pPage, _scMakeLabel((RECT){ CONTENT_LEFT, 20, 500, 40 }, scLocaleGet("Screenshot Destination"), true));
-  _scPagePush(pPage, _scMakeButton((RECT){ rc.right - 120, 42, rc.right - 20, 72 }, scLocaleGet("Browse..."), _scOnBrowseClicked, 0));
-
-  s32 iY = 90;
-
-  { // Language
-    s32 iSelected = 0;
-    for (s32 i = 0; i < scLocaleCount(); ++i) {
-      if (strcmp(scLocaleCode(i), scLocaleCurrent()) == 0) {
-        iSelected = i;
-        break;
-      }
-    }
-    _scPagePush(pPage, _scMakeDropdown((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Language"), scLocaleCodes(), scLocaleCount(), iSelected, _scOnLanguageSelected));
-    iY += 45;
-  }
-
-  { // Framerate
-    s32 iSelected = 0;
-    for (s32 i = 0; i < SC_FRAMERATE_COUNT; ++i) {
-      if (kFramerateValues[i] == gApp->config.iFFmpegFramerate) {
-        iSelected = i;
-        break;
-      }
-    }
-    _scPagePush(pPage, _scMakeDropdown((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Recording Framerate"), kFramerateOptions, SC_FRAMERATE_COUNT, iSelected, _scOnFramerateSet));
-    iY += 45;
-  }
-
-  { // Record Quality
-    s32 iSelected = 0;
-    for (s32 i = 0; i < SC_QUALITY_COUNT; ++i) {
-      if (kRecordQualityValues[i] == gApp->config.eRecordQuality) {
-        iSelected = i;
-        break;
-      }
-    }
-    _scPagePush(pPage, _scMakeDropdown((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Recording Quality"), kRecordQualityOptions, SC_QUALITY_COUNT, iSelected, _scOnRecordQualitySet));
-    iY += 45;
-  }
-
-  { // Record Resolution
-    s32 iSelected = 0;
-    for (s32 i = 0; i < SC_MAXRES_COUNT; ++i) {
-      if (kRecordResValues[i] == gApp->config.eRecordMaxRes) {
-        iSelected = i;
-        break;
-      }
-    }
-    _scPagePush(pPage, _scMakeDropdown((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Recording Output Resolution"), kRecordResOptions, SC_MAXRES_COUNT, iSelected, _scOnRecordResSet));
-    iY += 45;
-  }
-
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Show Cursor (Recording)"), &gApp->config.bRecordShowCursor, 0, NULL));
-  iY += 45;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Force Software Encoding"), &gApp->config.bRecordForceSoftware, 0, NULL));
-  iY += 45;
-
-  { // Audio Devices
-    _scPagePush(pPage, _scMakeToggle((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Capture Audio"), &gApp->config.bCaptureAudio, 0, _scRequestNewLayout));
-    iY += 45;
-
-    if (gApp->config.bCaptureAudio) {
-      bool bHaveDeviceOptions = _scBuildAudioDeviceOptions();
-      const char* const* aDeviceOptions = bHaveDeviceOptions ? gAudioDeviceOptions : NULL;
-      s32 nDeviceOptions = bHaveDeviceOptions ? (s32)gAudio.deviceCount + 1 : 0;
-      s32 nDeviceRight = rc.right - 110;
-      s32 nDeviceBoxWidth = nDeviceRight - (CONTENT_LEFT + 20);
-
-      for (uint32_t i = 0; i < gAudio.selectionCount; ++i) {
-        s32 iSelected = 0;
-        if (gAudio.aSelections[i].iDevice >= 0 &&
-            (uint32_t)gAudio.aSelections[i].iDevice < gAudio.deviceCount) {
-          iSelected = gAudio.aSelections[i].iDevice + 1;
-        }
-
-        _scPagePush(pPage, _scMakeDropdownWithParam(
-          (RECT){ CONTENT_LEFT + 20, iY, nDeviceRight, iY + 40 },
-          L"", aDeviceOptions, nDeviceOptions, iSelected,
-          _scOnAudioDeviceSelected, (s32)i, nDeviceBoxWidth, 0, true));
-
-        _scPagePush(pPage, _scMakeDropdownWithParam(
-          (RECT){ rc.right - 100, iY, rc.right - 55, iY + 40 },
-          L"", kAudioTrackOptions, ARRAYSIZE(kAudioTrackOptions),
-          gAudio.aSelections[i].iTrack, _scOnAudioTrackSelected,
-          (s32)i, 45, 0, true));
-
-        _scPagePush(pPage, _scMakeButton(
-          (RECT){ rc.right - 48, iY + 4, rc.right - 20, iY + 36 },
-          L"-", _scOnAudioRemoveDevice, (s32)i));
-
-        iY += 42;
-      }
-
-      if (gAudio.selectionCount < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
-        _scPagePush(pPage, _scMakeButton(
-          (RECT){ CONTENT_LEFT + 20, iY, CONTENT_LEFT + 150, iY + 35 },
-          scLocaleGet("Add Device"), _scOnAudioAddDevice, 0));
-        iY += 42;
-      }
-    }
-  }
-
-  iY += 20;
-
-  // Rest of the options
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Copy screenshot to Clipboard"), &gApp->config.bCopyToClipboard, 0, NULL));
-  iY += 45;
-  _scPagePush(pPage, _scMakeToggle(
-    (RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 },
-    scLocaleGet("Run on Startup"),
-    &gApp->config.bRunAtStartup,
-    0,
-    scSetRunOnStartup));
-  iY += 45;
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Play sound on capture"), &gApp->config.bPlaySoundOnAction, 0, NULL));
-  iY += 45;
-  if (gApp->bIsGeWin10) {
-    _scPagePush(pPage, _scMakeToggle((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Show notification on capture"), &gApp->config.bShowNotification, 0, NULL));
-    iY += 45;
-  }
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Start Minimized"), &gApp->config.bStartMinimized, 0, NULL));
-  iY += 45;
-
-  _scPagePush(pPage, _scMakeToggle((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, scLocaleGet("Icon uses Accent Color"), &gApp->config.bAccentIcon, 0, _scUpdateIconOption));
-  iY += 45;
-
-  _scPagePush(pPage, _scMakeLabel((RECT) { CONTENT_LEFT, iY, rc.right - 20, iY + 40 }, L"Input Settings", true));
-  iY += 25;
-
-  for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
-    _scPagePush(pPage, _scMakeHotkey((RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 30 }, (scHotkeyID)i));
-    iY += 35;
-  }
-
-  pPage->scroll.nContentH   = iY + 20;
-  pPage->scroll.nMaxScrollY = pPage->scroll.nContentH - rc.bottom;
-  if (pPage->scroll.nMaxScrollY < 0) {
-    pPage->scroll.nMaxScrollY = 0;
-  }
-  pPage->scroll.nScrollY = _scClamp(pPage->scroll.nScrollY, 0, pPage->scroll.nMaxScrollY);
-}
-
 scInternal bool
 _scIsImageFile(const wchar_t* wszName) {
   const wchar_t* wszExt = wcsrchr(wszName, L'.');
@@ -1870,17 +1124,15 @@ _scPathIsUnderRoot(const wchar_t* wszChild, const wchar_t* wszRoot) {
 scInternal void
 _scGalleryRefresh(s32 nRestoreScrollY) {
   _scThumbCacheClear();
-  gUI.aPages[SC_PAGE_GALLERY].scroll.nScrollY = nRestoreScrollY;
-  gUI.bNeedsLayout = true;
-  if (gUI.hWindow) {
-    InvalidateRect(gUI.hWindow, NULL, TRUE);
-  }
+  gUI.aPageScrollY[SC_PAGE_GALLERY] = nRestoreScrollY;
+  gUI.pContent = NULL;
+  _scRebuild();
 }
 
 scInternal void
 _scGalleryHistorySaveScroll() {
   if (gUI.nGalleryHistoryCount > 0) {
-    gUI.anGalleryScrollY[gUI.nGalleryHistoryPos] = gUI.aPages[SC_PAGE_GALLERY].scroll.nScrollY;
+    gUI.anGalleryScrollY[gUI.nGalleryHistoryPos] = _scCurrentScrollY();
   }
 }
 
@@ -1963,622 +1215,32 @@ _scGalleryHistoryForward() {
 }
 
 scInternal void
-_scLayoutGallery(scPage* pPage, RECT rc) {
-  pPage->nWidgetCount = 0;
-
-  if (gUI.wszGalleryDir[0] == 0) {
-    if (!scGetSavePath(gUI.wszGalleryDir, MAX_PATH)) {
-      pPage->scroll.nContentH   = 0;
-      pPage->scroll.nMaxScrollY = 0;
-      return;
-    }
-    _scGalleryHistoryPush(gUI.wszGalleryDir);
-  }
-
-  wchar_t wszDir[MAX_PATH];
-  wcscpy_s(wszDir, MAX_PATH, gUI.wszGalleryDir);
-
-  wchar_t wszRoot[MAX_PATH];
-  wcscpy_s(wszRoot, MAX_PATH, gApp->config.wszSavePath);
-  bool bAtRoot = _scPathsEqualNormalized(wszDir, wszRoot);
-
-  _scFileEntry* aFolders = NULL;
-  s32 nFolders = 0, nFolderCap = 0;
-  _scGalleryLoadFolders(wszDir, &aFolders, &nFolders, &nFolderCap);
-  if (nFolders > 0) {
-    qsort(aFolders, nFolders, sizeof(_scFileEntry), _scCompareFileTime);
-  }
-
-  _scFileEntry* aFiles = NULL;
-  s32 nFiles = 0, nFileCap = 0;
-  _scGalleryLoadImages(wszDir, &aFiles, &nFiles, &nFileCap);
-  if (nFiles > 0) {
-    qsort(aFiles, nFiles, sizeof(_scFileEntry), _scCompareFileTime);
-  }
-
-  s32 nUp    = bAtRoot ? 0 : 1;
-  s32 nTotal = nUp + nFolders + nFiles;
-
-  if (nTotal == 0) {
-    pPage->scroll.nContentH  = 0;
-    pPage->scroll.nMaxScrollY = 0;
-    free(aFolders);
-    free(aFiles);
-    return;
-  }
-
-  const s32 iItemW = 320, iItemH = 260, iGap = 20, iStartX = 170;
-  s32 iAvailable = rc.right - iStartX - 10;
-  s32 iCols = (iAvailable + iGap) / (iItemW + iGap);
-  if (iCols < 1) iCols = 1;
-  s32 iRows = (nTotal + iCols - 1) / iCols;
-
-  pPage->scroll.nContentH  = iRows * (iItemH + iGap) + 20;
-  pPage->scroll.nMaxScrollY = pPage->scroll.nContentH - rc.bottom;
-  if (pPage->scroll.nMaxScrollY < 0) pPage->scroll.nMaxScrollY = 0;
-  pPage->scroll.nScrollY = _scClamp(pPage->scroll.nScrollY, 0, pPage->scroll.nMaxScrollY);
-
-  s32 iIndex = 0;
-
-  if (nUp) {
-    s32 iX = iStartX + (iIndex % iCols) * (iItemW + iGap);
-    s32 iY = 20 + (iIndex / iCols) * (iItemH + iGap);
-    scWidget* pWidget = _scPagePush(pPage, _scMakeImage((RECT){ iX, iY, iX + iItemW, iY + iItemH }, L"..", ""));
-    pWidget->u.image.bIsUp = true;
-    ++iIndex;
-  }
-
-  for (s32 i = 0; i < nFolders; ++i, ++iIndex) {
-    s32 iX = iStartX + (iIndex % iCols) * (iItemW + iGap);
-    s32 iY = 20 + (iIndex / iCols) * (iItemH + iGap);
-
-    wchar_t wszFull[MAX_PATH];
-    _snwprintf_s(wszFull, MAX_PATH, _TRUNCATE, L"%ls\\%ls", wszDir, aFolders[i].wszName);
-    char szFull[MAX_PATH];
-    WideCharToMultiByte(CP_ACP, 0, wszFull, -1, szFull, MAX_PATH, NULL, NULL);
-
-    scWidget* pWidget = _scPagePush(pPage, _scMakeImage((RECT){ iX, iY, iX + iItemW, iY + iItemH }, aFolders[i].wszName, szFull));
-    pWidget->u.image.bIsFolder = true;
-    pWidget->u.image.nItemCount = _scCountFolderItems(wszFull);
-  }
-
-  for (s32 i = 0; i < nFiles; ++i, ++iIndex) {
-    s32 iX = iStartX + (iIndex % iCols) * (iItemW + iGap);
-    s32 iY = 20 + (iIndex / iCols) * (iItemH + iGap);
-
-    wchar_t wszFull[MAX_PATH];
-    _snwprintf_s(wszFull, MAX_PATH, _TRUNCATE, L"%ls\\%ls", wszDir, aFiles[i].wszName);
-    char szFull[MAX_PATH];
-    WideCharToMultiByte(CP_ACP, 0, wszFull, -1, szFull, MAX_PATH, NULL, NULL);
-
-    _scPagePush(pPage, _scMakeImage((RECT){ iX, iY, iX + iItemW, iY + iItemH }, aFiles[i].wszName, szFull));
-  }
-
-  free(aFolders);
-  free(aFiles);
-}
-
-scInternal void
-_scLayoutLogs(scPage* pPage, RECT rc) {
-  pPage->nWidgetCount = 0;
-
-  bool bAtBottom = pPage->scroll.nScrollY >= pPage->scroll.nMaxScrollY;
-
-  pPage->scroll.nContentH   = scLogStoreCount() * LOG_LINE_HEIGHT + 20;
-  pPage->scroll.nMaxScrollY = pPage->scroll.nContentH - rc.bottom;
-  if (pPage->scroll.nMaxScrollY < 0) {
-    pPage->scroll.nMaxScrollY = 0;
-  }
-  pPage->scroll.nScrollY = bAtBottom ? pPage->scroll.nMaxScrollY
-                                     : _scClamp(pPage->scroll.nScrollY, 0, pPage->scroll.nMaxScrollY);
-}
-
-scInternal void
-_scLayoutCredits(scPage* pPage, RECT rc) {
-  typedef struct {
-    const wchar_t* pName;
-    const wchar_t* pText;
-  } scLicenseExample;
-
-  static const scLicenseExample kLicenses[] = {
-    {
-      L"synthesthea (https://art.synthesthea.com/)",
-      L"Screenshot sounds\n"
-      L"The new icon :)"
-    },
-    {
-      L"miniaudio (MIT-0)",
-      L"Copyright 2025 David Reid\n"
-      L"\n"
-      L"Permission is hereby granted, free of charge, to any person obtaining a copy of\n"
-      L"this software and associated documentation files (the \"Software\"), to deal in\n"
-      L"the Software without restriction, including without limitation the rights to\n"
-      L"use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies\n"
-      L"of the Software, and to permit persons to whom the Software is furnished to do\n"
-      L"so.\n"
-      L"\n"
-      L"THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n"
-      L"IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n"
-      L"FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n"
-      L"AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n"
-      L"LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n"
-      L"OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n"
-      L"SOFTWARE."
-    },
-    {
-      L"stb (MIT)",
-      L"Copyright (c) 2017 Sean Barrett\n"
-      L"\n"
-      L"Permission is hereby granted, free of charge, to any person obtaining a copy of\n"
-      L"this software and associated documentation files (the \"Software\"), to deal in\n"
-      L"the Software without restriction, including without limitation the rights to\n"
-      L"use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies\n"
-      L"of the Software, and to permit persons to whom the Software is furnished to do\n"
-      L"so, subject to the following conditions:\n"
-      L"\n"
-      L"The above copyright notice and this permission notice shall be included in all\n"
-      L"copies or substantial portions of the Software.\n"
-      L"\n"
-      L"THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n"
-      L"IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n"
-      L"FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n"
-      L"AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n"
-      L"LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n"
-      L"OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n"
-      L"SOFTWARE."
-    }
-  };
-
-  pPage->nWidgetCount = 0;
-
-  s32 iY = 20;
-  s32 iTextWidth = rc.right - 20 - (CONTENT_LEFT + 10);
-
-  if (iTextWidth < 1) {
-    iTextWidth = 1;
-  }
-
-  HDC hMeasureDC = GetDC(NULL);
-  HGDIOBJ hOldFont = NULL;
-
-  if (hMeasureDC) {
-    hOldFont = SelectObject(hMeasureDC, gUI.theme.pFont);
-  }
-
-  _scPagePush(pPage, _scMakeLabel(
-    (RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 30 },
-    L"Credits and Third-Party Licenses", true
-  ));
-  iY += 30;
-
-  for (s32 iLicense = 0;
-       iLicense < (s32)(sizeof(kLicenses) / sizeof(kLicenses[0]));
-       ++iLicense) {
-    _scPagePush(pPage, _scMakeLabel(
-      (RECT){ CONTENT_LEFT, iY, rc.right - 20, iY + 26 },
-      kLicenses[iLicense].pName, true
-    ));
-    iY += 26;
-
-    const wchar_t* pText = kLicenses[iLicense].pText;
-
-    while (*pText) {
-      if (*pText == L'\n') {
-        ++pText;
-        //iY += 22;
-        continue;
-      }
-
-      while (*pText == L' ' || *pText == L'\t') {
-        ++pText;
-      }
-
-      if (!*pText) {
-        break;
-      }
-
-      wchar_t szLine[128];
-      s32 iLen = 0;
-      s32 iLastSpace = -1;
-
-      while (pText[iLen] &&
-             pText[iLen] != L'\n' &&
-             iLen < (s32)(sizeof(szLine) / sizeof(szLine[0])) - 1) {
-        SIZE extent = { 0, 0 };
-        bool bFits = true;
-
-        if (hMeasureDC) {
-          if (GetTextExtentPoint32W(
-                hMeasureDC, pText, iLen + 1, &extent)) {
-            bFits = extent.cx <= iTextWidth;
-          }
-        }
-
-        if (!bFits) {
-          break;
-        }
-
-        if (pText[iLen] == L' ' || pText[iLen] == L'\t') {
-          iLastSpace = iLen;
-        }
-
-        ++iLen;
-      }
-
-      if (iLen > 0 &&
-          pText[iLen] != L'\0' &&
-          pText[iLen] != L'\n' &&
-          iLastSpace > 0) {
-        iLen = iLastSpace;
-      }
-
-      if (iLen <= 0) {
-        iLen = 1;
-      }
-
-      for (s32 i = 0; i < iLen; ++i) {
-        szLine[i] = pText[i];
-      }
-      szLine[iLen] = L'\0';
-
-      _scPagePush(pPage, _scMakeLabel(
-        (RECT){ CONTENT_LEFT + 10, iY, rc.right - 20, iY + 22 },
-        szLine, false
-      ));
-
-      iY += 22;
-      pText += iLen;
-
-      while (*pText == L' ' || *pText == L'\t') {
-        ++pText;
-      }
-    }
-
-    iY += 10;
-  }
-
-  if (hMeasureDC) {
-    if (hOldFont) {
-      SelectObject(hMeasureDC, hOldFont);
-    }
-    ReleaseDC(NULL, hMeasureDC);
-  }
-
-  pPage->scroll.nContentH   = iY + 20;
-  pPage->scroll.nMaxScrollY = pPage->scroll.nContentH - rc.bottom;
-
-  if (pPage->scroll.nMaxScrollY < 0) {
-    pPage->scroll.nMaxScrollY = 0;
-  }
-
-  pPage->scroll.nScrollY = _scClamp(
-    pPage->scroll.nScrollY,
-    0,
-    pPage->scroll.nMaxScrollY
-  );
-}
-
-scInternal RECT
-_scEnsureLayout() {
-  RECT cr;
-  GetClientRect(gUI.hWindow, &cr);
-  if (gUI.bNeedsLayout || cr.right != gUI.rcLastClient.right || cr.bottom != gUI.rcLastClient.bottom) {
-    scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
-    RECT rcLogical = { 0, 0, _scUnscale(cr.right), _scUnscale(cr.bottom) };
-    if (pPage->pfnLayout) {
-      pPage->pfnLayout(pPage, rcLogical);
-    }
-    for (s32 i = 0; i < gUI.nSidebarWidgetCount; ++i) {
-      scWidget* pWidget = &gUI.aSidebarWidgets[i];
-      if (pWidget->eType == SC_WIDGET_LINK && pWidget->u.link.bAnchorBottom) {
-        pWidget->rcLayout.top = rcLogical.bottom - 30;
-        pWidget->rcLayout.bottom = rcLogical.bottom;
-      }
-    }
-    gUI.bNeedsLayout    = false;
-    gUI.rcLastClient    = cr;
-  }
-  return cr;
-}
-
-scInternal void
-_scRenderCurrentPage(HDC hDC, RECT cr) {
-  scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
-
-  for (s32 i = 0; i < pPage->nWidgetCount; ++i) {
-    scWidget* pWidget = &pPage->aWidgets[i];
-    RECT r = _scWidgetScaledRect(pPage, pWidget);
-    if (r.bottom < 0 || r.top > cr.bottom) {
-      continue;
-    }
-    _scDrawWidget(hDC, pWidget, r, i == gUI.iHoveredWidget);
-  }
-}
-
-//------------------------------------------------------------------------
-// Rendering
-//------------------------------------------------------------------------
-scInternal void
-_scRenderSidebar(HDC hDC, RECT cr) {
-  GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  gpFillRectI(pGraphics, 0, 0, _scScale(SIDEBAR_WIDTH), cr.bottom, gpColor(gUI.theme.dwSidebar, 255));
-  gpGraphicsEnd(pGraphics);
-
-  SetBkMode(hDC, TRANSPARENT);
-  for (s32 i = 0; i < gUI.nSidebarWidgetCount; ++i) {
-    scWidget* pWidget = &gUI.aSidebarWidgets[i];
-    RECT r = _scWidgetRect(pWidget, 0);
-    _scDrawWidget(hDC, pWidget, r, i == gUI.iHoveredSidebarWidget);
+_scOnGalleryClick(scNode* pNode) {
+  scGalleryItem* pItem = (scGalleryItem*)scGetUserData(pNode);
+  if (pItem->bIsUp) {
+    _scGalleryNavigateUp();
+  } else if (pItem->bIsFolder) {
+    _scGalleryNavigateInto(pItem->szPath);
+  } else {
+    ShellExecuteA(NULL, "open", pItem->szPath, NULL, NULL, SW_SHOWNORMAL);
   }
 }
 
 scInternal void
-_scRenderPathField(HDC hDC, RECT cr) {
-  scUITheme* t = &gUI.theme;
-  f32 fRad = 4.0f * gUI.fUIScale;
-  s32 iScroll = gUI.aPages[gUI.eCurrentPage].scroll.nScrollY;
-  RECT box = { _scScale(CONTENT_LEFT), _scScale(42 - iScroll), cr.right - _scScale(130), _scScale(72 - iScroll) };
-
-  GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  gpFillRound(pGraphics, box, fRad, gpColor(t->dwCard, 255));
-  gpStrokeRound(pGraphics, box, fRad, gpColor(t->dwStroke, 255), 1.0f);
-  gpGraphicsEnd(pGraphics);
-
-  SelectObject(hDC, t->pFont);
-  SetTextColor(hDC, t->dwText);
-  RECT rText = { box.left + _scScale(10), box.top, box.right - _scScale(10), box.bottom };
-  DrawTextW(hDC, gApp->config.wszSavePath, -1, &rText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS);
-}
-
-scInternal void
-_scRenderScrollbar(HDC hDC, scScrollGeom sg) {
-  if (!sg.bVisible) {
-    return;
-  }
-  scUITheme* t = &gUI.theme;
-  f32 fRad = (sg.rcTrack.right - sg.rcTrack.left) / 2.0f;
-  bool bHot = gUI.bHoveredScroll || gUI.drag.bActive;
-
-  GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  gpFillRound(pGraphics, sg.rcTrack, fRad, gpColor(t->dwScrollThumb, 32));
-  gpFillRound(pGraphics, sg.rcThumb, fRad, gpColor(t->dwScrollThumb, bHot ? 230 : 150));
-  gpGraphicsEnd(pGraphics);
-}
-
-scInternal COLORREF
-_scLogColor(scLogLevel eLevel) {
-  switch (eLevel) {
-    case SC_LOG_ERROR: return gUI.theme.dwError;
-    case SC_LOG_WARN:  return gUI.theme.dwWarn;
-    case SC_LOG_INFO:  return gUI.theme.dwText;
-    case SC_LOG_DEBUG:
-    default:           return gUI.theme.dwTextDim;
-  }
-}
-
-scInternal void
-_scRenderLogs(HDC hDC, RECT cr) {
-  scPage* pPage = &gUI.aPages[SC_PAGE_LOGS];
-  s32 iCount = scLogStoreCount();
-  s32 iX     = _scScale(CONTENT_LEFT);
-
-  SelectObject(hDC, gUI.theme.pFont);
-  SetBkMode(hDC, TRANSPARENT);
-
-  for (s32 i = 0; i < iCount; ++i) {
-    s32 iY = _scScale(14 + i * LOG_LINE_HEIGHT - pPage->scroll.nScrollY);
-    if (iY + _scScale(LOG_LINE_HEIGHT) < 0 || iY > cr.bottom) {
-      continue;
-    }
-    scLogLevel eLevel;
-    const char* szText = scLogStoreGet(i, &eLevel);
-    if (!szText) {
-      continue;
-    }
-    SetTextColor(hDC, _scLogColor(eLevel));
-    TextOutA(hDC, iX, iY, szText, (int)strlen(szText));
-  }
-}
-
-scInternal void
-_scRender(HDC hDC) {
-  RECT cr = _scEnsureLayout();
-
-  HDC hMemDC = CreateCompatibleDC(hDC);
-  HBITMAP hMemBmp = CreateCompatibleBitmap(hDC, cr.right, cr.bottom);
-  HBITMAP hOldBmp = (HBITMAP)SelectObject(hMemDC, hMemBmp);
-
-  FillRect(hMemDC, &cr, gUI.theme.hBackgroundBrush);
-
-  _scRenderSidebar(hMemDC, cr);
-  if (gUI.eCurrentPage == SC_PAGE_SETTINGS) {
-    _scRenderPathField(hMemDC, cr);
-  }
-  _scRenderCurrentPage(hMemDC, cr);
-  if (gUI.eCurrentPage == SC_PAGE_LOGS) {
-    _scRenderLogs(hMemDC, cr);
-  }
-  _scRenderScrollbar(hMemDC, _scPageScrollbar(cr));
-  if (gUI.iExpandedDropdown >= 0) {
-    _scRenderDropdownPopup(hMemDC, cr);
-  }
-
-  BitBlt(hDC, 0, 0, cr.right, cr.bottom, hMemDC, 0, 0, SRCCOPY);
-  SelectObject(hMemDC, hOldBmp);
-  DeleteObject(hMemBmp);
-  DeleteDC(hMemDC);
-}
-
-//------------------------------------------------------------------------
-// Input
-//------------------------------------------------------------------------
-scInternal void
-_scOnWidgetClicked(scWidget* pWidget) {
-  switch (pWidget->eType) {
-    case SC_WIDGET_PAGE_TAB: {
-      scUISetCurrentPage(pWidget->u.pageTab.ePage);
-      break;
-    }
-    case SC_WIDGET_LINK: {
-      if (pWidget->u.link.pfnClick) {
-        pWidget->u.link.pfnClick(pWidget->u.link.iParam);
-      }
-      break;
-    }
-    case SC_WIDGET_TOGGLE: {
-      *pWidget->u.toggle.pValue = !*pWidget->u.toggle.pValue;
-      if (pWidget->u.toggle.pfnChange) {
-        pWidget->u.toggle.pfnChange(*pWidget->u.toggle.pValue, pWidget->u.toggle.iParam);
-      }
-      scSaveConfig();
-      InvalidateRect(gUI.hWindow, NULL, FALSE);
-      break;
-    }
-    case SC_WIDGET_BUTTON: {
-      if (pWidget->u.button.pfnClick) {
-        pWidget->u.button.pfnClick(pWidget->u.button.iParam);
-      }
-      break;
-    }
-    case SC_WIDGET_HOTKEY: {
-      _scBeginHotkeyRecording((s32)pWidget->u.hotkey.eHotkey);
-      InvalidateRect(gUI.hWindow, NULL, FALSE);
-      break;
-    }
-    case SC_WIDGET_IMAGE: {
-      if (pWidget->u.image.bIsUp) {
-        _scGalleryNavigateUp();
-      } else if (pWidget->u.image.bIsFolder) {
-        _scGalleryNavigateInto(pWidget->szPath);
-      } else {
-        ShellExecuteA(NULL, "open", pWidget->szPath, NULL, NULL, SW_SHOWNORMAL);
-      }
-      break;
-    }
-    default:
-      break;
-  }
-}
-
-scInternal bool
-_scHandleMouseMove(POINT pt, RECT cr) {
-  gUI.vMousePos = pt;
-  s32 iPrevSidebarWidget = gUI.iHoveredSidebarWidget;
-  gUI.iHoveredSidebarWidget = _scSidebarWidgetAt(pt);
-  bool bSidebarHoverChanged = gUI.iHoveredSidebarWidget != iPrevSidebarWidget;
-
-  if (gUI.drag.bActive) {
-    s32 iDelta  = pt.y - gUI.drag.iStartY;
-    s32 iScroll = gUI.drag.iStartScroll + (gUI.drag.iTrackRange > 0 ? (s32)((s64)iDelta * gUI.drag.iMaxScroll / gUI.drag.iTrackRange) : 0);
-    iScroll = _scClamp(iScroll, 0, gUI.drag.iMaxScroll);
-    if (iScroll != *gUI.drag.pValue) {
-      *gUI.drag.pValue = iScroll;
-      InvalidateRect(gUI.hWindow, NULL, FALSE);
-    }
-    return bSidebarHoverChanged;
-  }
-
-  if (gUI.iExpandedDropdown >= 0) {
-    scWidget* pWidget = &gUI.aPages[gUI.eCurrentPage].aWidgets[gUI.iExpandedDropdown];
-    scDropdownGeom dg = _scDropdownGeom(pWidget, cr);
-    s32  iPrevHover  = gUI.iDropdownHover;
-    bool bPrevScroll = gUI.bHoveredScroll;
-
-    gUI.bHoveredScroll = dg.bHasScroll && PtInRect(&dg.scroll.rcThumb, pt);
-    if (!gUI.bHoveredScroll && PtInRect(&dg.rcBox, pt)) {
-      s32 iIdx = (pt.y - dg.rcBox.top + _scScale(gUI.iDropdownScrollY)) / dg.iItemHeight;
-      gUI.iDropdownHover = (iIdx >= 0 && iIdx < pWidget->u.dropdown.nOptionCount) ? iIdx : -1;
-    } else {
-      gUI.iDropdownHover = -1;
-    }
-    return gUI.iDropdownHover != iPrevHover || gUI.bHoveredScroll != bPrevScroll || bSidebarHoverChanged;
-  }
-
-  s32  iPrevWidget = gUI.iHoveredWidget;
-  bool bPrevScroll = gUI.bHoveredScroll;
-
-  scScrollGeom sg = _scPageScrollbar(cr);
-  gUI.bHoveredScroll = sg.bVisible && PtInRect(&sg.rcThumb, pt);
-
-  s32 iHit = gUI.bHoveredScroll ? -1 : _scWidgetAt(&gUI.aPages[gUI.eCurrentPage], pt);
-  gUI.iHoveredWidget = iHit;
-
-  return bSidebarHoverChanged || gUI.iHoveredWidget != iPrevWidget || gUI.bHoveredScroll != bPrevScroll;
-}
-
-scInternal void
-_scHandleLeftDown(POINT pt, RECT cr) {
-  if (gUI.iExpandedDropdown >= 0) {
-    scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
-    scWidget* pWidget = &pPage->aWidgets[gUI.iExpandedDropdown];
-    scDropdownGeom dg = _scDropdownGeom(pWidget, cr);
-
-    if (dg.bHasScroll && _scScrollbarHit(dg.scroll, pt)) {
-      _scBeginScrollDrag(&gUI.iDropdownScrollY, dg.scroll, dg.iMaxScroll, pt);
-      return;
-    }
-    if (PtInRect(&dg.rcBox, pt)) {
-      s32 iIdx = (pt.y - dg.rcBox.top + _scScale(gUI.iDropdownScrollY)) / dg.iItemHeight;
-      if (iIdx >= 0 && iIdx < pWidget->u.dropdown.nOptionCount && pWidget->u.dropdown.pfnSelect) {
-        pWidget->u.dropdown.pfnSelect(iIdx);
-      }
-    }
-    gUI.iExpandedDropdown = -1;
-    gUI.iDropdownHover    = -1;
-    InvalidateRect(gUI.hWindow, NULL, TRUE);
-    return;
-  }
-
-  s32 iSidebarHit = _scSidebarWidgetAt(pt);
-  if (iSidebarHit >= 0) {
-    _scOnWidgetClicked(&gUI.aSidebarWidgets[iSidebarHit]);
-    return;
-  }
-
-  scPage* pCurrent = &gUI.aPages[gUI.eCurrentPage];
-  scScrollGeom sg = _scPageScrollbar(cr);
-  if (_scScrollbarHit(sg, pt)) {
-    _scBeginScrollDrag(&pCurrent->scroll.nScrollY, sg, pCurrent->scroll.nMaxScrollY, pt);
-    return;
-  }
-
-  scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
-  s32 iHit = _scWidgetAt(pPage, pt);
-  if (iHit < 0) {
-    return;
-  }
-
-  scWidget* pWidget = &pPage->aWidgets[iHit];
-  if (pWidget->eType == SC_WIDGET_DROPDOWN) {
-    RECT r = _scWidgetScaledRect(pPage, pWidget);
-    RECT box = _scDropdownBoxRect(pWidget, r);
-    if (PtInRect(&box, pt)) {
-      gUI.iExpandedDropdown = iHit;
-      gUI.iDropdownScrollY  = 0;
-      gUI.iDropdownHover    = -1;
-      InvalidateRect(gUI.hWindow, NULL, TRUE);
-    }
-    return;
-  } else if (pWidget->eType == SC_WIDGET_IMAGE) {
-    if (pWidget->u.image.bIsUp || pWidget->u.image.bIsFolder) {
-      _scOnWidgetClicked(pWidget);
-      return;
-    }
-
-    gUI.imageDrag.bPending = true;
-    gUI.imageDrag.iWidgetIndex = iHit;
-    gUI.imageDrag.ptStart = pt;
-    SetCapture(gUI.hWindow);
-    return;
-  }
-
-  _scOnWidgetClicked(pWidget);
-}
-
-scInternal void
-_scGalleryContextMenu(HWND hWnd, scWidget* pImage, POINT pt) {
+_scOnGalleryDrag(scNode* pNode) {
+  scGalleryItem* pItem = (scGalleryItem*)scGetUserData(pNode);
   char szPath[MAX_PATH];
-  strcpy_s(szPath, MAX_PATH, pImage->szPath);
+  strcpy_s(szPath, MAX_PATH, pItem->szPath);
+  _scStartImageDrag(szPath);
+}
+
+scInternal void
+_scOnGalleryContext(scNode* pNode, POINT pt) {
+  scGalleryItem* pItem = (scGalleryItem*)scGetUserData(pNode);
+  HWND hWnd = gUI.hWindow;
+  bool bIsFolder = pItem->bIsFolder;
+  char szPath[MAX_PATH];
+  strcpy_s(szPath, MAX_PATH, pItem->szPath);
 
   HMENU hMenu = CreatePopupMenu();
 
@@ -2589,7 +1251,7 @@ _scGalleryContextMenu(HWND hWnd, scWidget* pImage, POINT pt) {
   SetMenuInfo(hMenu, &mi);
 
   AppendMenuW(hMenu, MF_OWNERDRAW, 2, (LPCWSTR)scLocaleGet("Open Folder"));
-  if (!pImage->u.image.bIsFolder) {
+  if (!bIsFolder) {
     AppendMenuW(hMenu, MF_OWNERDRAW, 1, (LPCWSTR)scLocaleGet("Copy to Clipboard"));
     AppendMenuW(hMenu, MF_OWNERDRAW, 3, (LPCWSTR)scLocaleGet("Open"));
     AppendMenuW(hMenu, MF_OWNERDRAW, 4, (LPCWSTR)scLocaleGet("Delete"));
@@ -2609,7 +1271,7 @@ _scGalleryContextMenu(HWND hWnd, scWidget* pImage, POINT pt) {
     }
     case 2: {
       char szArg[MAX_PATH + 16];
-      if (!pImage->u.image.bIsFolder) {
+      if (!bIsFolder) {
         _snprintf_s(szArg, sizeof(szArg), _TRUNCATE, "/select,\"%s\"", szPath);
       } else {
         _snprintf_s(szArg, sizeof(szArg), _TRUNCATE, "%s", szPath);
@@ -2626,13 +1288,24 @@ _scGalleryContextMenu(HWND hWnd, scWidget* pImage, POINT pt) {
         wchar_t wszPath[MAX_PATH];
         MultiByteToWideChar(CP_ACP, 0, szPath, -1, wszPath, MAX_PATH);
         DeleteFileW(wszPath);
-        gUI.bNeedsLayout = true;
-        InvalidateRect(hWnd, NULL, TRUE);
+        _scRebuild();
       }
       break;
     }
   }
 }
+
+scInternal void
+_scOnHotkeyClick(scNode* pNode) {
+  _scBeginHotkeyRecording((s32)*(scHotkeyID*)scGetUserData(pNode));
+  scGuiInvalidate(gUI.pGui);
+}
+
+static const scCustomOps kHotkeyOps        = { _scDrawHotkey,      _scOnHotkeyClick,  NULL,             NULL };
+static const scCustomOps kLogOps           = { _scDrawLogs,        NULL,              NULL,             NULL, _scMeasureLogs };
+static const scCustomOps kGalleryUpOps     = { _scDrawGalleryItem, _scOnGalleryClick, NULL,             NULL };
+static const scCustomOps kGalleryFolderOps = { _scDrawGalleryItem, _scOnGalleryClick, NULL,             _scOnGalleryContext };
+static const scCustomOps kGalleryFileOps   = { _scDrawGalleryItem, _scOnGalleryClick, _scOnGalleryDrag, _scOnGalleryContext };
 
 //------------------------------------------------------------------------
 // Hotkey recording
@@ -2700,12 +1373,555 @@ _scCancelHotkeyRecording() {
 }
 
 //------------------------------------------------------------------------
+// Pages
+//------------------------------------------------------------------------
+static const char* const kFramerateOptions[] = { "60", "30", "24" };
+static const s32         kFramerateValues[]  = { 60, 30, 24 };
+
+static const char* const kRecordQualityOptions[] = { "High", "Medium", "Low" };
+static const s32         kRecordQualityValues[]  = { SC_QUALITY_HIGH, SC_QUALITY_MEDIUM, SC_QUALITY_LOW };
+
+static const char* const kRecordResOptions[] = { "Native", "1080p", "720p" };
+static const s32         kRecordResValues[]  = { SC_MAXRES_NATIVE, SC_MAXRES_1080P, SC_MAXRES_720P };
+
+#define SC_FRAMERATE_COUNT 3
+
+static const char* const kAudioTrackOptions[] = { "0", "1", "2", "3", "4", "5", "6", "7" };
+
+static const char** gAudioDeviceOptions;
+static uint32_t gAudioDeviceOptionsCap;
+
+scInternal bool
+_scBuildAudioDeviceOptions(void) {
+  uint32_t nRequired = gAudio.deviceCount + 1;
+  if (nRequired > gAudioDeviceOptionsCap) {
+    const char** aOptions = (const char**)realloc(gAudioDeviceOptions, nRequired * sizeof(char*));
+    if (!aOptions) {
+      return false;
+    }
+    gAudioDeviceOptions = aOptions;
+    gAudioDeviceOptionsCap = nRequired;
+  }
+
+  gAudioDeviceOptions[0] = "";
+  for (uint32_t i = 0; i < gAudio.deviceCount; ++i) {
+    gAudioDeviceOptions[i + 1] = gAudio.pCaptureDevices[i].szName;
+  }
+  return true;
+}
+
+scInternal void
+_scOnBrowseClicked(s32 iParam) {
+  (void)iParam;
+  bool bComInit = SUCCEEDED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED));
+
+  IFileOpenDialog* pDialog = NULL;
+  if (SUCCEEDED(CoCreateInstance(&CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, &IID_IFileOpenDialog, (void**)&pDialog))) {
+    FILEOPENDIALOGOPTIONS dwOptions = 0;
+    pDialog->lpVtbl->GetOptions(pDialog, &dwOptions);
+    pDialog->lpVtbl->SetOptions(pDialog, dwOptions | FOS_PICKFOLDERS);
+
+    if (SUCCEEDED(pDialog->lpVtbl->Show(pDialog, gUI.hWindow))) {
+      IShellItem* pItem = NULL;
+      if (SUCCEEDED(pDialog->lpVtbl->GetResult(pDialog, &pItem))) {
+        PWSTR pszPath = NULL;
+        if (SUCCEEDED(pItem->lpVtbl->GetDisplayName(pItem, SIGDN_FILESYSPATH, &pszPath))) {
+          wcscpy_s(gApp->config.wszSavePath, SC_PATH_MAX_LEN, pszPath);
+          scSaveConfig();
+          CoTaskMemFree(pszPath);
+
+          gUI.aPageScrollY[SC_PAGE_GALLERY] = 0;
+          _scRebuild();
+        }
+        pItem->lpVtbl->Release(pItem);
+      }
+    }
+    pDialog->lpVtbl->Release(pDialog);
+  }
+
+  if (bComInit) {
+    CoUninitialize();
+  }
+}
+
+scInternal void
+_scOnLanguageSelected(s32 iIndex, s32 iParam) {
+  (void)iParam;
+  scLocaleSet(scLocaleCode(iIndex));
+  _scRebuild();
+}
+
+scInternal void
+_scOnCaptureAudioToggled(bool bValue, s32 iParam) {
+  (void)bValue; (void)iParam;
+  _scRebuild();
+}
+
+scInternal void
+_scOnAudioDeviceSelected(s32 iIndex, s32 iParam) {
+  scAudioSelectionSetDevice((uint32_t)iParam, iIndex - 1);
+  _scRebuild();
+}
+
+scInternal void
+_scOnAudioTrackSelected(s32 iIndex, s32 iParam) {
+  scAudioSelectionSetTrack((uint32_t)iParam, iIndex);
+  _scRebuild();
+}
+
+scInternal void
+_scOnAudioAddDevice(s32 iParam) {
+  (void)iParam;
+  if (scAudioSelectionAdd()) {
+    _scRebuild();
+  }
+}
+
+scInternal void
+_scOnAudioRemoveDevice(s32 iParam) {
+  scAudioSelectionRemove((uint32_t)iParam);
+  _scRebuild();
+}
+
+scInternal void
+_scOnFramerateSet(s32 iIndex, s32 iParam) {
+  (void)iParam;
+  if (iIndex >= 0 && iIndex < SC_FRAMERATE_COUNT) {
+    gApp->config.iFFmpegFramerate = kFramerateValues[iIndex];
+    scSaveConfig();
+  }
+}
+
+scInternal void
+_scOnRecordQualitySet(s32 iIndex, s32 iParam) {
+  (void)iParam;
+  if (iIndex >= 0 && iIndex < SC_QUALITY_COUNT) {
+    gApp->config.eRecordQuality = kRecordQualityValues[iIndex];
+    scSaveConfig();
+  }
+}
+
+scInternal void
+_scOnRecordResSet(s32 iIndex, s32 iParam) {
+  (void)iParam;
+  if (iIndex >= 0 && iIndex < SC_MAXRES_COUNT) {
+    gApp->config.eRecordMaxRes = kRecordResValues[iIndex];
+    scSaveConfig();
+  }
+}
+
+scInternal void
+_scUpdateIconOption(bool bEnabled, s32 _) {
+  _scUpdateWindowIcon(gUI.hWindow, bEnabled);
+  scTrayUpdateIcon();
+}
+
+
+scInternal void
+_scOnTabClicked(s32 iParam) {
+  scUISetCurrentPage((scPageID)iParam);
+}
+
+scInternal s32
+_scFindIndex(const s32* aValues, s32 nCount, s32 iValue) {
+  for (s32 i = 0; i < nCount; ++i) {
+    if (aValues[i] == iValue) {
+      return i;
+    }
+  }
+  return 0;
+}
+
+scInternal void
+_scAddToggle(scNode* pParent, const char* szKey, bool* pValue, void (*pfnChange)(bool bValue, s32 iParam)) {
+  scAddChild(pParent, scCreateToggle(scLocaleGet(szKey), pValue, 0, pfnChange));
+}
+
+scInternal scNode*
+_scCreatePage() {
+  scNode* pPage = scCreateVStack(scLengthStretch(1.0f), scLengthPercent(1.0f));
+  scSetPaddingEx(pPage, 10, 20, 20, 20);
+  scSetSpacing(pPage, 5);
+  scSetScrollable(pPage, true);
+  return pPage;
+}
+
+scInternal scNode*
+_scBuildGeneral() {
+  scNode* pPage = _scCreatePage();
+  for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
+    if (i == SC_HOTKEY_OCR && !gApp->bIsGeWin10) {
+      continue;
+    }
+    scNode* pButton = scCreateButton(scLocaleGet(scCaptureActionNames[i]), scAppRunHandlerFromActionID, i);
+    scSetSize(pButton, scLengthStretch(1.0f), scLengthPixels(35));
+    scAddChild(pPage, pButton);
+  }
+  return pPage;
+}
+
+scInternal scNode*
+_scBuildSettings() {
+  scNode* pPage = _scCreatePage();
+
+  scAddChild(pPage, scCreateLabel(scLocaleGet("Screenshot Destination"), true));
+
+  scNode* pPathRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(30));
+  scSetSpacing(pPathRow, 10);
+  scAddChild(pPathRow, scCreateField(gApp->config.wszSavePath));
+  scNode* pBrowse = scCreateButton(scLocaleGet("Browse..."), _scOnBrowseClicked, 0);
+  scSetSize(pBrowse, scLengthPixels(100), scLengthPixels(30));
+  scAddChild(pPathRow, pBrowse);
+  scAddChild(pPage, pPathRow);
+  scAddChild(pPage, scCreateSpacer(scLengthPixels(1), scLengthPixels(8)));
+
+  s32 iLanguage = 0;
+  for (s32 i = 0; i < scLocaleCount(); ++i) {
+    if (strcmp(scLocaleCode(i), scLocaleCurrent()) == 0) {
+      iLanguage = i;
+      break;
+    }
+  }
+  scAddChild(pPage, scCreateDropdown(scLocaleGet("Language"), scLocaleCodes(), scLocaleCount(), iLanguage, _scOnLanguageSelected, 0));
+
+  scAddChild(pPage, scCreateDropdown(scLocaleGet("Recording Framerate"), kFramerateOptions, SC_FRAMERATE_COUNT,
+    _scFindIndex(kFramerateValues, SC_FRAMERATE_COUNT, gApp->config.iFFmpegFramerate), _scOnFramerateSet, 0));
+  scAddChild(pPage, scCreateDropdown(scLocaleGet("Recording Quality"), kRecordQualityOptions, SC_QUALITY_COUNT,
+    _scFindIndex(kRecordQualityValues, SC_QUALITY_COUNT, (s32)gApp->config.eRecordQuality), _scOnRecordQualitySet, 0));
+  scAddChild(pPage, scCreateDropdown(scLocaleGet("Recording Output Resolution"), kRecordResOptions, SC_MAXRES_COUNT,
+    _scFindIndex(kRecordResValues, SC_MAXRES_COUNT, (s32)gApp->config.eRecordMaxRes), _scOnRecordResSet, 0));
+
+  _scAddToggle(pPage, "Show Cursor (Recording)", &gApp->config.bRecordShowCursor, NULL);
+  _scAddToggle(pPage, "Force Software Encoding", &gApp->config.bRecordForceSoftware, NULL);
+  _scAddToggle(pPage, "Capture Audio", &gApp->config.bCaptureAudio, _scOnCaptureAudioToggled);
+
+  if (gApp->config.bCaptureAudio) {
+    bool bHaveDeviceOptions = _scBuildAudioDeviceOptions();
+    const char* const* aDeviceOptions = bHaveDeviceOptions ? gAudioDeviceOptions : NULL;
+    s32 nDeviceOptions = bHaveDeviceOptions ? (s32)gAudio.deviceCount + 1 : 0;
+
+    for (uint32_t i = 0; i < gAudio.selectionCount; ++i) {
+      s32 iSelected = 0;
+      if (gAudio.aSelections[i].iDevice >= 0 &&
+          (uint32_t)gAudio.aSelections[i].iDevice < gAudio.deviceCount) {
+        iSelected = gAudio.aSelections[i].iDevice + 1;
+      }
+
+      scNode* pRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(40));
+      scSetSpacing(pRow, 8);
+      scSetAlignment(pRow, SC_ALIGN_MIDDLE);
+      scAddChild(pRow, scCreateSpacer(scLengthPixels(12), scLengthPixels(1)));
+      scAddChild(pRow, scCreateDropdown(L"", aDeviceOptions, nDeviceOptions, iSelected, _scOnAudioDeviceSelected, (s32)i));
+
+      scNode* pTrack = scCreateDropdown(L"", kAudioTrackOptions, ARRAYSIZE(kAudioTrackOptions), gAudio.aSelections[i].iTrack, _scOnAudioTrackSelected, (s32)i);
+      scSetSize(pTrack, scLengthPixels(45), scLengthPixels(40));
+      scAddChild(pRow, pTrack);
+
+      scNode* pRemove = scCreateButton(L"-", _scOnAudioRemoveDevice, (s32)i);
+      scSetSize(pRemove, scLengthPixels(28), scLengthPixels(32));
+      scAddChild(pRow, pRemove);
+      scAddChild(pPage, pRow);
+    }
+
+    if (gAudio.selectionCount < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
+      scNode* pRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(35));
+      scAddChild(pRow, scCreateSpacer(scLengthPixels(20), scLengthPixels(1)));
+      scNode* pAdd = scCreateButton(scLocaleGet("Add Device"), _scOnAudioAddDevice, 0);
+      scSetSize(pAdd, scLengthPixels(130), scLengthPixels(35));
+      scAddChild(pRow, pAdd);
+      scAddChild(pPage, pRow);
+    }
+  }
+
+  scAddChild(pPage, scCreateSpacer(scLengthPixels(1), scLengthPixels(15)));
+
+  _scAddToggle(pPage, "Copy screenshot to Clipboard", &gApp->config.bCopyToClipboard, NULL);
+  _scAddToggle(pPage, "Run on Startup", &gApp->config.bRunAtStartup, scSetRunOnStartup);
+  _scAddToggle(pPage, "Play sound on capture", &gApp->config.bPlaySoundOnAction, NULL);
+  if (gApp->bIsGeWin10) {
+    _scAddToggle(pPage, "Show notification on capture", &gApp->config.bShowNotification, NULL);
+  }
+  _scAddToggle(pPage, "Start Minimized", &gApp->config.bStartMinimized, NULL);
+  _scAddToggle(pPage, "Icon uses Accent Color", &gApp->config.bAccentIcon, _scUpdateIconOption);
+
+  scAddChild(pPage, scCreateLabel(L"Input Settings", true));
+  for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
+    scHotkeyID eHotkey = (scHotkeyID)i;
+    scAddChild(pPage, scCreateCustom(scLengthStretch(1.0f), scLengthPixels(30), &kHotkeyOps, &eHotkey, sizeof(eHotkey)));
+  }
+
+  return pPage;
+}
+
+scInternal void
+_scAddGalleryItem(scNode* pGrid, const scCustomOps* pOps, const wchar_t* wszName, const char* szPath, bool bIsUp, bool bIsFolder, s32 nItemCount) {
+  scGalleryItem item = { 0 };
+  item.bIsUp      = bIsUp;
+  item.bIsFolder  = bIsFolder;
+  item.nItemCount = nItemCount;
+  wcscpy_s(item.wszName, MAX_PATH, wszName);
+  strcpy_s(item.szPath, MAX_PATH, szPath);
+  scAddChild(pGrid, scCreateCustom(scLengthPixels(320), scLengthPixels(260), pOps, &item, sizeof(item)));
+}
+
+scInternal scNode*
+_scBuildGallery() {
+  scNode* pPage = _scCreatePage();
+  scSetPaddingEx(pPage, 20, 20, 10, 20);
+
+  if (gUI.wszGalleryDir[0] == 0) {
+    if (!scGetSavePath(gUI.wszGalleryDir, MAX_PATH)) {
+      return pPage;
+    }
+    _scGalleryHistoryPush(gUI.wszGalleryDir);
+  }
+
+  wchar_t wszDir[MAX_PATH];
+  wcscpy_s(wszDir, MAX_PATH, gUI.wszGalleryDir);
+
+  wchar_t wszRoot[MAX_PATH];
+  wcscpy_s(wszRoot, MAX_PATH, gApp->config.wszSavePath);
+  bool bAtRoot = _scPathsEqualNormalized(wszDir, wszRoot);
+
+  _scFileEntry* aFolders = NULL;
+  s32 nFolders = 0, nFolderCap = 0;
+  _scGalleryLoadFolders(wszDir, &aFolders, &nFolders, &nFolderCap);
+  if (nFolders > 0) {
+    qsort(aFolders, nFolders, sizeof(_scFileEntry), _scCompareFileTime);
+  }
+
+  _scFileEntry* aFiles = NULL;
+  s32 nFiles = 0, nFileCap = 0;
+  _scGalleryLoadImages(wszDir, &aFiles, &nFiles, &nFileCap);
+  if (nFiles > 0) {
+    qsort(aFiles, nFiles, sizeof(_scFileEntry), _scCompareFileTime);
+  }
+
+  if (bAtRoot && nFolders + nFiles == 0) {
+    free(aFolders);
+    free(aFiles);
+    return pPage;
+  }
+
+  scNode* pGrid = scCreateHStack(scLengthStretch(1.0f), scLengthAuto());
+  scSetWrap(pGrid, true);
+  scSetSpacing(pGrid, 20);
+
+  if (!bAtRoot) {
+    _scAddGalleryItem(pGrid, &kGalleryUpOps, L"..", "", true, false, 0);
+  }
+
+  for (s32 i = 0; i < nFolders; ++i) {
+    wchar_t wszFull[MAX_PATH];
+    _snwprintf_s(wszFull, MAX_PATH, _TRUNCATE, L"%ls\\%ls", wszDir, aFolders[i].wszName);
+    char szFull[MAX_PATH];
+    WideCharToMultiByte(CP_ACP, 0, wszFull, -1, szFull, MAX_PATH, NULL, NULL);
+    _scAddGalleryItem(pGrid, &kGalleryFolderOps, aFolders[i].wszName, szFull, false, true, _scCountFolderItems(wszFull));
+  }
+
+  for (s32 i = 0; i < nFiles; ++i) {
+    wchar_t wszFull[MAX_PATH];
+    _snwprintf_s(wszFull, MAX_PATH, _TRUNCATE, L"%ls\\%ls", wszDir, aFiles[i].wszName);
+    char szFull[MAX_PATH];
+    WideCharToMultiByte(CP_ACP, 0, wszFull, -1, szFull, MAX_PATH, NULL, NULL);
+    _scAddGalleryItem(pGrid, &kGalleryFileOps, aFiles[i].wszName, szFull, false, false, 0);
+  }
+
+  scAddChild(pPage, pGrid);
+  free(aFolders);
+  free(aFiles);
+  return pPage;
+}
+
+scInternal scNode*
+_scBuildLogs() {
+  scNode* pPage = _scCreatePage();
+  scSetPaddingEx(pPage, 10, 14, 20, 6);
+  scSetSpacing(pPage, 0);
+  scSetStickBottom(pPage, true);
+
+  gUI.pLogView = scCreateCustom(scLengthStretch(1.0f), scLengthAuto(), &kLogOps, NULL, 0);
+  scAddChild(pPage, gUI.pLogView);
+  return pPage;
+}
+
+scInternal scNode*
+_scBuildCredits() {
+  typedef struct {
+    const wchar_t* pName;
+    const wchar_t* pText;
+  } scLicenseExample;
+
+  static const scLicenseExample kLicenses[] = {
+    {
+      L"synthesthea (https://art.synthesthea.com/)",
+      L"Screenshot sounds\n"
+      L"The new icon :)"
+    },
+    {
+      L"miniaudio (MIT-0)",
+      L"Copyright 2025 David Reid\n"
+      L"\n"
+      L"Permission is hereby granted, free of charge, to any person obtaining a copy of\n"
+      L"this software and associated documentation files (the \"Software\"), to deal in\n"
+      L"the Software without restriction, including without limitation the rights to\n"
+      L"use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies\n"
+      L"of the Software, and to permit persons to whom the Software is furnished to do\n"
+      L"so.\n"
+      L"\n"
+      L"THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n"
+      L"IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n"
+      L"FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n"
+      L"AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n"
+      L"LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n"
+      L"OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n"
+      L"SOFTWARE."
+    },
+    {
+      L"stb (MIT)",
+      L"Copyright (c) 2017 Sean Barrett\n"
+      L"\n"
+      L"Permission is hereby granted, free of charge, to any person obtaining a copy of\n"
+      L"this software and associated documentation files (the \"Software\"), to deal in\n"
+      L"the Software without restriction, including without limitation the rights to\n"
+      L"use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies\n"
+      L"of the Software, and to permit persons to whom the Software is furnished to do\n"
+      L"so, subject to the following conditions:\n"
+      L"\n"
+      L"The above copyright notice and this permission notice shall be included in all\n"
+      L"copies or substantial portions of the Software.\n"
+      L"\n"
+      L"THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n"
+      L"IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n"
+      L"FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n"
+      L"AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n"
+      L"LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n"
+      L"OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n"
+      L"SOFTWARE."
+    }
+  };
+
+  scNode* pPage = _scCreatePage();
+  scAddChild(pPage, scCreateLabel(L"Credits and Third-Party Licenses", true));
+
+  for (s32 i = 0; i < (s32)ARRAYSIZE(kLicenses); ++i) {
+    scAddChild(pPage, scCreateLabel(kLicenses[i].pName, true));
+
+    scNode* pBlock = scCreateVStack(scLengthPercent(1.0f), scLengthAuto());
+    scSetPaddingEx(pBlock, 10, 0, 0, 0);
+    scNode* pText = scCreateLabel(kLicenses[i].pText, false);
+    scSetWrap(pText, true);
+    scSetSize(pText, scLengthStretch(1.0f), scLengthAuto());
+    scAddChild(pBlock, pText);
+    scAddChild(pPage, pBlock);
+    scAddChild(pPage, scCreateSpacer(scLengthPixels(1), scLengthPixels(5)));
+  }
+  return pPage;
+}
+
+scInternal scNode*
+_scBuildPage(scPageID ePage) {
+  switch (ePage) {
+    case SC_PAGE_GENERAL:  return _scBuildGeneral();
+    case SC_PAGE_SETTINGS: return _scBuildSettings();
+    case SC_PAGE_GALLERY:  return _scBuildGallery();
+    case SC_PAGE_LOGS:     return _scBuildLogs();
+    case SC_PAGE_CREDITS:  return _scBuildCredits();
+    default:               return _scCreatePage();
+  }
+}
+
+scInternal void
+_scOnVersionLinkClicked(s32 iParam) {
+  (void)iParam;
+  char cLink[1024] = {0};
+  snprintf(cLink, sizeof(cLink), "https://www.github.com/daniel-w0/screencap/releases/tag/%s", SC_VERSION_STRING);
+  ShellExecuteA(NULL, "open", cLink, NULL, NULL, SW_SHOW);
+}
+
+scInternal scNode*
+_scBuildSidebar() {
+  scNode* pSidebar = scCreateVStack(scLengthPixels(SIDEBAR_WIDTH), scLengthPercent(1.0f));
+  scSetPaddingEx(pSidebar, 10, 20, 10, 0);
+  scSetSpacing(pSidebar, 5);
+  scSetSurface(pSidebar, true);
+
+  for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
+    scAddChild(pSidebar, scCreateTab(scLocaleGet(kPageKeys[i]), i == (s32)gUI.eCurrentPage, _scOnTabClicked, i));
+  }
+  scAddChild(pSidebar, scCreateSpacer(scLengthPixels(1), scLengthStretch(1.0f)));
+  scAddChild(pSidebar, scCreateLink(SC_VERSION_STRING_FULL_W, _scOnVersionLinkClicked, 0));
+  return pSidebar;
+}
+
+scInternal void
+_scRebuild() {
+  if (!gUI.pGui) {
+    return;
+  }
+  _scSavePageScroll();
+  gUI.pLogView = NULL;
+
+  scNode* pRoot = scCreateHStack(scLengthPercent(1.0f), scLengthPercent(1.0f));
+  scAddChild(pRoot, _scBuildSidebar());
+  gUI.pContent = _scBuildPage(gUI.eCurrentPage);
+  scSetScrollY(gUI.pContent, gUI.aPageScrollY[gUI.eCurrentPage]);
+  scAddChild(pRoot, gUI.pContent);
+  scGuiSetRoot(gUI.pGui, pRoot);
+}
+
+//------------------------------------------------------------------------
+// Rendering
+//------------------------------------------------------------------------
+scInternal void
+_scRender(HDC hDC, const RECT* pClip) {
+  RECT cr;
+  GetClientRect(gUI.hWindow, &cr);
+  if (!gUI.pGui || cr.right <= 0 || cr.bottom <= 0 || IsRectEmpty(pClip)) {
+    return;
+  }
+
+  if (!gUI.hBackBitmap || gUI.iBackWidth != cr.right || gUI.iBackHeight != cr.bottom) {
+    if (gUI.hBackBitmap) {
+      DeleteObject(gUI.hBackBitmap);
+    }
+    gUI.hBackBitmap = CreateCompatibleBitmap(hDC, cr.right, cr.bottom);
+    gUI.iBackWidth  = cr.right;
+    gUI.iBackHeight = cr.bottom;
+  }
+
+  HDC hMemDC = CreateCompatibleDC(hDC);
+  HBITMAP hOldBmp = (HBITMAP)SelectObject(hMemDC, gUI.hBackBitmap);
+  IntersectClipRect(hMemDC, pClip->left, pClip->top, pClip->right, pClip->bottom);
+
+  FillRect(hMemDC, pClip, gUI.theme.hBackgroundBrush);
+  scGuiPaint(gUI.pGui, hMemDC, pClip);
+
+  BitBlt(hDC, pClip->left, pClip->top, pClip->right - pClip->left, pClip->bottom - pClip->top, hMemDC, pClip->left, pClip->top, SRCCOPY);
+  SelectObject(hMemDC, hOldBmp);
+  DeleteDC(hMemDC);
+}
+
+//------------------------------------------------------------------------
 // Window Procedure
 //------------------------------------------------------------------------
 LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
   switch (uMsg) {
     case WM_THUMB_LOADED: {
       InvalidateRect(hWnd, NULL, FALSE);
+      return 0;
+    }
+    case WM_REBUILD_UI: {
+      if (gUI.eCurrentPage == (scPageID)wParam) {
+        _scRebuild();
+      }
+      return 0;
+    }
+    case WM_LOG_PUSHED: {
+      InterlockedExchange(&gUI.lLogPending, 0);
+      if (gUI.pLogView) {
+        scGuiInvalidateLayout(gUI.pGui);
+      }
       return 0;
     }
     case WM_GETMINMAXINFO: {
@@ -2715,110 +1931,44 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       return 0;
     }
     case WM_SIZE: {
-      gUI.iExpandedDropdown = -1;
-      gUI.bNeedsLayout = true;
-      gUI.imageDrag.bPending = false;
-      InvalidateRect(hWnd, NULL, TRUE);
+      if (wParam != SIZE_MINIMIZED) {
+        scGuiResize(gUI.pGui, LOWORD(lParam), HIWORD(lParam));
+      }
       return 0;
     }
     case WM_MOUSEMOVE: {
       POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-
-      if (gUI.imageDrag.bPending) {
-        s32 dx = pt.x - gUI.imageDrag.ptStart.x;
-        s32 dy = pt.y - gUI.imageDrag.ptStart.y;
-        if (abs(dx) > GetSystemMetrics(SM_CXDRAG) || abs(dy) > GetSystemMetrics(SM_CYDRAG)) {
-          s32 iIdx = gUI.imageDrag.iWidgetIndex;
-          gUI.imageDrag.bPending = false;
-
-          if (GetCapture() == hWnd) {
-            ReleaseCapture();
-          }
-
-          scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
-          if (iIdx >= 0 && iIdx < pPage->nWidgetCount &&
-              pPage->aWidgets[iIdx].eType == SC_WIDGET_IMAGE) {
-            char szPath[MAX_PATH];
-            strcpy_s(szPath, MAX_PATH, pPage->aWidgets[iIdx].szPath);
-            _scStartImageDrag(szPath);
-          }
-          return 0;
-        }
-      }
-
-      RECT cr = _scEnsureLayout();
-      if (_scHandleMouseMove(pt, cr)) {
-        InvalidateRect(hWnd, NULL, FALSE);
-
-        TRACKMOUSEEVENT tme = {
-          sizeof(TRACKMOUSEEVENT), TME_LEAVE, hWnd, HOVER_DEFAULT
-        };
-        TrackMouseEvent(&tme);
+      scGuiMouseMove(gUI.pGui, pt);
+      if (!gUI.bTrackingMouse) {
+        TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hWnd, HOVER_DEFAULT };
+        gUI.bTrackingMouse = TrackMouseEvent(&tme) != 0;
       }
       return 0;
     }
     case WM_MOUSELEAVE: {
-      gUI.iHoveredSidebarWidget = -1;
-      gUI.iHoveredWidget = -1;
-      gUI.bHoveredScroll = false;
-      InvalidateRect(hWnd, NULL, FALSE);
+      gUI.bTrackingMouse = false;
+      scGuiMouseLeave(gUI.pGui);
       return 0;
     }
     case WM_MOUSEWHEEL: {
-      s32 iDelta = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
-      if (gUI.iExpandedDropdown >= 0) {
-        RECT cr = _scEnsureLayout();
-        scWidget* pWidget = &gUI.aPages[gUI.eCurrentPage].aWidgets[gUI.iExpandedDropdown];
-        scDropdownGeom dg = _scDropdownGeom(pWidget, cr);
-        gUI.iDropdownScrollY = _scClamp(gUI.iDropdownScrollY - iDelta * 28, 0, dg.iMaxScroll);
-        InvalidateRect(hWnd, NULL, FALSE);
-      } else {
-        scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
-        if (pPage->scroll.nMaxScrollY > 0) {
-          pPage->scroll.nScrollY = _scClamp(pPage->scroll.nScrollY - iDelta * 40, 0, pPage->scroll.nMaxScrollY);
-          InvalidateRect(hWnd, NULL, FALSE);
-        }
-      }
+      POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+      ScreenToClient(hWnd, &pt);
+      scGuiMouseWheel(gUI.pGui, pt, GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA);
       return 0;
     }
     case WM_LBUTTONDOWN: {
       POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-      RECT cr = _scEnsureLayout();
-      _scHandleLeftDown(pt, cr);
+      scGuiMouseDown(gUI.pGui, pt);
       return 0;
     }
     case WM_LBUTTONUP: {
-      if (gUI.imageDrag.bPending) {
-        s32 iIdx = gUI.imageDrag.iWidgetIndex;
-        gUI.imageDrag.bPending = false;
-
-        if (GetCapture() == hWnd) {
-          ReleaseCapture();
-        }
-
-        scPage* pPage = &gUI.aPages[gUI.eCurrentPage];
-        if (iIdx >= 0 && iIdx < pPage->nWidgetCount) {
-          _scOnWidgetClicked(&pPage->aWidgets[iIdx]);
-        }
-      }
-      if (gUI.drag.bActive) {
-        gUI.drag.bActive = false;
-        ReleaseCapture();
-        InvalidateRect(hWnd, NULL, FALSE);
-      }
+      POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+      scGuiMouseUp(gUI.pGui, pt);
       return 0;
     }
     case WM_RBUTTONUP: {
-      if (gUI.eCurrentPage == SC_PAGE_GALLERY) {
-        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        scPage* pPage = &gUI.aPages[SC_PAGE_GALLERY];
-        _scEnsureLayout();
-        s32 iHit = _scWidgetAt(pPage, pt);
-        if (iHit >= 0 && pPage->aWidgets[iHit].eType == SC_WIDGET_IMAGE &&
-            !pPage->aWidgets[iHit].u.image.bIsUp) {
-          _scGalleryContextMenu(hWnd, &pPage->aWidgets[iHit], pt);
-        }
-      }
+      POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+      scGuiMouseRightUp(gUI.pGui, pt);
       return 0;
     }
     case WM_XBUTTONUP: {
@@ -2833,7 +1983,7 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       return TRUE;
     }
     case WM_CAPTURECHANGED: {
-      gUI.drag.bActive = false;
+      scGuiCaptureLost(gUI.pGui);
       return 0;
     }
     case WM_DRAWITEM: {
@@ -2920,12 +2070,12 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         if (scIsWindowsDarkTheme() != gUI.theme.bDark || scGetSystemAccentColor() != gUI.theme.dwAccent || gUI.fUIScale != fUIScale) {
           gUI.fUIScale = fUIScale;
           scUIThemeGet(&gUI.theme, _scScale(15));
+          _scApplyTheme();
           BOOL bDark = gUI.theme.bDark;
           DwmSetWindowAttribute(hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &bDark, sizeof(bDark));
           if (gApp->config.bAccentIcon) {
             _scUpdateWindowIcon(hWnd, true);
           }
-          InvalidateRect(hWnd, NULL, TRUE);
         }
       }
       return 0;
@@ -2933,7 +2083,7 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     case WM_PAINT: {
       PAINTSTRUCT ps;
       HDC hDC = BeginPaint(hWnd, &ps);
-      _scRender(hDC);
+      _scRender(hDC, &ps.rcPaint);
       EndPaint(hWnd, &ps);
       return 0;
     }
@@ -2950,52 +2100,9 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 //------------------------------------------------------------------------
 scInternal void
 _scOnLogPushed(void) {
-  if (gUI.hWindow && gUI.eCurrentPage == SC_PAGE_LOGS) {
-    gUI.bNeedsLayout = true;
-    InvalidateRect(gUI.hWindow, NULL, FALSE);
+  if (gUI.hWindow && gUI.eCurrentPage == SC_PAGE_LOGS && InterlockedExchange(&gUI.lLogPending, 1) == 0) {
+    PostMessageW(gUI.hWindow, WM_LOG_PUSHED, 0, 0);
   }
-}
-
-scInternal void
-_scOnVersionLinkClicked(s32 iParam) {
-  (void)iParam;
-  char cLink[1024] = {0};
-  snprintf(cLink, sizeof(cLink), "https://www.github.com/daniel-w0/screencap/releases/tag/%s", SC_VERSION_STRING);
-  ShellExecuteA(NULL, "open", cLink, NULL, NULL, SW_SHOW);
-}
-
-scInternal void
-_scSetupSidebar() {
-  gUI.nSidebarWidgetCount = 0;
-  gUI.iHoveredSidebarWidget = -1;
-  for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
-    RECT r = { 10, 20 + i * 35, 140, 50 + i * 35 };
-    _scSidebarPush(_scMakePageTab(r, (scPageID)i));
-  }
-  _scSidebarPush(_scMakeLink((RECT){ 0, 0, SIDEBAR_WIDTH, 30 }, SC_VERSION_STRING_FULL_W, _scOnVersionLinkClicked, 0, true));
-}
-
-scInternal void
-_scSetupPages() {
-  scPage* pGeneral = &gUI.aPages[SC_PAGE_GENERAL];
-  pGeneral->szKey     = "General";
-  pGeneral->pfnLayout = _scLayoutGeneral;
-
-  scPage* pSettings = &gUI.aPages[SC_PAGE_SETTINGS];
-  pSettings->szKey     = "Settings";
-  pSettings->pfnLayout = _scLayoutSettings;
-
-  scPage* pGallery = &gUI.aPages[SC_PAGE_GALLERY];
-  pGallery->szKey     = "Gallery";
-  pGallery->pfnLayout = _scLayoutGallery;
-
-  scPage* pLogs = &gUI.aPages[SC_PAGE_LOGS];
-  pLogs->szKey     = "Logs";
-  pLogs->pfnLayout = _scLayoutLogs;
-
-  scPage* pCredits = &gUI.aPages[SC_PAGE_CREDITS];
-  pCredits->szKey     = "Credits";
-  pCredits->pfnLayout = _scLayoutCredits;
 }
 
 void scUIOpenWindow() {
@@ -3010,20 +2117,22 @@ void scUIOpenWindow() {
       return;
     }
 
-    gUI.eCurrentPage      = SC_PAGE_GENERAL;
-    gUI.iHoveredSidebarWidget = -1;
-    gUI.iHoveredWidget    = -1;
-    gUI.iEditingHotkey    = -1;
-    gUI.iExpandedDropdown = -1;
-    gUI.iDropdownHover    = -1;
+    gUI.eCurrentPage   = SC_PAGE_GENERAL;
+    gUI.iEditingHotkey = -1;
   }
 
-  _scSetupPages();
-  _scSetupSidebar();
+  if (!gUI.pGui) {
+    scGuiHost host = { 0 };
+    host.pfnInvalidate   = _scHostInvalidate;
+    host.pfnCapture      = _scHostCapture;
+    host.pfnValueChanged = _scHostValueChanged;
+    gUI.pGui = scGuiCreate(&host);
+  }
 
   gUI.fUIScale = scGetDPIScale(gUI.hWindow);
-  gUI.bNeedsLayout = true;
   scUIThemeGet(&gUI.theme, _scScale(15));
+  _scApplyTheme();
+  _scRebuild();
 
   if (!gUI.bRegisteredClass) {
     WNDCLASSEXW wc   = { 0 };
@@ -3053,6 +2162,10 @@ void scUIOpenWindow() {
       return;
     }
 
+    RECT rcClient;
+    GetClientRect(gUI.hWindow, &rcClient);
+    scGuiResize(gUI.pGui, rcClient.right, rcClient.bottom);
+
     if (gApp->bIsGeWin10) {
       BOOL bDark = gUI.theme.bDark;
       DwmSetWindowAttribute(gUI.hWindow, DWMWA_USE_IMMERSIVE_DARK_MODE, &bDark, sizeof(bDark));
@@ -3061,13 +2174,13 @@ void scUIOpenWindow() {
       _scUpdateWindowIcon(gUI.hWindow, true);
     }
     scLogDebug("Created main window");
+
+    _scInitThumbWorker();
   } else {
     BringWindowToTop(gUI.hWindow);
     SetForegroundWindow(gUI.hWindow);
     scLogDebug("Focused main window");
   }
-
-  _scInitThumbWorker();
 
   ShowWindow(gUI.hWindow, SW_SHOW);
   UpdateWindow(gUI.hWindow);
@@ -3080,19 +2193,27 @@ void scUICloseWindow() {
 
   _scShutdownThumbWorker();
   _scThumbCacheClear();
-  for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
-    free(gUI.aPages[i].aWidgets);
-    gUI.aPages[i].aWidgets     = NULL;
-    gUI.aPages[i].nWidgetCount = 0;
-    gUI.aPages[i].nWidgetCap   = 0;
+
+  scGuiDestroy(gUI.pGui);
+  gUI.pGui     = NULL;
+  gUI.pContent = NULL;
+  gUI.pLogView = NULL;
+  if (gUI.hBackBitmap) {
+    DeleteObject(gUI.hBackBitmap);
+    gUI.hBackBitmap = NULL;
   }
-  free(gUI.aSidebarWidgets);
+  gUI.iBackWidth  = 0;
+  gUI.iBackHeight = 0;
+
+  free(gUI.aLogLines);
+  gUI.aLogLines = NULL;
+  gUI.nLogLines = 0;
+  gUI.nLogCap   = 0;
+  gUI.iLogWidth = 0;
+
   free(gAudioDeviceOptions);
   gAudioDeviceOptions = NULL;
   gAudioDeviceOptionsCap = 0;
-  gUI.aSidebarWidgets = NULL;
-  gUI.nSidebarWidgetCount = 0;
-  gUI.nSidebarWidgetCap = 0;
 
   if (gUI.hWindow) {
     gUI.hWindow = NULL;
@@ -3105,29 +2226,25 @@ void scUISetCurrentPage(scPageID ePageID) {
     _scCancelHotkeyRecording();
   }
 
-  gUI.imageDrag.bPending = false;
-  gUI.eCurrentPage      = ePageID;
-  gUI.iHoveredSidebarWidget = -1;
-  gUI.iHoveredWidget    = -1;
-  gUI.iExpandedDropdown = -1;
-  gUI.bNeedsLayout      = true;
+  _scSavePageScroll();
+  gUI.pContent     = NULL;
+  gUI.eCurrentPage = ePageID;
   if (ePageID == SC_PAGE_GALLERY) {
-    gUI.aPages[ePageID].scroll.nScrollY = 0;
+    gUI.aPageScrollY[ePageID] = 0;
   }
 
-  if (gUI.hWindow) {
-    InvalidateRect(gUI.hWindow, NULL, TRUE);
-  }
+  _scRebuild();
 }
 
 void scUIOnCaptureSaved(const wchar_t* wszPath) {
   (void)wszPath;
   if (gUI.hWindow && gUI.eCurrentPage == SC_PAGE_GALLERY) {
-    gUI.bNeedsLayout = true;
-    InvalidateRect(gUI.hWindow, NULL, FALSE);
+    PostMessageW(gUI.hWindow, WM_REBUILD_UI, SC_PAGE_GALLERY, 0);
   }
 }
 
 void scUIOnAudioDevicesUpdated() {
-  gUI.bNeedsLayout = true;
+  if (gUI.hWindow) {
+    PostMessageW(gUI.hWindow, WM_REBUILD_UI, SC_PAGE_SETTINGS, 0);
+  }
 }
