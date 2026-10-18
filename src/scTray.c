@@ -48,7 +48,7 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
         POINT pt;
         GetCursorPos(&pt);
 
-        const wchar_t* wszSettingsText = scLocaleGet("Settings...");
+        const wchar_t* wszSettingsText = scLocaleGet("Open Window");
         const wchar_t* wszExitText     = scLocaleGet("Exit");
 
         HMENU hActionMenu = CreatePopupMenu();
