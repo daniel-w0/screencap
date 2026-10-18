@@ -2083,7 +2083,8 @@ _scLayoutCredits(scPage* pPage, RECT rc) {
   static const scLicenseExample kLicenses[] = {
     {
       L"synthesthea (https://art.synthesthea.com/)",
-      L"Screenshot sounds"
+      L"Screenshot sounds\n"
+      L"The new icon :)"
     },
     {
       L"miniaudio (MIT-0)",
