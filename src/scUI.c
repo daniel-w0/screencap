@@ -70,6 +70,13 @@ typedef struct {
   s32         iTop;
 } scLogLine;
 
+typedef enum {
+  SC_SETTINGS_GENERAL = 0,
+  SC_SETTINGS_RECORDING,
+  SC_SETTINGS_SHORTCUTS,
+  SC_SETTINGS_SECTION_COUNT
+} scSettingsSection;
+
 typedef struct {
   scUITheme theme;
   scGui*    pGui;
@@ -86,6 +93,9 @@ typedef struct {
 
   scPageID eCurrentPage;
   s32      aPageScrollY[_SC_PAGE_COUNT];
+  scSettingsSection eSettingsSection;
+  s32      aSettingsScrollY[SC_SETTINGS_SECTION_COUNT];
+  bool     bSettingsExpanded;
 
   HBITMAP hBackBitmap;
   s32     iBackWidth;
@@ -118,7 +128,7 @@ static HHOOK gKeyboardHook;
 
 #define SIDEBAR_WIDTH   150
 
-static const char* const kPageKeys[_SC_PAGE_COUNT] = { "General", "Settings", "Gallery", "Logs", "Credits" };
+static const char* const kSettingsSectionKeys[SC_SETTINGS_SECTION_COUNT] = { "General", "Recording", "Shortcuts" };
 
 scInternal void _scBeginHotkeyRecording(s32 iIndex);
 scInternal void _scCancelHotkeyRecording();
@@ -139,7 +149,12 @@ _scCurrentScrollY() {
 
 scInternal void
 _scSavePageScroll() {
-  if (gUI.pContent) {
+  if (!gUI.pContent) {
+    return;
+  }
+  if (gUI.eCurrentPage == SC_PAGE_SETTINGS) {
+    gUI.aSettingsScrollY[gUI.eSettingsSection] = scGetScrollY(gUI.pContent);
+  } else {
     gUI.aPageScrollY[gUI.eCurrentPage] = scGetScrollY(gUI.pContent);
   }
 }
@@ -1607,6 +1622,36 @@ _scOnTabClicked(s32 iParam) {
   scUISetCurrentPage((scPageID)iParam);
 }
 
+scInternal void
+_scOnSettingsTabClicked(s32 iParam) {
+  if (iParam < 0 || iParam >= SC_SETTINGS_SECTION_COUNT) {
+    return;
+  }
+  if (gUI.iEditingHotkey != -1) {
+    _scCancelHotkeyRecording();
+  }
+
+  _scSavePageScroll();
+  gUI.pContent = NULL;
+  gUI.eCurrentPage = SC_PAGE_SETTINGS;
+  gUI.eSettingsSection = (scSettingsSection)iParam;
+  gUI.bSettingsExpanded = true;
+  _scRebuild();
+}
+
+scInternal void
+_scOnSettingsHeaderClicked(s32 iParam) {
+  (void)iParam;
+  if (gUI.bSettingsExpanded && gUI.eCurrentPage == SC_PAGE_SETTINGS) {
+    gUI.bSettingsExpanded = false;
+    scUISetCurrentPage(SC_PAGE_GENERAL);
+    return;
+  }
+
+  gUI.bSettingsExpanded = true;
+  _scOnSettingsTabClicked(SC_SETTINGS_GENERAL);
+}
+
 scInternal s32
 _scFindIndex(const s32* aValues, s32 nCount, s32 iValue) {
   for (s32 i = 0; i < nCount; ++i) {
@@ -1632,7 +1677,7 @@ _scCreatePage() {
 }
 
 scInternal scNode*
-_scBuildGeneral() {
+_scBuildCapture() {
   scNode* pPage = _scCreatePage();
   for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
     if (i == SC_HOTKEY_OCR && !gApp->bIsGeWin10) {
@@ -1645,42 +1690,8 @@ _scBuildGeneral() {
   return pPage;
 }
 
-scInternal scNode*
-_scBuildSettings() {
-  scNode* pPage = _scCreatePage();
-
-  scAddChild(pPage, scCreateLabel(scLocaleGet("Screenshot Destination"), true));
-
-  scNode* pPathRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(30));
-  scSetSpacing(pPathRow, 10);
-  scAddChild(pPathRow, scCreateField(gApp->config.wszSavePath));
-  scNode* pBrowse = scCreateButton(scLocaleGet("Browse..."), _scOnBrowseClicked, 0);
-  scSetSize(pBrowse, scLengthPixels(100), scLengthPixels(30));
-  scAddChild(pPathRow, pBrowse);
-  scAddChild(pPage, pPathRow);
-  scAddChild(pPage, scCreateSpacer(scLengthPixels(1), scLengthPixels(8)));
-
-  s32 iLanguage = 0;
-  for (s32 i = 0; i < scLocaleCount(); ++i) {
-    if (strcmp(scLocaleCode(i), scLocaleCurrent()) == 0) {
-      iLanguage = i;
-      break;
-    }
-  }
-  scAddChild(pPage, scCreateSlider(scLocaleGet("UI Scale"), &gApp->config.fGuiScale, 0.5, 4.0f, 0.1f, 0, NULL));
-  scAddChild(pPage, scCreateDropdown(scLocaleGet("Language"), scLocaleCodes(), scLocaleCount(), iLanguage, _scOnLanguageSelected, 0));
-
-  scAddChild(pPage, scCreateDropdown(scLocaleGet("Recording Framerate"), kFramerateOptions, SC_FRAMERATE_COUNT,
-    _scFindIndex(kFramerateValues, SC_FRAMERATE_COUNT, gApp->config.iFFmpegFramerate), _scOnFramerateSet, 0));
-  scAddChild(pPage, scCreateDropdown(scLocaleGet("Recording Quality"), kRecordQualityOptions, SC_QUALITY_COUNT,
-    _scFindIndex(kRecordQualityValues, SC_QUALITY_COUNT, (s32)gApp->config.eRecordQuality), _scOnRecordQualitySet, 0));
-  scAddChild(pPage, scCreateDropdown(scLocaleGet("Recording Output Resolution"), kRecordResOptions, SC_MAXRES_COUNT,
-    _scFindIndex(kRecordResValues, SC_MAXRES_COUNT, (s32)gApp->config.eRecordMaxRes), _scOnRecordResSet, 0));
-
-  _scAddToggle(pPage, "Show Cursor (Recording)", &gApp->config.bRecordShowCursor, NULL);
-  _scAddToggle(pPage, "Force Software Encoding", &gApp->config.bRecordForceSoftware, NULL);
-  _scAddToggle(pPage, "Capture Audio", &gApp->config.bCaptureAudio, _scOnCaptureAudioToggled);
-
+scInternal void
+_scBuildAudioSettings(scNode* pPage) {
   if (gApp->config.bCaptureAudio) {
     bool bHaveInputOptions = _scBuildAudioDeviceOptions(
         gAudio.pCaptureDevices, gAudio.captureDeviceCount,
@@ -1783,7 +1794,33 @@ _scBuildSettings() {
     scAddChild(pPage, pAudioColumns);
   }
 
-  scAddChild(pPage, scCreateSpacer(scLengthPixels(1), scLengthPixels(15)));
+
+}
+
+scInternal scNode*
+_scBuildSettingsGeneral() {
+  scNode* pPage = _scCreatePage();
+  scAddChild(pPage, scCreateLabel(scLocaleGet("General"), true));
+
+  scAddChild(pPage, scCreateLabel(scLocaleGet("Screenshot Destination"), true));
+  scNode* pPathRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(30));
+  scSetSpacing(pPathRow, 10);
+  scAddChild(pPathRow, scCreateField(gApp->config.wszSavePath));
+  scNode* pBrowse = scCreateButton(scLocaleGet("Browse..."), _scOnBrowseClicked, 0);
+  scSetSize(pBrowse, scLengthPixels(100), scLengthPixels(30));
+  scAddChild(pPathRow, pBrowse);
+  scAddChild(pPage, pPathRow);
+
+  s32 iLanguage = 0;
+  for (s32 i = 0; i < scLocaleCount(); ++i) {
+    if (strcmp(scLocaleCode(i), scLocaleCurrent()) == 0) {
+      iLanguage = i;
+      break;
+    }
+  }
+  scAddChild(pPage, scCreateSlider(scLocaleGet("UI Scale"), &gApp->config.fGuiScale, 0.5, 4.0f, 0.1f, 0, NULL));
+  scAddChild(pPage, scCreateDropdown(scLocaleGet("Language"), scLocaleCodes(), scLocaleCount(), iLanguage, _scOnLanguageSelected, 0));
+  scAddChild(pPage, scCreateSpacer(scLengthPixels(1), scLengthPixels(8)));
 
   _scAddToggle(pPage, "Copy screenshot to Clipboard", &gApp->config.bCopyToClipboard, NULL);
   _scAddToggle(pPage, "Run on Startup", &gApp->config.bRunAtStartup, scSetRunOnStartup);
@@ -1793,14 +1830,49 @@ _scBuildSettings() {
   }
   _scAddToggle(pPage, "Start Minimized", &gApp->config.bStartMinimized, NULL);
   _scAddToggle(pPage, "Icon uses Accent Color", &gApp->config.bAccentIcon, _scUpdateIconOption);
+  return pPage;
+}
 
-  scAddChild(pPage, scCreateLabel(L"Input Settings", true));
+scInternal scNode*
+_scBuildSettingsRecording() {
+  scNode* pPage = _scCreatePage();
+  scAddChild(pPage, scCreateLabel(scLocaleGet("Recording"), true));
+
+  scAddChild(pPage, scCreateDropdown(scLocaleGet("Recording Framerate"), kFramerateOptions, SC_FRAMERATE_COUNT,
+    _scFindIndex(kFramerateValues, SC_FRAMERATE_COUNT, gApp->config.iFFmpegFramerate), _scOnFramerateSet, 0));
+  scAddChild(pPage, scCreateDropdown(scLocaleGet("Recording Quality"), kRecordQualityOptions, SC_QUALITY_COUNT,
+    _scFindIndex(kRecordQualityValues, SC_QUALITY_COUNT, (s32)gApp->config.eRecordQuality), _scOnRecordQualitySet, 0));
+  scAddChild(pPage, scCreateDropdown(scLocaleGet("Recording Output Resolution"), kRecordResOptions, SC_MAXRES_COUNT,
+    _scFindIndex(kRecordResValues, SC_MAXRES_COUNT, (s32)gApp->config.eRecordMaxRes), _scOnRecordResSet, 0));
+
+  _scAddToggle(pPage, "Show Cursor (Recording)", &gApp->config.bRecordShowCursor, NULL);
+  _scAddToggle(pPage, "Force Software Encoding", &gApp->config.bRecordForceSoftware, NULL);
+  _scAddToggle(pPage, "Capture Audio", &gApp->config.bCaptureAudio, _scOnCaptureAudioToggled);
+  if (gApp->config.bCaptureAudio) {
+    _scBuildAudioSettings(pPage);
+  }
+  return pPage;
+}
+
+scInternal scNode*
+_scBuildSettingsShortcuts() {
+  scNode* pPage = _scCreatePage();
+  scAddChild(pPage, scCreateLabel(scLocaleGet("Keyboard Shortcuts"), true));
   for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
     scHotkeyID eHotkey = (scHotkeyID)i;
     scAddChild(pPage, scCreateCustom(scLengthStretch(1.0f), scLengthPixels(30), &kHotkeyOps, &eHotkey, sizeof(eHotkey)));
   }
-
   return pPage;
+}
+
+scInternal scNode*
+_scBuildSettings() {
+  switch (gUI.eSettingsSection) {
+    case SC_SETTINGS_GENERAL:   return _scBuildSettingsGeneral();
+    case SC_SETTINGS_RECORDING: return _scBuildSettingsRecording();
+    case SC_SETTINGS_SHORTCUTS: return _scBuildSettingsShortcuts();
+    default:                    return _scBuildSettingsGeneral();
+  }
 }
 
 scInternal void
@@ -1972,7 +2044,7 @@ _scBuildCredits() {
 scInternal scNode*
 _scBuildPage(scPageID ePage) {
   switch (ePage) {
-    case SC_PAGE_GENERAL:  return _scBuildGeneral();
+    case SC_PAGE_GENERAL:  return _scBuildCapture();
     case SC_PAGE_SETTINGS: return _scBuildSettings();
     case SC_PAGE_GALLERY:  return _scBuildGallery();
     case SC_PAGE_LOGS:     return _scBuildLogs();
@@ -1996,9 +2068,36 @@ _scBuildSidebar() {
   scSetSpacing(pSidebar, 5);
   scSetSurface(pSidebar, true);
 
-  for (s32 i = 0; i < _SC_PAGE_COUNT; ++i) {
-    scAddChild(pSidebar, scCreateTab(scLocaleGet(kPageKeys[i]), i == (s32)gUI.eCurrentPage, _scOnTabClicked, i));
+  scAddChild(pSidebar, scCreateTab(scLocaleGet("Capture"),
+                                   gUI.eCurrentPage == SC_PAGE_GENERAL,
+                                   _scOnTabClicked, SC_PAGE_GENERAL));
+  scAddChild(pSidebar, scCreateTab(scLocaleGet("Settings"),
+                                   gUI.eCurrentPage == SC_PAGE_SETTINGS,
+                                   _scOnSettingsHeaderClicked, 0));
+
+  if (gUI.bSettingsExpanded) {
+    for (s32 i = 0; i < SC_SETTINGS_SECTION_COUNT; ++i) {
+      scNode* pRow = scCreateHStack(scLengthStretch(1.0f), scLengthPixels(30));
+      scNode* pTab = scCreateTab(scLocaleGet(kSettingsSectionKeys[i]),
+                                 gUI.eCurrentPage == SC_PAGE_SETTINGS && gUI.eSettingsSection == (scSettingsSection)i,
+                                 _scOnSettingsTabClicked, i);
+      scSetSize(pTab, scLengthStretch(1.0f), scLengthPixels(30));
+      scAddChild(pRow, scCreateSpacer(scLengthPixels(12), scLengthPixels(1)));
+      scAddChild(pRow, pTab);
+      scAddChild(pSidebar, pRow);
+    }
   }
+
+  scAddChild(pSidebar, scCreateTab(scLocaleGet("Gallery"),
+                                   gUI.eCurrentPage == SC_PAGE_GALLERY,
+                                   _scOnTabClicked, SC_PAGE_GALLERY));
+  scAddChild(pSidebar, scCreateTab(scLocaleGet("Logs"),
+                                   gUI.eCurrentPage == SC_PAGE_LOGS,
+                                   _scOnTabClicked, SC_PAGE_LOGS));
+  scAddChild(pSidebar, scCreateTab(scLocaleGet("Credits"),
+                                   gUI.eCurrentPage == SC_PAGE_CREDITS,
+                                   _scOnTabClicked, SC_PAGE_CREDITS));
+
   scAddChild(pSidebar, scCreateSpacer(scLengthPixels(1), scLengthStretch(1.0f)));
   scAddChild(pSidebar, scCreateLink(SC_VERSION_STRING_FULL_W, _scOnVersionLinkClicked, 0));
   return pSidebar;
@@ -2015,7 +2114,11 @@ _scRebuild() {
   scNode* pRoot = scCreateHStack(scLengthPercent(1.0f), scLengthPercent(1.0f));
   scAddChild(pRoot, _scBuildSidebar());
   gUI.pContent = _scBuildPage(gUI.eCurrentPage);
-  scSetScrollY(gUI.pContent, gUI.aPageScrollY[gUI.eCurrentPage]);
+  if (gUI.eCurrentPage == SC_PAGE_SETTINGS) {
+    scSetScrollY(gUI.pContent, gUI.aSettingsScrollY[gUI.eSettingsSection]);
+  } else {
+    scSetScrollY(gUI.pContent, gUI.aPageScrollY[gUI.eCurrentPage]);
+  }
   scAddChild(pRoot, gUI.pContent);
   scGuiSetRoot(gUI.pGui, pRoot);
 }
@@ -2277,6 +2380,8 @@ void scUIOpenWindow() {
     }
 
     gUI.eCurrentPage   = SC_PAGE_GENERAL;
+    gUI.eSettingsSection = SC_SETTINGS_GENERAL;
+    gUI.bSettingsExpanded = false;
     gUI.iEditingHotkey = -1;
   }
 
@@ -2391,6 +2496,9 @@ void scUISetCurrentPage(scPageID ePageID) {
   _scSavePageScroll();
   gUI.pContent     = NULL;
   gUI.eCurrentPage = ePageID;
+  if (ePageID == SC_PAGE_SETTINGS) {
+    gUI.bSettingsExpanded = true;
+  }
   if (ePageID == SC_PAGE_GALLERY) {
     gUI.aPageScrollY[ePageID] = 0;
   }
