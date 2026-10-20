@@ -9,6 +9,7 @@
 #include "scConfig.h"
 #include "scTimer.h"
 #include "scAudio.h"
+#include "scGui.h"
 #include "stb_image_write.h"
 #include "stb_image.h"
 
@@ -179,7 +180,7 @@ _scPaintMagnifier(scCaptureContext* pCtx, HDC hMemDC) {
 
   BitBlt(hMemDC, destX, destY, SC_MAG_SIZE, SC_MAG_SIZE, pCtx->hMagDC, 0, 0, SRCCOPY);
 
-  HPEN hPen    = CreatePen(PS_SOLID, 1, RGB(156, 215, 228));
+  HPEN hPen    = CreatePen(PS_SOLID, 1, gApp->config.bAccentInteractive ? gApp->accentColor : RGB(156, 215, 228));
   HPEN hOldPen = SelectObject(hMemDC, hPen);
 
   // Crosshair.
@@ -360,8 +361,8 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         HBITMAP hAlphaBmp    = CreateCompatibleBitmap(hMemDC, 1, 1);
         HBITMAP hOldAlphaBmp = SelectObject(hAlphaDC, hAlphaBmp);
 
-        SetPixel(hAlphaDC, 0, 0, RGB(155, 155, 215));
-        BLENDFUNCTION bf = { AC_SRC_OVER, 0, 32, 0 };
+        SetPixel(hAlphaDC, 0, 0, gApp->config.bAccentInteractive ? gApp->accentColor : RGB(155, 155, 215));
+        BLENDFUNCTION bf = { AC_SRC_OVER, 0, 16, 0 };
         GdiAlphaBlend(hMemDC, r.left, r.top, r.right - r.left, r.bottom - r.top, hAlphaDC, 0, 0, 1, 1, bf);
 
         SelectObject(hAlphaDC, hOldAlphaBmp);
@@ -371,7 +372,7 @@ OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
       // Dotted selection border.
       {
-        HPEN   hPen      = CreatePen(PS_DOT, 1, RGB(156, 215, 228));
+        HPEN   hPen      = CreatePen(PS_DOT, 1, gApp->config.bAccentInteractive ? gApp->accentColor : RGB(156, 215, 228));
         HPEN   hOldPen   = SelectObject(hMemDC, hPen);
         HBRUSH hOldBrush = SelectObject(hMemDC, GetStockObject(NULL_BRUSH));
 
@@ -765,6 +766,7 @@ bool scAppInit() {
 }
 
 void scAppRunHandlerFromActionID(scHotkeyID iHotkeyID) {
+  gApp->accentColor = scGetSystemAccentColor();
   scCaptureHandler* pHandler = gApp->aCaptureHandlers[iHotkeyID];
   if (pHandler && pHandler->cbOnHotkeyPressed) {
     bool bHasValidContext = gApp->pCaptureContext != NULL;

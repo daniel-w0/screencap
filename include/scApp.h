@@ -98,7 +98,8 @@ typedef struct {
   bool            bPlaySoundOnAction;
   bool            bShowNotification;
   bool            bStartMinimized;
-  bool            bAccentIcon;
+  bool            bAccentIcon; // system accent color for icon
+  bool            bAccentInteractive; // system accent color for interactive mode
 } scAppConfig;
 
 typedef struct {
@@ -176,6 +177,7 @@ typedef struct {
   scCaptureHandler* pActiveHandler;
   scClipboard stClipboard;
   bool bIsGeWin10;
+  COLORREF accentColor; // we set this before we perform any action just to cache it
 } scApp;
 
 extern scApp* gApp;

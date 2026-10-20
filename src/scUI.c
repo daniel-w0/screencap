@@ -1944,6 +1944,7 @@ _scBuildSettingsGeneral() {
   }
   _scAddToggle(pPage, "Start Minimized", &gApp->config.bStartMinimized, NULL);
   _scAddToggle(pPage, "Icon uses Accent Color", &gApp->config.bAccentIcon, _scUpdateIconOption);
+  _scAddToggle(pPage, "Interactive mode uses Accent Color", &gApp->config.bAccentInteractive, NULL);
   return pPage;
 }
 
