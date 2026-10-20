@@ -2,7 +2,6 @@
 #include "scApp.h"
 #include "scLogging.h"
 #include "scGdiPlus.h"
-#include "scUITheme.h"
 #include "scGui.h"
 
 #include <windowsx.h>
@@ -22,7 +21,7 @@
 #define SC_COLOR_PICKER_MAGNIFIER_CELLS 18
 #define SC_COLOR_PICKER_ZOOM_MAX 10
 
-scGlobal scUITheme gColorPickerTheme;
+scGlobal scGuiTheme gColorPickerTheme;
 scGlobal bool gColorPickerThemeReady;
 scGlobal f32 gColorPickerThemeScale;
 scGlobal bool gColorPickerClassRegistered;
@@ -31,6 +30,17 @@ scGlobal ULONG_PTR gColorPickerGdiPlusToken;
 scGlobal HHOOK gColorPickerMouseHook;
 scGlobal HHOOK gColorPickerKeyboardHook;
 scGlobal struct scColorPickerContextTag* gColorPickerContext;
+
+scInternal void _scPickerRebuildMain(struct scColorPickerContextTag* ctx);
+scInternal void _scPickerEnsurePreviewTree(struct scColorPickerContextTag* ctx);
+scInternal void _scPickerGetPreviewSize(const struct scColorPickerContextTag* ctx, int* width, int* height);
+scInternal void _scPickerSetPreviewRegion(HWND hWnd, int width, int height);
+
+scInternal int
+_scPickerPx(f32 value) {
+  f32 scale = gColorPickerThemeScale > 0.0f ? gColorPickerThemeScale : 1.0f;
+  return (int)(value * scale + 0.5f);
+}
 
 #define SC_PICKER_BG          (gColorPickerTheme.dwBackground)
 #define SC_PICKER_PANEL       (gColorPickerTheme.dwCard)
@@ -150,11 +160,7 @@ _scPickerStopMouseHook(void) {
 
 scInternal void
 _scPickerDestroyTheme(void) {
-  if (gColorPickerTheme.pFont) DeleteObject(gColorPickerTheme.pFont);
-  if (gColorPickerTheme.pBoldFont) DeleteObject(gColorPickerTheme.pBoldFont);
-  if (gColorPickerTheme.hBackgroundBrush) DeleteObject(gColorPickerTheme.hBackgroundBrush);
-  if (gColorPickerTheme.hCardBrush) DeleteObject(gColorPickerTheme.hCardBrush);
-  memset(&gColorPickerTheme, 0, sizeof(gColorPickerTheme));
+  scGuiThemeDestroy(&gColorPickerTheme);
   gColorPickerThemeReady = false;
 }
 
@@ -162,54 +168,70 @@ scInternal void
 _scPickerApplyGuiTheme(scGui* pGui) {
   if (!pGui) return;
 
-  scUITheme* t = &gColorPickerTheme;
-  scGuiTheme theme = { 0 };
-  theme.dwText        = t->dwText;
-  theme.dwTextDim     = t->dwTextDim;
-  theme.dwTextFaint   = t->dwTextFaint;
-  theme.dwBackground  = t->dwBackground;
-  theme.dwPanel       = t->dwCard;
-  theme.dwPopup       = t->dwPopup;
-  theme.dwCard        = t->dwCard;
-  theme.dwCardHover   = t->dwCardHover;
-  theme.dwCardActive  = t->dwCardActive;
-  theme.dwStroke      = t->dwStroke;
-  theme.dwStrokeSoft  = t->dwStrokeSoft;
-  theme.dwAccent      = t->dwAccent;
-  theme.dwAccentHover = t->dwAccentHover;
-  theme.dwAccentText  = RGB(255, 255, 255);
-  theme.dwPillOff     = t->dwPillOff;
-  theme.dwScrollThumb = t->dwScrollThumb;
-  theme.hFont         = (HFONT)t->pFont;
-  theme.hBoldFont     = (HFONT)t->pBoldFont;
+  scGuiTheme theme = gColorPickerTheme;
+  theme.dwPanel = theme.dwCard;
   scGuiSetTheme(pGui, &theme);
+  scGuiSetScale(pGui, gColorPickerThemeScale);
 }
 
 scInternal void
 _scPickerRefreshTheme(HWND hWnd) {
   f32 fUser = gApp->config.fGuiScale > 0.0f ? gApp->config.fGuiScale : 1.0f;
   f32 scale = scGetDPIScale(hWnd) * fUser;
+  if (scale < 0.5f) scale = 1.0f;
 
   bool dark = scIsWindowsDarkTheme();
   COLORREF accent = scGetSystemAccentColor();
-
+  bool bScaleChanged = !gColorPickerThemeReady || gColorPickerThemeScale != scale;
   if (gColorPickerThemeReady &&
       gColorPickerTheme.bDark == dark &&
       gColorPickerTheme.dwAccent == accent &&
-      gColorPickerThemeScale == scale) {
+      !bScaleChanged) {
     return;
   }
 
   _scPickerDestroyTheme();
-  s32 fontScale = (s32)(15.0f * scale + 0.5f);
-  scUIThemeGet(&gColorPickerTheme, fontScale);
+  scGuiThemeInit(&gColorPickerTheme, (s32)(15.0f * scale + 0.5f));
   gColorPickerThemeScale = scale;
   gColorPickerThemeReady = true;
 
-  if (gColorPickerContext) {
-    _scPickerApplyGuiTheme(gColorPickerContext->pGui);
-    _scPickerApplyGuiTheme(gColorPickerContext->pPreviewGui);
+  scColorPickerContext* ctx = gColorPickerContext;
+  if (!ctx) return;
+
+  _scPickerApplyGuiTheme(ctx->pGui);
+  _scPickerApplyGuiTheme(ctx->pPreviewGui);
+
+  if (bScaleChanged) {
+    if (ctx->hWnd && IsWindow(ctx->hWnd)) {
+      RECT wr;
+      if (GetWindowRect(ctx->hWnd, &wr)) {
+        int width = _scPickerPx(SC_COLOR_PICKER_WIDTH);
+        int height = _scPickerPx(SC_COLOR_PICKER_HEIGHT + SC_COLOR_PICKER_TITLEBAR_HEIGHT);
+        SetWindowPos(ctx->hWnd, NULL, wr.left, wr.top, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+        HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, _scPickerPx(14), _scPickerPx(14));
+        if (region && !SetWindowRgn(ctx->hWnd, region, TRUE)) DeleteObject(region);
+        scGuiResize(ctx->pGui, width, height);
+      }
+    }
+    if (ctx->hPreviewWnd && IsWindow(ctx->hPreviewWnd)) {
+      int width, height;
+      _scPickerGetPreviewSize(ctx, &width, &height);
+      SetWindowPos(ctx->hPreviewWnd, HWND_TOPMOST, ctx->ptPreview.x, ctx->ptPreview.y,
+                   width, height, SWP_NOACTIVATE);
+      _scPickerSetPreviewRegion(ctx->hPreviewWnd, width, height);
+      ctx->iPreviewWidth = width;
+      ctx->iPreviewHeight = height;
+      scGuiResize(ctx->pPreviewGui, width, height);
+    }
+    if (ctx->iZoom >= 0) {
+      ctx->iPreviewBuiltZoom = -1;
+      _scPickerEnsurePreviewTree(ctx);
+    }
+    _scPickerRebuildMain(ctx);
   }
+
+  if (ctx->hWnd && IsWindow(ctx->hWnd)) InvalidateRect(ctx->hWnd, NULL, FALSE);
+  if (ctx->hPreviewWnd && IsWindow(ctx->hPreviewWnd)) InvalidateRect(ctx->hPreviewWnd, NULL, FALSE);
 }
 
 scInternal bool
@@ -343,7 +365,8 @@ _scPickerDrawSwatch(GpGraphics* graphics, int cx, int cy, int diameter, COLORREF
   float d = (float)diameter;
   float x = (float)cx - d * 0.5f;
   float y = (float)cy - d * 0.5f;
-  gpFillEllipse(graphics, x - 2.0f, y - 2.0f, d + 4.0f, d + 4.0f,
+  float inset = (float)_scPickerPx(2);
+  gpFillEllipse(graphics, x - inset, y - inset, d + inset * 2.0f, d + inset * 2.0f,
                 gpColor(selected ? SC_PICKER_TEXT : SC_PICKER_BORDER, 255));
   gpFillEllipse(graphics, x, y, d, d, gpColor(color, 255));
 }
@@ -435,29 +458,32 @@ _scPickerOnCopyClicked(s32 iRow) {
 
 scInternal void
 _scPickerDrawTitle(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered) {
-  HFONT hFont = gColorPickerTheme.pBoldFont;
+  HFONT hFont = scGetNodeFont(pNode, SC_FONT_HEADING);
   if (!hFont) return;
-  RECT rcText = { r.left + 18, r.top, r.right, r.bottom };
-  _scPickerText(hDC, L"Color Picker", rcText, SC_PICKER_TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE, hFont);
+  RECT rcText = { r.left + _scPickerPx(18), r.top, r.right, r.bottom };
+  _scPickerText(hDC, L"Color Picker", rcText, scGetNodeTextColor(pNode, bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL), DT_LEFT | DT_VCENTER | DT_SINGLELINE, hFont);
 }
 
 scInternal void
 _scPickerDrawClose(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered) {
   if (bHovered) {
     GpGraphics* graphics = gpGraphicsBegin(hDC);
-    gpFillRound(graphics, r, 5.0f, gpColor(SC_PICKER_CLOSE_HOVER, 255));
+    COLORREF cHover = scNodeHasBackgroundOverride(pNode, SC_NODE_STATE_HOVER)
+      ? scGetNodeBackground(pNode, SC_NODE_STATE_HOVER) : SC_PICKER_CLOSE_HOVER;
+    gpFillRound(graphics, r, scGetNodeCornerRadius(pNode, 5.0f) * gColorPickerThemeScale, gpColor(cHover, 255));
     gpGraphicsEnd(graphics);
   }
 
   int cx = (r.left + r.right) / 2;
   int cy = (r.top + r.bottom) / 2;
-  HPEN pen = CreatePen(PS_SOLID, 2, bHovered ? RGB(255, 255, 255) : SC_PICKER_MUTED);
+  int inset = _scPickerPx(5);
+  HPEN pen = CreatePen(PS_SOLID, _scPickerPx(2), bHovered ? RGB(255, 255, 255) : SC_PICKER_MUTED);
   if (pen) {
     HGDIOBJ oldPen = SelectObject(hDC, pen);
-    MoveToEx(hDC, cx - 5, cy - 5, NULL);
-    LineTo(hDC, cx + 5, cy + 5);
-    MoveToEx(hDC, cx + 5, cy - 5, NULL);
-    LineTo(hDC, cx - 5, cy + 5);
+    MoveToEx(hDC, cx - inset, cy - inset, NULL);
+    LineTo(hDC, cx + inset, cy + inset);
+    MoveToEx(hDC, cx + inset, cy - inset, NULL);
+    LineTo(hDC, cx - inset, cy + inset);
     SelectObject(hDC, oldPen);
     DeleteObject(pen);
   }
@@ -466,14 +492,14 @@ _scPickerDrawClose(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered
 scInternal void
 _scPickerDrawCurrent(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered) {
   scColorPickerContext* ctx = *(scColorPickerContext**)scGetUserData(pNode);
-  RECT current = { r.left, r.top + 3, r.right, r.top + 39 };
+  RECT current = { r.left, r.top + _scPickerPx(3), r.right, r.top + _scPickerPx(39) };
 
   GpGraphics* graphics = gpGraphicsBegin(hDC);
   gpFillEllipse(graphics, (float)current.left, (float)current.top,
                 (float)(current.right - current.left), (float)(current.bottom - current.top),
                 gpColor(SC_PICKER_BORDER, 255));
-  gpFillEllipse(graphics, (float)(current.left + 2), (float)(current.top + 2),
-                (float)(current.right - current.left - 4), (float)(current.bottom - current.top - 4),
+  gpFillEllipse(graphics, (float)(current.left + _scPickerPx(2)), (float)(current.top + _scPickerPx(2)),
+                (float)(current.right - current.left - _scPickerPx(4)), (float)(current.bottom - current.top - _scPickerPx(4)),
                 gpColor(ctx->color, 255));
   gpGraphicsEnd(graphics);
 }
@@ -485,7 +511,7 @@ _scPickerDrawSwatchNode(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHo
   COLORREF color = ctx->history[pData->iIndex];
 
   GpGraphics* graphics = gpGraphicsBegin(hDC);
-  _scPickerDrawSwatch(graphics, (r.left + r.right) / 2, (r.top + r.bottom) / 2, 19, color, color == ctx->color);
+  _scPickerDrawSwatch(graphics, (r.left + r.right) / 2, (r.top + r.bottom) / 2, _scPickerPx(19), color, color == ctx->color);
   gpGraphicsEnd(graphics);
 }
 
@@ -504,47 +530,51 @@ _scPickerRebuildMain(scColorPickerContext* ctx) {
   scNode* pRoot = scCreateVStack(scLengthPercent(1.0f), scLengthPercent(1.0f));
   scSetOutline(pRoot, 7.0f);
 
-  scNode* pTitle = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(SC_COLOR_PICKER_TITLEBAR_HEIGHT - 1));
+  scNode* pTitle = scCreateHStack(scLengthPercent(1.0f), scLengthDips(SC_COLOR_PICKER_TITLEBAR_HEIGHT - 1));
   scSetPaddingEx(pTitle, 0, 0, 4, 0);
   scSetAlignment(pTitle, SC_ALIGN_MIDDLE);
   scAddChild(pTitle, scCreateCustom(scLengthStretch(1.0f), scLengthPercent(1.0f), &kPickerTitleOps, NULL, 0));
-  scAddChild(pTitle, scCreateCustom(scLengthPixels(44), scLengthPixels(30), &kPickerCloseOps, NULL, 0));
+  scAddChild(pTitle, scCreateCustom(scLengthDips(44), scLengthDips(30), &kPickerCloseOps, NULL, 0));
   scAddChild(pRoot, pTitle);
   scAddChild(pRoot, scCreateDivider());
 
-  scNode* pTop = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(68));
+  scNode* pTop = scCreateHStack(scLengthPercent(1.0f), scLengthDips(68));
   scSetPaddingEx(pTop, 18, 16, 18, 0);
   scSetSpacing(pTop, 8);
   scNode* pPick = scCreateButton(L"Pick", _scPickerOnPickClicked, 0);
-  scSetSize(pPick, scLengthPixels(86), scLengthPixels(42));
+  scSetSize(pPick, scLengthDips(86), scLengthDips(42));
   scAddChild(pTop, pPick);
-  scAddChild(pTop, scCreateCustom(scLengthPixels(36), scLengthPixels(42), &kPickerCurrentOps, &ctx, sizeof(ctx)));
+  scAddChild(pTop, scCreateCustom(scLengthDips(36), scLengthDips(42), &kPickerCurrentOps, &ctx, sizeof(ctx)));
 
   scNode* pInfo = scCreateVStack(scLengthStretch(1.0f), scLengthAuto());
   scSetPaddingEx(pInfo, 2, 0, 0, 0);
   scSetSpacing(pInfo, 4);
   scNode* pCurrentLabel = scCreateLabel(L"CURRENT COLOUR", true);
   scSetTextRole(pCurrentLabel, SC_TEXT_DIM);
+  scSetNodeFontRole(pCurrentLabel, SC_FONT_SMALL);
   scAddChild(pInfo, pCurrentLabel);
-  scAddChild(pInfo, scCreateLabel(strings.wszHex, false));
+  scNode* pCurrentValue = scCreateLabel(strings.wszHex, false);
+  scSetNodeFontRole(pCurrentValue, SC_FONT_HEADING);
+  scAddChild(pInfo, pCurrentValue);
   scAddChild(pTop, pInfo);
   scAddChild(pRoot, pTop);
   scAddChild(pRoot, scCreateDivider());
 
-  scNode* pRecent = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(38));
+  scNode* pRecent = scCreateHStack(scLengthPercent(1.0f), scLengthDips(38));
   scSetPaddingEx(pRecent, 18, 0, 18, 0);
   scSetSpacing(pRecent, 12);
   scSetAlignment(pRecent, SC_ALIGN_MIDDLE);
   scNode* pRecentLabel = scCreateLabel(L"Recent Colors", true);
   scSetTextRole(pRecentLabel, SC_TEXT_DIM);
-  scSetSize(pRecentLabel, scLengthPixels(107), scLengthAuto());
+  scSetNodeFontRole(pRecentLabel, SC_FONT_SMALL);
+  scSetSize(pRecentLabel, scLengthDips(107), scLengthAuto());
   scAddChild(pRecent, pRecentLabel);
   for (s32 i = 0; i < ctx->nHistory; ++i) {
     scPickerSwatchData data = { ctx, i };
-    scAddChild(pRecent, scCreateCustom(scLengthPixels(26), scLengthPixels(26), &kPickerSwatchOps, &data, sizeof(data)));
+    scAddChild(pRecent, scCreateCustom(scLengthDips(26), scLengthDips(26), &kPickerSwatchOps, &data, sizeof(data)));
   }
   scAddChild(pRoot, pRecent);
-  scAddChild(pRoot, scCreateSpacer(scLengthPixels(1), scLengthPixels(7)));
+  scAddChild(pRoot, scCreateSpacer(scLengthDips(1), scLengthDips(7)));
 
   const wchar_t* labels[SC_COLOR_PICKER_ROWS] = { L"HEX", L"RGB", L"HSL", L"VEC4" };
   const wchar_t* values[SC_COLOR_PICKER_ROWS] = { strings.wszHex, strings.wszRgb, strings.wszHsl, strings.wszVec4 };
@@ -552,7 +582,7 @@ _scPickerRebuildMain(scColorPickerContext* ctx) {
   scSetPaddingEx(pRows, 18, 0, 18, 0);
   scSetSpacing(pRows, 9);
   for (s32 i = 0; i < SC_COLOR_PICKER_ROWS; ++i) {
-    scNode* pRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(42));
+    scNode* pRow = scCreateHStack(scLengthPercent(1.0f), scLengthDips(42));
     scSetCard(pRow, 6.0f);
     scSetPaddingEx(pRow, 12, 5, 8, 5);
     scSetSpacing(pRow, 12);
@@ -560,16 +590,18 @@ _scPickerRebuildMain(scColorPickerContext* ctx) {
 
     scNode* pLabel = scCreateLabel(labels[i], false);
     scSetTextRole(pLabel, SC_TEXT_DIM);
-    scSetSize(pLabel, scLengthPixels(54), scLengthAuto());
+    scSetNodeFontRole(pLabel, SC_FONT_SMALL);
+    scSetSize(pLabel, scLengthDips(54), scLengthAuto());
     scAddChild(pRow, pLabel);
 
     scNode* pValue = scCreateLabel(values[i], false);
+    scSetNodeFontRole(pValue, SC_FONT_MONOSPACE);
     scSetEllipsis(pValue, true);
     scSetSize(pValue, scLengthStretch(1.0f), scLengthAuto());
     scAddChild(pRow, pValue);
 
     scNode* pCopy = scCreateButton(L"Copy", _scPickerOnCopyClicked, i);
-    scSetSize(pCopy, scLengthPixels(62), scLengthPixels(32));
+    scSetSize(pCopy, scLengthDips(62), scLengthDips(32));
     scAddChild(pRow, pCopy);
     scAddChild(pRows, pRow);
   }
@@ -641,26 +673,31 @@ scInternal void _scPickerSetLensControl(scColorPickerContext* ctx, bool bEnable)
 
 scInternal int
 _scPickerMagnifierCellSize(const scColorPickerContext* ctx) {
+  return _scPickerPx((f32)(5 + ctx->iZoom * 2));
+}
+
+scInternal int
+_scPickerMagnifierCellSizeLogical(const scColorPickerContext* ctx) {
   return 5 + ctx->iZoom * 2;
 }
 
 scInternal void
 _scPickerGetPreviewSize(const scColorPickerContext* ctx, int* width, int* height) {
   if (ctx->iZoom <= 0) {
-    *width = SC_COLOR_PICKER_PREVIEW_WIDTH;
-    *height = SC_COLOR_PICKER_PREVIEW_HEIGHT;
+    *width = _scPickerPx(SC_COLOR_PICKER_PREVIEW_WIDTH);
+    *height = _scPickerPx(SC_COLOR_PICKER_PREVIEW_HEIGHT);
     return;
   }
 
   int lensSide = SC_COLOR_PICKER_MAGNIFIER_CELLS * _scPickerMagnifierCellSize(ctx);
-  *width = lensSide + 12;
-  if (*width < SC_COLOR_PICKER_PREVIEW_WIDTH) *width = SC_COLOR_PICKER_PREVIEW_WIDTH;
-  *height = lensSide + 54;
+  *width = lensSide + _scPickerPx(12);
+  if (*width < _scPickerPx(SC_COLOR_PICKER_PREVIEW_WIDTH)) *width = _scPickerPx(SC_COLOR_PICKER_PREVIEW_WIDTH);
+  *height = lensSide + _scPickerPx(54);
 }
 
 scInternal void
 _scPickerSetPreviewRegion(HWND hWnd, int width, int height) {
-  HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, 12, 12);
+  HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, _scPickerPx(12), _scPickerPx(12));
   if (region && !SetWindowRgn(hWnd, region, TRUE)) DeleteObject(region);
 }
 
@@ -686,7 +723,7 @@ _scPickerDrawMagnifier(scColorPickerContext* ctx, HDC hDC, RECT lens) {
     SetStretchBltMode(hDC, oldStretchMode);
   }
 
-  HPEN gridPen = CreatePen(PS_SOLID, 1, SC_PICKER_STROKE_SOFT);
+  HPEN gridPen = CreatePen(PS_SOLID, _scPickerPx(1), SC_PICKER_STROKE_SOFT);
   if (gridPen) {
     HGDIOBJ oldPen = SelectObject(hDC, gridPen);
     for (int i = 0; i <= SC_COLOR_PICKER_MAGNIFIER_CELLS; ++i) {
@@ -708,11 +745,11 @@ _scPickerDrawMagnifier(scColorPickerContext* ctx, HDC hDC, RECT lens) {
     left + (selectedCellX + 1) * cellSize,
     top + (selectedCellY + 1) * cellSize
   };
-  HPEN accentPen = CreatePen(PS_SOLID, 2, SC_PICKER_ACCENT);
+  HPEN accentPen = CreatePen(PS_SOLID, _scPickerPx(2), SC_PICKER_ACCENT);
   if (accentPen) {
     HGDIOBJ oldPen = SelectObject(hDC, accentPen);
     HGDIOBJ oldBrush = SelectObject(hDC, GetStockObject(NULL_BRUSH));
-    Rectangle(hDC, center.left + 1, center.top + 1, center.right, center.bottom);
+    Rectangle(hDC, center.left + _scPickerPx(1), center.top + _scPickerPx(1), center.right, center.bottom);
     SelectObject(hDC, oldBrush);
     SelectObject(hDC, oldPen);
     DeleteObject(accentPen);
@@ -729,15 +766,15 @@ scInternal void
 _scPickerDrawPreviewSwatch(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered) {
   scColorPickerContext* ctx = *(scColorPickerContext**)scGetUserData(pNode);
   GpGraphics* graphics = gpGraphicsBegin(hDC);
-  gpFillRound(graphics, r, 5.0f, gpColor(ctx->previewColor, 255));
-  gpStrokeRound(graphics, r, 5.0f, gpColor(SC_PICKER_BORDER, 255), 1.0f);
+  gpFillRound(graphics, r, _scPickerPx(5), gpColor(ctx->previewColor, 255));
+  gpStrokeRound(graphics, r, _scPickerPx(5), gpColor(SC_PICKER_BORDER, 255), _scPickerPx(1));
   gpGraphicsEnd(graphics);
 }
 
 scInternal void
 _scPickerDrawPreviewHex(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered) {
   scColorPickerContext* ctx = *(scColorPickerContext**)scGetUserData(pNode);
-  HFONT hFont = gColorPickerTheme.pBoldFont;
+  HFONT hFont = scGetNodeFont(pNode, SC_FONT_PREVIEW);
   if (!hFont) return;
 
   wchar_t hex[16];
@@ -745,7 +782,7 @@ _scPickerDrawPreviewHex(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHo
              (unsigned int)GetRValue(ctx->previewColor),
              (unsigned int)GetGValue(ctx->previewColor),
              (unsigned int)GetBValue(ctx->previewColor));
-  _scPickerText(hDC, hex, r, SC_PICKER_TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE, hFont);
+  _scPickerText(hDC, hex, r, scGetNodeTextColor(pNode, SC_NODE_STATE_NORMAL), DT_LEFT | DT_VCENTER | DT_SINGLELINE, hFont);
 }
 
 scInternal const scCustomOps kPickerLensOps          = { _scPickerDrawLensNode,      NULL, NULL, NULL };
@@ -766,17 +803,17 @@ _scPickerEnsurePreviewTree(scColorPickerContext* ctx) {
   scSetAlignment(pRoot, SC_ALIGN_MIDDLE);
 
   if (ctx->iZoom > 0) {
-    int lensSide = SC_COLOR_PICKER_MAGNIFIER_CELLS * _scPickerMagnifierCellSize(ctx);
+    int lensSide = SC_COLOR_PICKER_MAGNIFIER_CELLS * _scPickerMagnifierCellSizeLogical(ctx);
     scSetPaddingEx(pRoot, 0, 6, 0, 0);
     scSetSpacing(pRoot, 4);
-    scAddChild(pRoot, scCreateCustom(scLengthPixels((f32)lensSide), scLengthPixels((f32)lensSide), &kPickerLensOps, &ctx, sizeof(ctx)));
+    scAddChild(pRoot, scCreateCustom(scLengthDips((f32)lensSide), scLengthDips((f32)lensSide), &kPickerLensOps, &ctx, sizeof(ctx)));
   }
 
-  scNode* pInfo = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(ctx->iZoom > 0 ? 40.0f : 46.0f));
+  scNode* pInfo = scCreateHStack(scLengthPercent(1.0f), scLengthDips(ctx->iZoom > 0 ? 40.0f : 46.0f));
   scSetPaddingEx(pInfo, 8, 0, 8, 0);
   scSetSpacing(pInfo, 9);
   scSetAlignment(pInfo, SC_ALIGN_MIDDLE);
-  scAddChild(pInfo, scCreateCustom(scLengthPixels(28), scLengthPixels(28), &kPickerPreviewSwatchOps, &ctx, sizeof(ctx)));
+  scAddChild(pInfo, scCreateCustom(scLengthDips(28), scLengthDips(28), &kPickerPreviewSwatchOps, &ctx, sizeof(ctx)));
   scAddChild(pInfo, scCreateCustom(scLengthStretch(1.0f), scLengthPercent(1.0f), &kPickerPreviewHexOps, &ctx, sizeof(ctx)));
   scAddChild(pRoot, pInfo);
 
@@ -891,7 +928,7 @@ _scColorPickerCreatePreviewWindow(scColorPickerContext* ctx) {
     SC_COLOR_PICKER_PREVIEW_CLASS,
     L"Color Preview",
     WS_POPUP,
-    0, 0, SC_COLOR_PICKER_PREVIEW_WIDTH, SC_COLOR_PICKER_PREVIEW_HEIGHT,
+    0, 0, _scPickerPx(SC_COLOR_PICKER_PREVIEW_WIDTH), _scPickerPx(SC_COLOR_PICKER_PREVIEW_HEIGHT),
     NULL, NULL, GetModuleHandleW(NULL), ctx
   );
 
@@ -901,7 +938,7 @@ _scColorPickerCreatePreviewWindow(scColorPickerContext* ctx) {
   }
 
   SetLayeredWindowAttributes(hWnd, 0, 248, LWA_ALPHA);
-  _scPickerSetPreviewRegion(hWnd, SC_COLOR_PICKER_PREVIEW_WIDTH, SC_COLOR_PICKER_PREVIEW_HEIGHT);
+  _scPickerSetPreviewRegion(hWnd, _scPickerPx(SC_COLOR_PICKER_PREVIEW_WIDTH), _scPickerPx(SC_COLOR_PICKER_PREVIEW_HEIGHT));
   return hWnd;
 }
 
@@ -924,10 +961,12 @@ _scPickerShowPreview(scColorPickerContext* ctx, POINT pt, bool bColorChanged) {
                 GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN) };
   if (monitor && GetMonitorInfoW(monitor, &mi)) work = mi.rcWork;
 
-  int x = pt.x + 18;
-  int y = pt.y + 18;
-  if (x + previewWidth > work.right) x = pt.x - previewWidth - 16;
-  if (y + previewHeight > work.bottom) y = pt.y - previewHeight - 16;
+  int offset = _scPickerPx(18);
+  int gap = _scPickerPx(16);
+  int x = pt.x + offset;
+  int y = pt.y + offset;
+  if (x + previewWidth > work.right) x = pt.x - previewWidth - gap;
+  if (y + previewHeight > work.bottom) y = pt.y - previewHeight - gap;
   if (x < work.left) x = work.left;
   if (y < work.top) y = work.top;
   if (x + previewWidth > work.right) x = work.right - previewWidth;
@@ -1128,11 +1167,22 @@ _scColorPickerWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       return TRUE;
     }
     case WM_SETTINGCHANGE:
+    case WM_SC_COLOR_PICKER_REFRESH:
     case WM_THEMECHANGED:
       _scPickerRefreshTheme(hWnd);
       InvalidateRect(hWnd, NULL, FALSE);
       if (ctx && ctx->hPreviewWnd && IsWindow(ctx->hPreviewWnd)) InvalidateRect(ctx->hPreviewWnd, NULL, FALSE);
       return 0;
+    case WM_DPICHANGED: {
+      RECT* pSuggested = (RECT*)lParam;
+      if (pSuggested) {
+        SetWindowPos(hWnd, NULL, pSuggested->left, pSuggested->top,
+                     pSuggested->right - pSuggested->left, pSuggested->bottom - pSuggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+      }
+      _scPickerRefreshTheme(hWnd);
+      return 0;
+    }
     case WM_ERASEBKGND:
       return 1;
     case WM_SC_COLOR_PICKER_ZOOM:
@@ -1240,8 +1290,8 @@ _scColorPickerCreateWindow(scColorPickerContext* ctx) {
 
   DWORD style = WS_POPUP;
   DWORD exStyle = WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
-  int windowWidth = SC_COLOR_PICKER_WIDTH;
-  int windowHeight = SC_COLOR_PICKER_HEIGHT + SC_COLOR_PICKER_TITLEBAR_HEIGHT;
+  int windowWidth = _scPickerPx(SC_COLOR_PICKER_WIDTH);
+  int windowHeight = _scPickerPx(SC_COLOR_PICKER_HEIGHT + SC_COLOR_PICKER_TITLEBAR_HEIGHT);
   RECT work;
   SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
   int x = work.left + ((work.right - work.left) - windowWidth) / 2;
@@ -1270,7 +1320,7 @@ _scColorPickerCreateWindow(scColorPickerContext* ctx) {
     return NULL;
   }
 
-  HRGN region = CreateRoundRectRgn(0, 0, windowWidth + 1, windowHeight + 1, 14, 14);
+  HRGN region = CreateRoundRectRgn(0, 0, windowWidth + 1, windowHeight + 1, _scPickerPx(14), _scPickerPx(14));
   if (region && !SetWindowRgn(hWnd, region, TRUE)) DeleteObject(region);
   scGuiResize(ctx->pGui, windowWidth, windowHeight);
   return hWnd;
@@ -1423,7 +1473,7 @@ _scColorPickerSnapSelection(scCaptureContext* pCtx, scRect rcInput, bool bDraggi
     int cellSize = _scPickerMagnifierCellSize(ctx);
     int lensSide = SC_COLOR_PICKER_MAGNIFIER_CELLS * cellSize;
     int lensLeft = ctx->ptPreview.x + ((ctx->iPreviewWidth - lensSide) / 2);
-    int lensTop = ctx->ptPreview.y + 6;
+    int lensTop = ctx->ptPreview.y + _scPickerPx(6);
     RECT lensRect = { lensLeft, lensTop, lensLeft + lensSide, lensTop + lensSide };
 
     if (PtInRect(&lensRect, pt)) {

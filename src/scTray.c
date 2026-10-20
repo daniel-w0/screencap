@@ -4,7 +4,7 @@
 #include "scUI.h"
 #include "scLocale.h"
 #include "scLogging.h"
-#include "scUITheme.h"
+#include "scGui.h"
 #include "scAssert.h"
 
 #define WM_TRAYICON (WM_USER + 1)

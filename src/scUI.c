@@ -8,7 +8,6 @@
 #include "scGdiPlus.h"
 #include "scLocale.h"
 #include "stb_image.h"
-#include "scUITheme.h"
 #include "scTray.h"
 #include "scAudio.h"
 
@@ -78,7 +77,7 @@ typedef enum {
 } scSettingsSection;
 
 typedef struct {
-  scUITheme theme;
+  scGuiTheme theme;
   scGui*    pGui;
   scNode*   pContent;
   scNode*   pLogView;
@@ -201,30 +200,8 @@ _scHostValueChanged(void* pUser) {
 
 scInternal void
 _scApplyTheme() {
-  if (!gUI.pGui) {
-    return;
-  }
-  scUITheme* t = &gUI.theme;
-  scGuiTheme theme = { 0 };
-  theme.dwText        = t->dwText;
-  theme.dwTextDim     = t->dwTextDim;
-  theme.dwTextFaint   = t->dwTextFaint;
-  theme.dwBackground  = t->dwBackground;
-  theme.dwPanel       = t->dwSidebar;
-  theme.dwPopup       = t->dwPopup;
-  theme.dwCard        = t->dwCard;
-  theme.dwCardHover   = t->dwCardHover;
-  theme.dwCardActive  = t->dwCardActive;
-  theme.dwStroke      = t->dwStroke;
-  theme.dwStrokeSoft  = t->dwStrokeSoft;
-  theme.dwAccent      = t->dwAccent;
-  theme.dwAccentHover = t->dwAccentHover;
-  theme.dwAccentText  = scColorIsLight(t->dwAccent) ? RGB(0, 0, 0) : RGB(255, 255, 255);
-  theme.dwPillOff     = t->dwPillOff;
-  theme.dwScrollThumb = t->dwScrollThumb;
-  theme.hFont         = (HFONT)t->pFont;
-  theme.hBoldFont     = (HFONT)t->pBoldFont;
-  scGuiSetTheme(gUI.pGui, &theme);
+  if (!gUI.pGui) return;
+  scGuiSetTheme(gUI.pGui, &gUI.theme);
   scGuiSetScale(gUI.pGui, gUI.fUIScale);
 }
 
@@ -236,13 +213,7 @@ _scEffectiveScale() {
 
 scInternal void
 _scReloadTheme() {
-  scUITheme* t = &gUI.theme;
-  if (t->pFont)            DeleteObject(t->pFont);
-  if (t->pBoldFont)        DeleteObject(t->pBoldFont);
-  if (t->hBackgroundBrush) DeleteObject(t->hBackgroundBrush);
-  if (t->hCardBrush)       DeleteObject(t->hCardBrush);
-  memset(t, 0, sizeof(*t));
-  scUIThemeGet(t, _scScale(15));
+  scGuiThemeInit(&gUI.theme, _scScale(15));
   _scApplyTheme();
 }
 
@@ -792,26 +763,29 @@ scInternal void _scShutdownThumbWorker() {
 //------------------------------------------------------------------------
 scInternal void
 _scDrawHotkey(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered) {
-  scUITheme* t = &gUI.theme;
+  scGuiTheme* t = &gUI.theme;
   scHotkeyID eHotkey = *(scHotkeyID*)scGetUserData(pNode);
   scHotkey* pHk = &gApp->config.aHotkeys[eHotkey];
   bool bEditing = (gUI.iEditingHotkey == (s32)eHotkey);
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  gpFillRound(pGraphics, r, _scRoundRad(), gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
+  f32 fRadius = scGetNodeCornerRadius(pNode, 6.0f) * gUI.fUIScale;
+  gpFillRound(pGraphics, r, fRadius, gpColor(scGetNodeBackground(pNode, bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL), 255));
   if (bEditing) {
-    gpFillRound(pGraphics, r, _scRoundRad(), gpColor(t->dwAccent, 36));
-    gpStrokeRound(pGraphics, r, _scRoundRad(), gpColor(t->dwAccent, 255), 1.5f);
+    gpFillRound(pGraphics, r, fRadius, gpColor(t->dwAccent, 36));
+    gpStrokeRound(pGraphics, r, fRadius, gpColor(t->dwAccent, 255), 1.5f * gUI.fUIScale);
   } else {
-    gpStrokeRound(pGraphics, r, _scRoundRad(), gpColor(t->dwStrokeSoft, 255), 1.0f);
+    gpStrokeRound(pGraphics, r, fRadius, gpColor(scGetNodeBorderColor(pNode, bHovered), 255),
+                  scGetNodeBorderWidth(pNode, 1.0f) * gUI.fUIScale);
   }
 
   COLORREF dwIndicator = (pHk->uKey == 0) ? t->dwPillOff : (pHk->bRegistered ? t->dwOk : t->dwError);
   gpFillEllipse(pGraphics, (f32)(r.left + _scScale(11)), (f32)(r.top + _scScale(10)), (f32)_scScale(9), (f32)_scScale(9), gpColor(dwIndicator, 255));
   gpGraphicsEnd(pGraphics);
 
-  SelectObject(hDC, t->pFont);
-  SetTextColor(hDC, t->dwText);
+  HFONT hFont = scGetNodeFont(pNode, SC_FONT_BODY);
+  SelectObject(hDC, hFont ? hFont : t->hFont);
+  SetTextColor(hDC, scGetNodeTextColor(pNode, bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL));
   const char* szName = scCaptureActionNames[pHk->eID];
   TextOutA(hDC, r.left + _scScale(30), r.top + _scScale(6), szName, (int)strlen(szName));
 
@@ -830,7 +804,7 @@ _scDrawHotkey(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered) {
 
 scInternal void
 _scDrawFolderIcon(HDC hDC, RECT rImage, bool bUp, s32 nItemCount) {
-  scUITheme* t = &gUI.theme;
+  scGuiTheme* t = &gUI.theme;
   s32 iCX = (rImage.left + rImage.right) / 2;
   s32 iCY = (rImage.top + rImage.bottom) / 2;
   s32 iW  = _scScale(84), iH = _scScale(60);
@@ -873,7 +847,7 @@ _scDrawFolderIcon(HDC hDC, RECT rImage, bool bUp, s32 nItemCount) {
   GdipDeletePath(pPath);
 
   if (bUp) {
-    SelectObject(hDC, t->pBoldFont);
+    SelectObject(hDC, t->hBoldFont);
     SetTextColor(hDC, RGB(255, 255, 255));
     RECT rArrow = rBody;
     DrawTextW(hDC, L"\x2191", -1, &rArrow, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -881,7 +855,7 @@ _scDrawFolderIcon(HDC hDC, RECT rImage, bool bUp, s32 nItemCount) {
     wchar_t wszCount[16];
     _snwprintf_s(wszCount, 16, _TRUNCATE, L"%d", nItemCount);
 
-    SelectObject(hDC, t->pBoldFont);
+    SelectObject(hDC, t->hBoldFont);
     SetTextColor(hDC, RGB(255, 255, 255));
     RECT rCount = rBody;
     DrawTextW(hDC, wszCount, -1, &rCount, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -890,14 +864,14 @@ _scDrawFolderIcon(HDC hDC, RECT rImage, bool bUp, s32 nItemCount) {
 
 scInternal void
 _scDrawGalleryItem(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered) {
-  scUITheme* t = &gUI.theme;
-  f32 fRad = 8.0f * gUI.fUIScale;
+  scGuiTheme* t = &gUI.theme;
+  f32 fRad = scGetNodeCornerRadius(pNode, 8.0f) * gUI.fUIScale;
   scGalleryItem* pItem = (scGalleryItem*)scGetUserData(pNode);
   bool bIsUp     = pItem->bIsUp;
   bool bIsFolder = pItem->bIsFolder;
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  gpFillRound(pGraphics, r, fRad, gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
+  gpFillRound(pGraphics, r, fRad, gpColor(scGetNodeBackground(pNode, bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL), 255));
   gpGraphicsEnd(pGraphics);
 
   HRGN hClip = CreateRoundRectRgn(r.left, r.top, r.right + 1, r.bottom + 1, (int)(fRad * 2), (int)(fRad * 2));
@@ -939,16 +913,18 @@ _scDrawGalleryItem(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered
       SelectObject(hMemDC, hOldBmp);
       DeleteDC(hMemDC);
     } else {
-      SelectObject(hDC, t->pFont);
-      SetTextColor(hDC, t->dwTextDim);
+      HFONT hFont = scGetNodeFont(pNode, SC_FONT_BODY);
+      SelectObject(hDC, hFont ? hFont : t->hFont);
+      SetTextColor(hDC, scGetNodeTextColor(pNode, bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL));
       const wchar_t* wszExt = wcsrchr(pItem->wszName, L'.');
       DrawTextW(hDC, wszExt ? wszExt + 1 : pItem->wszName, -1, &rImage, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
   }
 
   RECT rText = { r.left + _scScale(5), r.bottom - _scScale(30), r.right - _scScale(5), r.bottom };
-  SelectObject(hDC, t->pFont);
-  SetTextColor(hDC, t->dwText);
+  HFONT hLabelFont = scGetNodeFont(pNode, SC_FONT_BODY);
+  SelectObject(hDC, hLabelFont ? hLabelFont : t->hFont);
+  SetTextColor(hDC, scGetNodeTextColor(pNode, bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL));
   const wchar_t* wszLabel = bIsUp ? scLocaleGet("Back") : pItem->wszName;
   DrawTextW(hDC, wszLabel, -1, &rText, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
@@ -956,7 +932,8 @@ _scDrawGalleryItem(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered
   DeleteObject(hClip);
 
   pGraphics = gpGraphicsBegin(hDC);
-  gpStrokeRound(pGraphics, r, fRad, gpColor(bHovered ? t->dwAccent : t->dwStrokeSoft, 255), bHovered ? 1.5f : 1.0f);
+  gpStrokeRound(pGraphics, r, fRad, gpColor(scGetNodeBorderColor(pNode, bHovered), 255),
+                scGetNodeBorderWidth(pNode, bHovered ? 1.5f : 1.0f) * gUI.fUIScale);
   gpGraphicsEnd(pGraphics);
 }
 
@@ -983,7 +960,7 @@ _scMeasureLogs(scNode* pNode, HDC hDC, s32 iWidth) {
     gUI.nLogLines = 0;
   }
 
-  HGDIOBJ hOldFont = SelectObject(hDC, gUI.theme.pFont);
+  HGDIOBJ hOldFont = SelectObject(hDC, gUI.theme.hFont);
   s32 iTop = 0;
   for (s32 i = 0; i < iCount; ++i) {
     scLogLevel eLevel;
@@ -1014,7 +991,7 @@ scInternal void
 _scDrawLogs(scNode* pNode, HDC hDC, RECT r, RECT rcVisible, bool bHovered) {
   s32 nLines = gUI.nLogLines < scLogStoreCount() ? gUI.nLogLines : scLogStoreCount();
 
-  SelectObject(hDC, gUI.theme.pFont);
+  SelectObject(hDC, gUI.theme.hFont);
   SetBkMode(hDC, TRANSPARENT);
   for (s32 i = 0; i < nLines; ++i) {
     scLogLine* pLine = &gUI.aLogLines[i];
@@ -2198,6 +2175,21 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       }
       return 0;
     }
+    case WM_DPICHANGED: {
+      RECT* pSuggested = (RECT*)lParam;
+      if (pSuggested) {
+        SetWindowPos(hWnd, NULL, pSuggested->left, pSuggested->top,
+                     pSuggested->right - pSuggested->left, pSuggested->bottom - pSuggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+      }
+      f32 fNewScale = _scEffectiveScale();
+      if (fNewScale != gUI.fUIScale) {
+        gUI.fUIScale = fNewScale;
+        _scReloadTheme();
+        gUI.nLogLines = 0;
+      }
+      return 0;
+    }
     case WM_MOUSEMOVE: {
       POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
       scGuiMouseMove(gUI.pGui, pt);
@@ -2262,7 +2254,7 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         if (pDIS->itemData) {
           SetBkMode(pDIS->hDC, TRANSPARENT);
           SetTextColor(pDIS->hDC, gUI.theme.dwText);
-          SelectObject(pDIS->hDC, gUI.theme.pFont);
+          SelectObject(pDIS->hDC, gUI.theme.hFont);
           RECT rcText = pDIS->rcItem;
           rcText.left += _scScale(12);
           DrawTextW(pDIS->hDC, (const wchar_t*)pDIS->itemData, -1, &rcText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -2278,7 +2270,7 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         if (pMIS->itemData) {
           const wchar_t* wszText = (const wchar_t*)pMIS->itemData;
           HDC hDC = GetDC(gUI.hWindow);
-          HFONT hOldFont = (HFONT)SelectObject(hDC, gUI.theme.pFont);
+          HFONT hOldFont = (HFONT)SelectObject(hDC, gUI.theme.hFont);
           SIZE stSize;
           if (GetTextExtentPoint32W(hDC, wszText, lstrlenW(wszText), &stSize)) {
             uTextWidth = (UINT)stSize.cx;
@@ -2331,7 +2323,7 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         float fUIScale = _scEffectiveScale();
         if (scIsWindowsDarkTheme() != gUI.theme.bDark || scGetSystemAccentColor() != gUI.theme.dwAccent || gUI.fUIScale != fUIScale) {
           gUI.fUIScale = fUIScale;
-          scUIThemeGet(&gUI.theme, _scScale(15));
+          scGuiThemeInit(&gUI.theme, _scScale(15));
           _scApplyTheme();
           BOOL bDark = gUI.theme.bDark;
           DwmSetWindowAttribute(hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &bDark, sizeof(bDark));
@@ -2394,7 +2386,7 @@ void scUIOpenWindow() {
   }
 
   gUI.fUIScale = _scEffectiveScale();
-  scUIThemeGet(&gUI.theme, _scScale(15));
+  scGuiThemeInit(&gUI.theme, _scScale(15));
   _scApplyTheme();
   _scRebuild();
 
@@ -2468,6 +2460,12 @@ void scUICloseWindow() {
   }
   gUI.iBackWidth  = 0;
   gUI.iBackHeight = 0;
+
+  if (gUI.hIconBig) DestroyIcon(gUI.hIconBig);
+  if (gUI.hIconSmall) DestroyIcon(gUI.hIconSmall);
+  gUI.hIconBig = NULL;
+  gUI.hIconSmall = NULL;
+  scGuiThemeDestroy(&gUI.theme);
 
   free(gUI.aLogLines);
   gUI.aLogLines = NULL;

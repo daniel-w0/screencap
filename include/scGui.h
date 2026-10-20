@@ -31,7 +31,24 @@ typedef enum {
   SC_TEXT_FAINT
 } scTextRole;
 
+typedef enum {
+  SC_FONT_INHERIT,
+  SC_FONT_BODY,
+  SC_FONT_SMALL,
+  SC_FONT_BOLD,
+  SC_FONT_HEADING,
+  SC_FONT_MONOSPACE,
+  SC_FONT_PREVIEW
+} scFontRole;
+
+typedef enum {
+  SC_NODE_STATE_NORMAL,
+  SC_NODE_STATE_HOVER,
+  SC_NODE_STATE_ACTIVE
+} scNodeState;
+
 typedef struct {
+  bool     bDark;
   COLORREF dwText;
   COLORREF dwTextDim;
   COLORREF dwTextFaint;
@@ -48,8 +65,21 @@ typedef struct {
   COLORREF dwAccentText;
   COLORREF dwPillOff;
   COLORREF dwScrollThumb;
+  COLORREF dwOk;
+  COLORREF dwWarn;
+  COLORREF dwError;
   HFONT    hFont;
+  HFONT    hSmallFont;
   HFONT    hBoldFont;
+  HFONT    hHeadingFont;
+  HFONT    hMonoFont;
+  HFONT    hPreviewFont;
+  HBRUSH   hBackgroundBrush;
+  HBRUSH   hCardBrush;
+  f32      fControlRadius;
+  f32      fPanelRadius;
+  f32      fBorderWidth;
+  f32      fFocusBorderWidth;
 } scGuiTheme;
 
 typedef struct {
@@ -67,8 +97,17 @@ typedef struct {
   s32  (*pfnMeasure)(scNode* pNode, HDC hMeasureDC, s32 iWidth);
 } scCustomOps;
 
+void scGuiThemeInit(scGuiTheme* pTheme, s32 iFontSize);
+void scGuiThemeDestroy(scGuiTheme* pTheme);
+f32 scGetDPIScale(HWND hWnd);
+COLORREF scBlendColor(COLORREF a, COLORREF b, f32 f);
+bool scColorIsLight(COLORREF c);
+bool scIsWindowsDarkTheme(void);
+COLORREF scGetSystemAccentColor();
+
 scLength scLengthAuto();
 scLength scLengthPixels(f32 fPixels);
+scLength scLengthDips(f32 fDips);
 scLength scLengthPercent(f32 fFraction);
 scLength scLengthStretch(f32 fWeight);
 
@@ -103,6 +142,20 @@ void scSetTextRole(scNode* pNode, scTextRole eRole);
 void scSetEllipsis(scNode* pNode, bool bEllipsis);
 void scSetCard(scNode* pNode, f32 fRadius);
 void scSetOutline(scNode* pNode, f32 fRadius);
+void scSetNodeBackgroundColors(scNode* pNode, COLORREF normal, COLORREF hover, COLORREF active);
+void scSetNodeTextColors(scNode* pNode, COLORREF normal, COLORREF hover);
+void scSetNodeBorderColors(scNode* pNode, COLORREF normal, COLORREF hover);
+void scSetNodeCornerRadius(scNode* pNode, f32 fRadius);
+void scSetNodeBorderWidth(scNode* pNode, f32 fWidth);
+void scSetNodeFontRole(scNode* pNode, scFontRole eRole);
+void scResetNodeStyle(scNode* pNode);
+COLORREF scGetNodeBackground(scNode* pNode, scNodeState eState);
+bool scNodeHasBackgroundOverride(scNode* pNode, scNodeState eState);
+COLORREF scGetNodeTextColor(scNode* pNode, scNodeState eState);
+COLORREF scGetNodeBorderColor(scNode* pNode, bool bHovered);
+HFONT scGetNodeFont(scNode* pNode, scFontRole eFallback);
+f32 scGetNodeCornerRadius(scNode* pNode, f32 fFallback);
+f32 scGetNodeBorderWidth(scNode* pNode, f32 fFallback);
 void scSetSliderRange(scNode* pNode, f32 fMin, f32 fMax, f32 fStep);
 void scSetScrollY(scNode* pNode, s32 iScrollY);
 s32  scGetScrollY(scNode* pNode);

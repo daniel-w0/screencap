@@ -2,6 +2,8 @@
 #include "scTypes.h"
 #include "scGdiPlus.h"
 #include "scGui.h"
+#include "scApp.h"
+#include "scLogging.h"
 
 #include <math.h>
 
@@ -45,6 +47,18 @@ struct scNode {
   f32      fCardRadius;
   f32      fOutlineRadius;
   scTextRole eTextRole;
+  struct {
+    COLORREF dwBackground;
+    COLORREF dwHoverBackground;
+    COLORREF dwActiveBackground;
+    COLORREF dwText;
+    COLORREF dwHoverText;
+    COLORREF dwBorder;
+    COLORREF dwHoverBorder;
+    scFontRole eFontRole;
+    f32 fCornerRadius;
+    f32 fBorderWidth;
+  } style;
 
   RECT rc;
   s32  aSize[2];
@@ -229,21 +243,189 @@ _scMarkDirty(scNode* pNode, bool bLayout) {
   }
 }
 
+void
+scGuiThemeDestroy(scGuiTheme* pTheme) {
+  if (!pTheme) return;
+  if (pTheme->hFont) DeleteObject(pTheme->hFont);
+  if (pTheme->hSmallFont) DeleteObject(pTheme->hSmallFont);
+  if (pTheme->hBoldFont) DeleteObject(pTheme->hBoldFont);
+  if (pTheme->hHeadingFont) DeleteObject(pTheme->hHeadingFont);
+  if (pTheme->hMonoFont) DeleteObject(pTheme->hMonoFont);
+  if (pTheme->hPreviewFont) DeleteObject(pTheme->hPreviewFont);
+  if (pTheme->hBackgroundBrush) DeleteObject(pTheme->hBackgroundBrush);
+  if (pTheme->hCardBrush) DeleteObject(pTheme->hCardBrush);
+  memset(pTheme, 0, sizeof(*pTheme));
+}
+
+COLORREF
+scBlendColor(COLORREF a, COLORREF b, f32 f) {
+  if (f < 0.0f) f = 0.0f;
+  if (f > 1.0f) f = 1.0f;
+  return RGB(
+    (s32)(GetRValue(a) + ((s32)GetRValue(b) - (s32)GetRValue(a)) * f + 0.5f),
+    (s32)(GetGValue(a) + ((s32)GetGValue(b) - (s32)GetGValue(a)) * f + 0.5f),
+    (s32)(GetBValue(a) + ((s32)GetBValue(b) - (s32)GetBValue(a)) * f + 0.5f)
+  );
+}
+
+bool
+scColorIsLight(COLORREF c) {
+  return (GetRValue(c) * 299 + GetGValue(c) * 587 + GetBValue(c) * 114) / 1000 > 150;
+}
+
+bool
+scIsWindowsDarkTheme(void) {
+  if (gApp && gApp->bIsGeWin10) {
+    DWORD value = 1;
+    DWORD size = sizeof(value);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, NULL, &value, &size) == ERROR_SUCCESS) {
+      return value == 0;
+    }
+  }
+  return false;
+}
+
+COLORREF
+scGetSystemAccentColor(void) {
+  const COLORREF defaultAccent = RGB(0, 120, 215);
+  if (gApp && gApp->bIsGeWin10) {
+    DWORD value = 0;
+    DWORD size = sizeof(value);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\DWM", L"AccentColor",
+                     RRF_RT_REG_DWORD, NULL, &value, &size) == ERROR_SUCCESS) {
+      return RGB(value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF);
+    }
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\DWM", L"ColorizationColor",
+                     RRF_RT_REG_DWORD, NULL, &value, &size) == ERROR_SUCCESS) {
+      return RGB((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF);
+    }
+  }
+  return defaultAccent;
+}
+
+f32
+scGetDPIScale(HWND hWnd) {
+  HDC hDC = GetDC(hWnd);
+  if (!hDC) return 1.0f;
+  s32 dpi = GetDeviceCaps(hDC, LOGPIXELSY);
+  ReleaseDC(hWnd, hDC);
+  return dpi > 0 ? dpi / 96.0f : 1.0f;
+}
+
+void
+scGuiThemeInit(scGuiTheme* pTheme, s32 iFontSize) {
+  if (!pTheme) return;
+  scGuiThemeDestroy(pTheme);
+
+  if (iFontSize < 1) iFontSize = 1;
+  s32 smallFontSize = (s32)(iFontSize * 0.86f + 0.5f);
+  s32 headingFontSize = (s32)(iFontSize * 1.25f + 0.5f);
+  s32 previewFontSize = (s32)(iFontSize * 1.5f + 0.5f);
+  if (smallFontSize < 1) smallFontSize = 1;
+  if (headingFontSize < 1) headingFontSize = 1;
+  if (previewFontSize < 1) previewFontSize = 1;
+
+  pTheme->hFont = CreateFontW(iFontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                              OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                              DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+  pTheme->hSmallFont = CreateFontW(smallFontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                   OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                   DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+  pTheme->hBoldFont = CreateFontW(iFontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                  DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+  pTheme->hHeadingFont = CreateFontW(headingFontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                     OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                     DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+  pTheme->hMonoFont = CreateFontW(iFontSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                  FIXED_PITCH | FF_MODERN, L"Consolas");
+  pTheme->hPreviewFont = CreateFontW(previewFontSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                     OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                     FIXED_PITCH | FF_MODERN, L"Consolas");
+
+  pTheme->bDark = scIsWindowsDarkTheme();
+  pTheme->dwAccent = scGetSystemAccentColor();
+  if (pTheme->bDark) {
+    pTheme->dwBackground = RGB(28, 28, 28);
+    pTheme->dwPanel = RGB(35, 35, 35);
+    pTheme->dwCard = RGB(43, 43, 43);
+    pTheme->dwCardHover = RGB(52, 52, 52);
+    pTheme->dwCardActive = RGB(60, 60, 60);
+    pTheme->dwPopup = RGB(45, 45, 45);
+    pTheme->dwStroke = RGB(70, 70, 70);
+    pTheme->dwStrokeSoft = RGB(50, 50, 50);
+    pTheme->dwText = RGB(243, 243, 243);
+    pTheme->dwTextDim = RGB(176, 176, 176);
+    pTheme->dwTextFaint = RGB(122, 122, 122);
+    pTheme->dwPillOff = RGB(158, 158, 158);
+    pTheme->dwOk = RGB(108, 203, 95);
+    pTheme->dwWarn = RGB(230, 180, 80);
+    pTheme->dwError = RGB(255, 99, 97);
+    pTheme->dwScrollThumb = RGB(170, 170, 170);
+    pTheme->dwAccentHover = scBlendColor(pTheme->dwAccent, RGB(255, 255, 255), 0.15f);
+  } else {
+    pTheme->dwBackground = RGB(243, 243, 243);
+    pTheme->dwPanel = RGB(236, 236, 236);
+    pTheme->dwCard = RGB(251, 251, 251);
+    pTheme->dwCardHover = RGB(245, 245, 245);
+    pTheme->dwCardActive = RGB(238, 238, 238);
+    pTheme->dwPopup = RGB(252, 252, 252);
+    pTheme->dwStroke = RGB(208, 208, 208);
+    pTheme->dwStrokeSoft = RGB(224, 224, 224);
+    pTheme->dwText = RGB(27, 27, 27);
+    pTheme->dwTextDim = RGB(96, 96, 96);
+    pTheme->dwTextFaint = RGB(142, 142, 142);
+    pTheme->dwPillOff = RGB(134, 134, 134);
+    pTheme->dwOk = RGB(15, 123, 15);
+    pTheme->dwWarn = RGB(176, 124, 0);
+    pTheme->dwError = RGB(196, 43, 28);
+    pTheme->dwScrollThumb = RGB(120, 120, 120);
+    pTheme->dwAccentHover = scBlendColor(pTheme->dwAccent, RGB(0, 0, 0), 0.15f);
+  }
+
+  pTheme->dwAccentText = scColorIsLight(pTheme->dwAccent) ? RGB(0, 0, 0) : RGB(255, 255, 255);
+  pTheme->hBackgroundBrush = CreateSolidBrush(pTheme->dwBackground);
+  pTheme->hCardBrush = CreateSolidBrush(pTheme->dwCard);
+  pTheme->fControlRadius = 4.0f;
+  pTheme->fPanelRadius = 6.0f;
+  pTheme->fBorderWidth = 1.0f;
+  pTheme->fFocusBorderWidth = 1.5f;
+  scLogDebug("Created GUI theme, dark mode: %s", pTheme->bDark ? "true" : "false");
+}
+
 //------------------------------------------------------------------------
 // Nodes
 //------------------------------------------------------------------------
 scLength scLengthAuto()                 { return (scLength){ SC_LENGTH_AUTO,    0.0f }; }
 scLength scLengthPixels(f32 fPixels)    { return (scLength){ SC_LENGTH_PIXELS,  fPixels }; }
+scLength scLengthDips(f32 fDips)         { return (scLength){ SC_LENGTH_PIXELS,  fDips }; }
 scLength scLengthPercent(f32 fFraction) { return (scLength){ SC_LENGTH_PERCENT, fFraction }; }
 scLength scLengthStretch(f32 fWeight)   { return (scLength){ SC_LENGTH_STRETCH, fWeight }; }
 
 scInternal scNode*
 _scNewNode(scNodeType eType, scLength width, scLength height, const wchar_t* wszText) {
   scNode* pNode = (scNode*)calloc(1, sizeof(scNode));
+  if (!pNode) return NULL;
   pNode->eType   = eType;
   pNode->width   = width;
   pNode->height  = height;
   pNode->wszText = _wcsdup(wszText ? wszText : L"");
+  if (!pNode->wszText) {
+    free(pNode);
+    return NULL;
+  }
+  pNode->style.dwBackground = CLR_INVALID;
+  pNode->style.dwHoverBackground = CLR_INVALID;
+  pNode->style.dwActiveBackground = CLR_INVALID;
+  pNode->style.dwText = CLR_INVALID;
+  pNode->style.dwHoverText = CLR_INVALID;
+  pNode->style.dwBorder = CLR_INVALID;
+  pNode->style.dwHoverBorder = CLR_INVALID;
+  pNode->style.eFontRole = SC_FONT_INHERIT;
+  pNode->style.fCornerRadius = -1.0f;
+  pNode->style.fBorderWidth = -1.0f;
   return pNode;
 }
 
@@ -278,6 +460,7 @@ scNode* scCreateDivider() {
 
 scNode* scCreateLabel(const wchar_t* wszText, bool bBold) {
   scNode* pNode = _scNewNode(SC_NODE_LABEL, scLengthAuto(), scLengthAuto(), wszText);
+  if (!pNode) return NULL;
   pNode->u.label.bBold = bBold;
   return pNode;
 }
@@ -288,6 +471,7 @@ scNode* scCreateField(const wchar_t* wszText) {
 
 scNode* scCreateButton(const wchar_t* wszText, void (*pfnClick)(s32 iParam), s32 iParam) {
   scNode* pNode = _scNewNode(SC_NODE_BUTTON, scLengthAuto(), scLengthAuto(), wszText);
+  if (!pNode) return NULL;
   pNode->u.button.pfnClick = pfnClick;
   pNode->u.button.iParam   = iParam;
   return pNode;
@@ -295,6 +479,7 @@ scNode* scCreateButton(const wchar_t* wszText, void (*pfnClick)(s32 iParam), s32
 
 scNode* scCreateLink(const wchar_t* wszText, void (*pfnClick)(s32 iParam), s32 iParam) {
   scNode* pNode = _scNewNode(SC_NODE_LINK, scLengthStretch(1.0f), scLengthPixels(30), wszText);
+  if (!pNode) return NULL;
   pNode->u.button.pfnClick = pfnClick;
   pNode->u.button.iParam   = iParam;
   return pNode;
@@ -302,6 +487,7 @@ scNode* scCreateLink(const wchar_t* wszText, void (*pfnClick)(s32 iParam), s32 i
 
 scNode* scCreateTab(const wchar_t* wszText, bool bActive, void (*pfnClick)(s32 iParam), s32 iParam) {
   scNode* pNode = _scNewNode(SC_NODE_TAB, scLengthStretch(1.0f), scLengthPixels(30), wszText);
+  if (!pNode) return NULL;
   pNode->u.button.pfnClick = pfnClick;
   pNode->u.button.iParam   = iParam;
   pNode->u.button.bActive  = bActive;
@@ -310,6 +496,7 @@ scNode* scCreateTab(const wchar_t* wszText, bool bActive, void (*pfnClick)(s32 i
 
 scNode* scCreateToggle(const wchar_t* wszText, bool* pValue, s32 iParam, void (*pfnChange)(bool bValue, s32 iParam)) {
   scNode* pNode = _scNewNode(SC_NODE_TOGGLE, scLengthStretch(1.0f), scLengthPixels(40), wszText);
+  if (!pNode) return NULL;
   pNode->u.toggle.pValue    = pValue;
   pNode->u.toggle.iParam    = iParam;
   pNode->u.toggle.pfnChange = pfnChange;
@@ -318,6 +505,7 @@ scNode* scCreateToggle(const wchar_t* wszText, bool* pValue, s32 iParam, void (*
 
 scNode* scCreateSlider(const wchar_t* wszText, f32* pValue, f32 fMin, f32 fMax, f32 fStep, s32 iParam, void (*pfnChange)(f32 fValue, s32 iParam)) {
   scNode* pNode = _scNewNode(SC_NODE_SLIDER, scLengthStretch(1.0f), scLengthPixels(40), wszText);
+  if (!pNode) return NULL;
   pNode->u.slider.pValue    = pValue;
   pNode->u.slider.iParam    = iParam;
   pNode->u.slider.pfnChange = pfnChange;
@@ -327,6 +515,7 @@ scNode* scCreateSlider(const wchar_t* wszText, f32* pValue, f32 fMin, f32 fMax, 
 
 scNode* scCreateDropdown(const wchar_t* wszLabel, const char* const* aOptions, s32 nOptionCount, s32 iSelected, void (*pfnSelect)(s32 iIndex, s32 iParam), s32 iParam) {
   scNode* pNode = _scNewNode(SC_NODE_DROPDOWN, scLengthStretch(1.0f), scLengthPixels(40), wszLabel);
+  if (!pNode) return NULL;
   pNode->u.dropdown.aOptions     = aOptions;
   pNode->u.dropdown.nOptionCount = nOptionCount;
   pNode->u.dropdown.iSelected    = iSelected;
@@ -337,11 +526,16 @@ scNode* scCreateDropdown(const wchar_t* wszLabel, const char* const* aOptions, s
 
 scNode* scCreateCustom(scLength width, scLength height, const scCustomOps* pOps, const void* pUser, s32 nUserSize) {
   scNode* pNode = _scNewNode(SC_NODE_CUSTOM, width, height, NULL);
+  if (!pNode) return NULL;
   if (pOps) {
     pNode->u.custom = *pOps;
   }
   if (pUser && nUserSize > 0) {
     pNode->pUser = malloc(nUserSize);
+    if (!pNode->pUser) {
+      _scFreeNode(pNode);
+      return NULL;
+    }
     memcpy(pNode->pUser, pUser, nUserSize);
   }
   return pNode;
@@ -363,7 +557,7 @@ void scAddChild(scNode* pParent, scNode* pChild) {
 }
 
 void* scGetUserData(scNode* pNode) {
-  return pNode->pUser;
+  return pNode ? pNode->pUser : NULL;
 }
 
 void scSetSize(scNode* pNode, scLength width, scLength height) {
@@ -439,8 +633,142 @@ void scSetOutline(scNode* pNode, f32 fRadius) {
   _scMarkDirty(pNode, false);
 }
 
+void scSetNodeBackgroundColors(scNode* pNode, COLORREF normal, COLORREF hover, COLORREF active) {
+  if (!pNode) return;
+  pNode->style.dwBackground = normal;
+  pNode->style.dwHoverBackground = hover;
+  pNode->style.dwActiveBackground = active;
+  _scMarkDirty(pNode, false);
+}
+
+void scSetNodeTextColors(scNode* pNode, COLORREF normal, COLORREF hover) {
+  if (!pNode) return;
+  pNode->style.dwText = normal;
+  pNode->style.dwHoverText = hover;
+  _scMarkDirty(pNode, false);
+}
+
+void scSetNodeBorderColors(scNode* pNode, COLORREF normal, COLORREF hover) {
+  if (!pNode) return;
+  pNode->style.dwBorder = normal;
+  pNode->style.dwHoverBorder = hover;
+  _scMarkDirty(pNode, false);
+}
+
+void scSetNodeCornerRadius(scNode* pNode, f32 fRadius) {
+  if (!pNode) return;
+  pNode->style.fCornerRadius = fRadius < 0.0f ? -1.0f : fRadius;
+  _scMarkDirty(pNode, false);
+}
+
+void scSetNodeBorderWidth(scNode* pNode, f32 fWidth) {
+  if (!pNode) return;
+  pNode->style.fBorderWidth = fWidth < 0.0f ? -1.0f : fWidth;
+  _scMarkDirty(pNode, false);
+}
+
+void scSetNodeFontRole(scNode* pNode, scFontRole eRole) {
+  if (!pNode) return;
+  if (eRole < SC_FONT_INHERIT || eRole > SC_FONT_PREVIEW) eRole = SC_FONT_INHERIT;
+  pNode->style.eFontRole = eRole;
+  _scMarkDirty(pNode, true);
+}
+
+void scResetNodeStyle(scNode* pNode) {
+  if (!pNode) return;
+  pNode->style.dwBackground = CLR_INVALID;
+  pNode->style.dwHoverBackground = CLR_INVALID;
+  pNode->style.dwActiveBackground = CLR_INVALID;
+  pNode->style.dwText = CLR_INVALID;
+  pNode->style.dwHoverText = CLR_INVALID;
+  pNode->style.dwBorder = CLR_INVALID;
+  pNode->style.dwHoverBorder = CLR_INVALID;
+  pNode->style.eFontRole = SC_FONT_INHERIT;
+  pNode->style.fCornerRadius = -1.0f;
+  pNode->style.fBorderWidth = -1.0f;
+  _scMarkDirty(pNode, true);
+}
+
+scInternal scGui*
+_scNodeGui(scNode* pNode) {
+  if (!pNode) return NULL;
+  while (pNode->pParent) pNode = pNode->pParent;
+  return pNode->pGui;
+}
+
+scInternal HFONT
+_scFontForRole(scGui* pGui, scFontRole eRole) {
+  if (!pGui) return NULL;
+  switch (eRole) {
+    case SC_FONT_SMALL:     return pGui->theme.hSmallFont ? pGui->theme.hSmallFont : pGui->theme.hFont;
+    case SC_FONT_BOLD:      return pGui->theme.hBoldFont ? pGui->theme.hBoldFont : pGui->theme.hFont;
+    case SC_FONT_HEADING:   return pGui->theme.hHeadingFont ? pGui->theme.hHeadingFont : (pGui->theme.hBoldFont ? pGui->theme.hBoldFont : pGui->theme.hFont);
+    case SC_FONT_MONOSPACE: return pGui->theme.hMonoFont ? pGui->theme.hMonoFont : pGui->theme.hFont;
+    case SC_FONT_PREVIEW:   return pGui->theme.hPreviewFont ? pGui->theme.hPreviewFont : (pGui->theme.hMonoFont ? pGui->theme.hMonoFont : pGui->theme.hFont);
+    default:               return pGui->theme.hFont;
+  }
+}
+
+HFONT scGetNodeFont(scNode* pNode, scFontRole eFallback) {
+  scGui* pGui = _scNodeGui(pNode);
+  if (!pGui) return NULL;
+  scFontRole eRole = pNode->style.eFontRole != SC_FONT_INHERIT ? pNode->style.eFontRole : eFallback;
+  return _scFontForRole(pGui, eRole);
+}
+
+COLORREF scGetNodeBackground(scNode* pNode, scNodeState eState) {
+  scGui* pGui = _scNodeGui(pNode);
+  if (!pGui) return CLR_INVALID;
+  scGuiTheme* t = &pGui->theme;
+  COLORREF c = CLR_INVALID;
+  if (eState == SC_NODE_STATE_HOVER) c = pNode->style.dwHoverBackground;
+  else if (eState == SC_NODE_STATE_ACTIVE) c = pNode->style.dwActiveBackground;
+  else c = pNode->style.dwBackground;
+  if (c != CLR_INVALID) return c;
+  if (pNode->style.dwBackground != CLR_INVALID) return pNode->style.dwBackground;
+  if (eState == SC_NODE_STATE_HOVER) return t->dwCardHover;
+  if (eState == SC_NODE_STATE_ACTIVE) return t->dwCardActive;
+  return t->dwCard;
+}
+
+bool scNodeHasBackgroundOverride(scNode* pNode, scNodeState eState) {
+  if (!pNode) return false;
+  if (eState == SC_NODE_STATE_HOVER && pNode->style.dwHoverBackground != CLR_INVALID) return true;
+  if (eState == SC_NODE_STATE_ACTIVE && pNode->style.dwActiveBackground != CLR_INVALID) return true;
+  return pNode->style.dwBackground != CLR_INVALID;
+}
+
+COLORREF scGetNodeTextColor(scNode* pNode, scNodeState eState) {
+  scGui* pGui = _scNodeGui(pNode);
+  if (!pGui) return CLR_INVALID;
+  scGuiTheme* t = &pGui->theme;
+  if (eState == SC_NODE_STATE_HOVER && pNode->style.dwHoverText != CLR_INVALID)
+    return pNode->style.dwHoverText;
+  if (pNode->style.dwText != CLR_INVALID) return pNode->style.dwText;
+  if (pNode->eType == SC_NODE_LINK && eState == SC_NODE_STATE_HOVER) return t->dwAccent;
+  if (pNode->eTextRole == SC_TEXT_DIM) return t->dwTextDim;
+  if (pNode->eTextRole == SC_TEXT_FAINT) return t->dwTextFaint;
+  return t->dwText;
+}
+
+COLORREF scGetNodeBorderColor(scNode* pNode, bool bHovered) {
+  scGui* pGui = _scNodeGui(pNode);
+  if (!pGui) return CLR_INVALID;
+  if (bHovered && pNode->style.dwHoverBorder != CLR_INVALID) return pNode->style.dwHoverBorder;
+  if (pNode->style.dwBorder != CLR_INVALID) return pNode->style.dwBorder;
+  return bHovered ? pGui->theme.dwAccent : pGui->theme.dwStroke;
+}
+
+f32 scGetNodeCornerRadius(scNode* pNode, f32 fFallback) {
+  return pNode && pNode->style.fCornerRadius >= 0.0f ? pNode->style.fCornerRadius : fFallback;
+}
+
+f32 scGetNodeBorderWidth(scNode* pNode, f32 fFallback) {
+  return pNode && pNode->style.fBorderWidth >= 0.0f ? pNode->style.fBorderWidth : fFallback;
+}
+
 void scSetSliderRange(scNode* pNode, f32 fMin, f32 fMax, f32 fStep) {
-  if (pNode->eType != SC_NODE_SLIDER) {
+  if (!pNode || pNode->eType != SC_NODE_SLIDER) {
     return;
   }
   pNode->u.slider.fMin  = fMin < fMax ? fMin : fMax;
@@ -501,12 +829,12 @@ _scIntrinsic(scGui* pGui, scNode* pNode, s32 iAvailW, s32 iAvailH) {
       break;
     }
     case SC_NODE_LABEL: {
-      HFONT hFont = pNode->u.label.bBold ? t->hBoldFont : t->hFont;
+      HFONT hFont = _scFontForRole(pGui, pNode->style.eFontRole != SC_FONT_INHERIT ? pNode->style.eFontRole : (pNode->u.label.bBold ? SC_FONT_BOLD : SC_FONT_BODY));
       sz = _scTextSize(pGui, hFont, pNode->wszText, pNode->bWrap, iAvailW);
       break;
     }
     default: {
-      sz = _scTextSize(pGui, t->hFont, pNode->wszText, false, 0);
+      sz = _scTextSize(pGui, _scFontForRole(pGui, pNode->style.eFontRole != SC_FONT_INHERIT ? pNode->style.eFontRole : SC_FONT_BODY), pNode->wszText, false, 0);
       sz.cx += _scPx(pGui, 30.0f);
       sz.cy  = _scPx(pGui, 30.0f);
       break;
@@ -1006,16 +1334,10 @@ _scSliderMouseDown(scGui* pGui, scNode* pNode, POINT pt) {
 // Drawing
 //------------------------------------------------------------------------
 scInternal void
-_scDrawLabel(scGui* pGui, HDC hDC, scNode* pNode, RECT r) {
-  scGuiTheme* t = &pGui->theme;
-  COLORREF dwColor = t->dwText;
-  if (pNode->eTextRole == SC_TEXT_DIM) {
-    dwColor = t->dwTextDim;
-  } else if (pNode->eTextRole == SC_TEXT_FAINT) {
-    dwColor = t->dwTextFaint;
-  }
-  SelectObject(hDC, pNode->u.label.bBold ? t->hBoldFont : t->hFont);
-  SetTextColor(hDC, dwColor);
+_scDrawLabel(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
+  HFONT hFont = scGetNodeFont(pNode, pNode->u.label.bBold ? SC_FONT_BOLD : SC_FONT_BODY);
+  SelectObject(hDC, hFont ? hFont : pGui->theme.hFont);
+  SetTextColor(hDC, scGetNodeTextColor(pNode, bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL));
   if (pNode->bEllipsis) {
     DrawTextW(hDC, pNode->wszText, -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
   } else if (pNode->bWrap) {
@@ -1028,15 +1350,16 @@ _scDrawLabel(scGui* pGui, HDC hDC, scNode* pNode, RECT r) {
 scInternal void
 _scDrawField(scGui* pGui, HDC hDC, scNode* pNode, RECT r) {
   scGuiTheme* t = &pGui->theme;
-  f32 fRad = 4.0f * pGui->fScale;
+  f32 fRad = scGetNodeCornerRadius(pNode, t->fControlRadius > 0.0f ? t->fControlRadius : 4.0f) * pGui->fScale;
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  gpFillRound(pGraphics, r, fRad, gpColor(t->dwCard, 255));
-  gpStrokeRound(pGraphics, r, fRad, gpColor(t->dwStroke, 255), 1.0f);
+  gpFillRound(pGraphics, r, fRad, gpColor(scGetNodeBackground(pNode, SC_NODE_STATE_NORMAL), 255));
+  gpStrokeRound(pGraphics, r, fRad, gpColor(scGetNodeBorderColor(pNode, false), 255), scGetNodeBorderWidth(pNode, t->fBorderWidth > 0.0f ? t->fBorderWidth : 1.0f) * pGui->fScale);
   gpGraphicsEnd(pGraphics);
 
-  SelectObject(hDC, t->hFont);
-  SetTextColor(hDC, t->dwText);
+  HFONT hFont = scGetNodeFont(pNode, SC_FONT_BODY);
+  SelectObject(hDC, hFont ? hFont : t->hFont);
+  SetTextColor(hDC, scGetNodeTextColor(pNode, SC_NODE_STATE_NORMAL));
   RECT rText = { r.left + _scPx(pGui, 10.0f), r.top, r.right - _scPx(pGui, 10.0f), r.bottom };
   DrawTextW(hDC, pNode->wszText, -1, &rText, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_PATH_ELLIPSIS | DT_NOPREFIX);
 }
@@ -1044,15 +1367,18 @@ _scDrawField(scGui* pGui, HDC hDC, scNode* pNode, RECT r) {
 scInternal void
 _scDrawButton(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
   scGuiTheme* t = &pGui->theme;
-  f32 fRad = 4.0f * pGui->fScale;
+  bool bActive = pGui->pPressed == pNode;
+  scNodeState eState = bActive ? SC_NODE_STATE_ACTIVE : (bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL);
+  f32 fRad = scGetNodeCornerRadius(pNode, t->fControlRadius > 0.0f ? t->fControlRadius : 4.0f) * pGui->fScale;
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  gpFillRound(pGraphics, r, fRad, gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
-  gpStrokeRound(pGraphics, r, fRad, gpColor(bHovered ? t->dwAccent : t->dwStroke, 255), 1.0f);
+  gpFillRound(pGraphics, r, fRad, gpColor(scGetNodeBackground(pNode, eState), 255));
+  gpStrokeRound(pGraphics, r, fRad, gpColor(scGetNodeBorderColor(pNode, bHovered || bActive), 255), scGetNodeBorderWidth(pNode, t->fBorderWidth > 0.0f ? t->fBorderWidth : 1.0f) * pGui->fScale);
   gpGraphicsEnd(pGraphics);
 
-  SelectObject(hDC, t->hFont);
-  SetTextColor(hDC, t->dwText);
+  HFONT hFont = scGetNodeFont(pNode, SC_FONT_BODY);
+  SelectObject(hDC, hFont ? hFont : t->hFont);
+  SetTextColor(hDC, scGetNodeTextColor(pNode, eState));
   RECT rText = { r.left + _scPx(pGui, 8.0f), r.top, r.right - _scPx(pGui, 8.0f), r.bottom };
   DrawTextW(hDC, pNode->wszText, -1, &rText, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 }
@@ -1060,8 +1386,9 @@ _scDrawButton(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
 scInternal void
 _scDrawLink(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
   scGuiTheme* t = &pGui->theme;
-  SelectObject(hDC, t->hFont);
-  SetTextColor(hDC, bHovered ? t->dwAccent : t->dwTextFaint);
+  HFONT hFont = scGetNodeFont(pNode, SC_FONT_BODY);
+  SelectObject(hDC, hFont ? hFont : t->hFont);
+  SetTextColor(hDC, scGetNodeTextColor(pNode, bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL));
   DrawTextW(hDC, pNode->wszText, -1, &r, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 }
 
@@ -1070,9 +1397,18 @@ _scDrawTab(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
   scGuiTheme* t = &pGui->theme;
   bool bActive = pNode->u.button.bActive;
 
-  if (bActive || bHovered) {
+  if (bActive || bHovered || scNodeHasBackgroundOverride(pNode, SC_NODE_STATE_NORMAL) ||
+      pNode->style.dwBorder != CLR_INVALID || pNode->style.dwHoverBorder != CLR_INVALID) {
     GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-    gpFillRound(pGraphics, r, 5.0f * pGui->fScale, gpColor(bActive ? t->dwCardHover : t->dwCard, 255));
+    f32 fRadius = scGetNodeCornerRadius(pNode, t->fControlRadius > 0.0f ? t->fControlRadius : 5.0f) * pGui->fScale;
+    scNodeState eState = bActive ? SC_NODE_STATE_ACTIVE : (bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL);
+    if (bActive || bHovered || scNodeHasBackgroundOverride(pNode, SC_NODE_STATE_NORMAL)) {
+      gpFillRound(pGraphics, r, fRadius, gpColor(scGetNodeBackground(pNode, eState), 255));
+    }
+    if (pNode->style.dwBorder != CLR_INVALID || pNode->style.dwHoverBorder != CLR_INVALID) {
+      gpStrokeRound(pGraphics, r, fRadius, gpColor(scGetNodeBorderColor(pNode, bHovered), 255),
+                    scGetNodeBorderWidth(pNode, t->fBorderWidth > 0.0f ? t->fBorderWidth : 1.0f) * pGui->fScale);
+    }
     if (bActive) {
       s32 iCenterY = (r.top + r.bottom) / 2;
       RECT rcInd = { r.left + _scPx(pGui, 3.0f), iCenterY - _scPx(pGui, 8.0f), r.left + _scPx(pGui, 6.0f), iCenterY + _scPx(pGui, 8.0f) };
@@ -1081,8 +1417,11 @@ _scDrawTab(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
     gpGraphicsEnd(pGraphics);
   }
 
-  SelectObject(hDC, bActive ? t->hBoldFont : t->hFont);
-  SetTextColor(hDC, bActive ? t->dwText : t->dwTextDim);
+  HFONT hFont = scGetNodeFont(pNode, bActive ? SC_FONT_BOLD : SC_FONT_BODY);
+  SelectObject(hDC, hFont ? hFont : (bActive ? t->hBoldFont : t->hFont));
+  COLORREF dwText = pNode->style.dwText != CLR_INVALID ? pNode->style.dwText : (bActive ? t->dwText : t->dwTextDim);
+  if (bHovered && pNode->style.dwHoverText != CLR_INVALID) dwText = pNode->style.dwHoverText;
+  SetTextColor(hDC, dwText);
   RECT rText = { r.left + _scPx(pGui, 15.0f), r.top + _scPx(pGui, 7.0f), r.right - _scPx(pGui, 8.0f), r.bottom };
   DrawTextW(hDC, pNode->wszText, -1, &rText, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 }
@@ -1092,9 +1431,12 @@ _scDrawToggle(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
   scGuiTheme* t = &pGui->theme;
   bool bOn = pNode->u.toggle.pValue && *pNode->u.toggle.pValue;
 
+  bool bActive = pGui->pPressed == pNode;
+  scNodeState eState = bActive ? SC_NODE_STATE_ACTIVE : (bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL);
+  f32 fRad = scGetNodeCornerRadius(pNode, t->fControlRadius > 0.0f ? t->fControlRadius : 6.0f) * pGui->fScale;
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  gpFillRound(pGraphics, r, _scRoundRad(pGui), gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
-  gpStrokeRound(pGraphics, r, _scRoundRad(pGui), gpColor(t->dwStrokeSoft, 255), 1.0f);
+  gpFillRound(pGraphics, r, fRad, gpColor(scGetNodeBackground(pNode, eState), 255));
+  gpStrokeRound(pGraphics, r, fRad, gpColor(scGetNodeBorderColor(pNode, bHovered), 255), scGetNodeBorderWidth(pNode, t->fBorderWidth > 0.0f ? t->fBorderWidth : 1.0f) * pGui->fScale);
 
   RECT pill = { r.right - _scPx(pGui, 55.0f), r.top + _scPx(pGui, 10.0f), r.right - _scPx(pGui, 15.0f), r.top + _scPx(pGui, 30.0f) };
   f32 fPillRad = (pill.bottom - pill.top) / 2.0f;
@@ -1112,8 +1454,9 @@ _scDrawToggle(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
   gpFillEllipse(pGraphics, fThumbX, pill.top + fInset, fThumb, fThumb, gpColor(dwThumb, 255));
   gpGraphicsEnd(pGraphics);
 
-  SelectObject(hDC, t->hFont);
-  SetTextColor(hDC, t->dwText);
+  HFONT hFont = scGetNodeFont(pNode, SC_FONT_BODY);
+  SelectObject(hDC, hFont ? hFont : t->hFont);
+  SetTextColor(hDC, scGetNodeTextColor(pNode, eState));
   RECT rText = { r.left + _scPx(pGui, 15.0f), r.top + _scPx(pGui, 10.0f), pill.left - _scPx(pGui, 10.0f), r.bottom };
   DrawTextW(hDC, pNode->wszText, -1, &rText, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 }
@@ -1127,17 +1470,26 @@ _scDrawDropdown(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
   if (!bCompact) {
-    gpFillRound(pGraphics, r, _scRoundRad(pGui), gpColor(bHovered ? t->dwCardHover : t->dwCard, 255));
-    gpStrokeRound(pGraphics, r, _scRoundRad(pGui), gpColor(t->dwStrokeSoft, 255), 1.0f);
+    scNodeState eState = bExpanded ? SC_NODE_STATE_ACTIVE : (bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL);
+    f32 fRad = scGetNodeCornerRadius(pNode, t->fControlRadius > 0.0f ? t->fControlRadius : 6.0f) * pGui->fScale;
+    gpFillRound(pGraphics, r, fRad, gpColor(scGetNodeBackground(pNode, eState), 255));
+    gpStrokeRound(pGraphics, r, fRad, gpColor(scGetNodeBorderColor(pNode, bHovered), 255), scGetNodeBorderWidth(pNode, t->fBorderWidth > 0.0f ? t->fBorderWidth : 1.0f) * pGui->fScale);
   }
 
   f32 fBoxRad = 4.0f * pGui->fScale;
-  gpFillRound(pGraphics, box, fBoxRad, gpColor(t->dwBackground, 255));
-  gpStrokeRound(pGraphics, box, fBoxRad, gpColor((bExpanded || bHovered) ? t->dwAccent : t->dwStroke, 255), bExpanded ? 1.5f : 1.0f);
+  COLORREF cBox = scNodeHasBackgroundOverride(pNode, bExpanded ? SC_NODE_STATE_ACTIVE
+    : (bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL))
+    ? scGetNodeBackground(pNode, bExpanded ? SC_NODE_STATE_ACTIVE
+      : (bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL)) : t->dwBackground;
+  gpFillRound(pGraphics, box, fBoxRad, gpColor(cBox, 255));
+  gpStrokeRound(pGraphics, box, fBoxRad, gpColor(scGetNodeBorderColor(pNode, bExpanded || bHovered), 255),
+                (bExpanded ? (t->fFocusBorderWidth > 0.0f ? t->fFocusBorderWidth : 1.5f) : scGetNodeBorderWidth(pNode, t->fBorderWidth > 0.0f ? t->fBorderWidth : 1.0f)) * pGui->fScale);
   gpGraphicsEnd(pGraphics);
 
-  SelectObject(hDC, t->hFont);
-  SetTextColor(hDC, t->dwText);
+  HFONT hFont = scGetNodeFont(pNode, SC_FONT_BODY);
+  SelectObject(hDC, hFont ? hFont : t->hFont);
+  SetTextColor(hDC, scGetNodeTextColor(pNode, bExpanded ? SC_NODE_STATE_ACTIVE
+    : (bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL)));
   if (!bCompact) {
     RECT rLabel = { r.left + _scPx(pGui, 15.0f), r.top + _scPx(pGui, 10.0f), box.left - _scPx(pGui, 10.0f), r.bottom };
     DrawTextW(hDC, pNode->wszText, -1, &rLabel, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
@@ -1178,7 +1530,8 @@ _scDrawSlider(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
     swprintf_s(wszValue, ARRAYSIZE(wszValue), L"%.*f", _scSliderDecimals(pNode), fValue);
   }
 
-  SelectObject(hDC, t->hFont);
+  HFONT hFont = scGetNodeFont(pNode, SC_FONT_BODY);
+  SelectObject(hDC, hFont ? hFont : t->hFont);
   SIZE szText = { 0, 0 };
   GetTextExtentPoint32W(hDC, wszValue, lstrlenW(wszValue), &szText);
   s32 iTextRight = rcValue.right - _scPx(pGui, 6.0f);
@@ -1189,8 +1542,10 @@ _scDrawSlider(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
   f32 fThumbY  = (r.top + r.bottom) / 2.0f - fThumb / 2.0f;
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-  gpFillRound(pGraphics, r, _scRoundRad(pGui), gpColor(bHovered || bSliding ? t->dwCardHover : t->dwCard, 255));
-  gpStrokeRound(pGraphics, r, _scRoundRad(pGui), gpColor(t->dwStrokeSoft, 255), 1.0f);
+  scNodeState eState = bSliding ? SC_NODE_STATE_ACTIVE : (bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL);
+  f32 fRad = scGetNodeCornerRadius(pNode, t->fControlRadius > 0.0f ? t->fControlRadius : 6.0f) * pGui->fScale;
+  gpFillRound(pGraphics, r, fRad, gpColor(scGetNodeBackground(pNode, eState), 255));
+  gpStrokeRound(pGraphics, r, fRad, gpColor(scGetNodeBorderColor(pNode, bHovered || bSliding), 255), scGetNodeBorderWidth(pNode, t->fBorderWidth > 0.0f ? t->fBorderWidth : 1.0f) * pGui->fScale);
 
   gpFillRound(pGraphics, rcTrack, fTrackR, gpColor(t->dwPillOff, 255));
   if (iThumbX > rcTrack.left) {
@@ -1212,7 +1567,7 @@ _scDrawSlider(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
   }
   gpGraphicsEnd(pGraphics);
 
-  SetTextColor(hDC, t->dwText);
+  SetTextColor(hDC, scGetNodeTextColor(pNode, eState));
   RECT rLabel = { r.left + _scPx(pGui, 15.0f), r.top + _scPx(pGui, 10.0f), rcTrack.left - _scPx(pGui, 10.0f), r.bottom };
   DrawTextW(hDC, pNode->wszText, -1, &rLabel, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
@@ -1241,6 +1596,32 @@ _scDrawScrollbar(scGui* pGui, HDC hDC, scScrollGeom sg, bool bHot) {
 }
 
 scInternal void
+_scDrawNodeStyleSurface(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
+  scNodeState eState = pGui->pPressed == pNode ? SC_NODE_STATE_ACTIVE : (bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL);
+  COLORREF cBackground = eState == SC_NODE_STATE_ACTIVE ? pNode->style.dwActiveBackground
+    : (eState == SC_NODE_STATE_HOVER ? pNode->style.dwHoverBackground : pNode->style.dwBackground);
+  COLORREF cBorder = bHovered && pNode->style.dwHoverBorder != CLR_INVALID
+    ? pNode->style.dwHoverBorder : pNode->style.dwBorder;
+  bool bBackground = cBackground != CLR_INVALID || pNode->style.dwBackground != CLR_INVALID;
+  bool bBorder = cBorder != CLR_INVALID;
+  if (!bBackground && !bBorder) return;
+
+  f32 fFallbackRadius = pGui->theme.fControlRadius > 0.0f ? pGui->theme.fControlRadius : 4.0f;
+  f32 fRadius = scGetNodeCornerRadius(pNode, fFallbackRadius) * pGui->fScale;
+  if (bBackground) {
+    GpGraphics* pGraphics = gpGraphicsBegin(hDC);
+    gpFillRound(pGraphics, r, fRadius, gpColor(scGetNodeBackground(pNode, eState), 255));
+    gpGraphicsEnd(pGraphics);
+  }
+  if (bBorder) {
+    GpGraphics* pGraphics = gpGraphicsBegin(hDC);
+    gpStrokeRound(pGraphics, r, fRadius, gpColor(scGetNodeBorderColor(pNode, bHovered), 255),
+                  scGetNodeBorderWidth(pNode, pGui->theme.fBorderWidth > 0.0f ? pGui->theme.fBorderWidth : 1.0f) * pGui->fScale);
+    gpGraphicsEnd(pGraphics);
+  }
+}
+
+scInternal void
 _scPaintNode(scGui* pGui, HDC hDC, scNode* pNode, s32 iOffY, const RECT* pClip) {
   RECT r = pNode->rc;
   OffsetRect(&r, 0, -iOffY);
@@ -1255,15 +1636,27 @@ _scPaintNode(scGui* pGui, HDC hDC, scNode* pNode, s32 iOffY, const RECT* pClip) 
       if (pNode->bScrollable && !bVisible) {
         return;
       }
-      if (pNode->bSurface && bVisible) {
-        HBRUSH hBrush = CreateSolidBrush(pGui->theme.dwPanel);
-        FillRect(hDC, &r, hBrush);
-        DeleteObject(hBrush);
+      scNodeState eState = pGui->pPressed == pNode ? SC_NODE_STATE_ACTIVE : (bHovered ? SC_NODE_STATE_HOVER : SC_NODE_STATE_NORMAL);
+      bool bHasSurface = pNode->bSurface || scNodeHasBackgroundOverride(pNode, eState);
+      bool bRounded = pNode->fCardRadius > 0.0f || pNode->style.fCornerRadius >= 0.0f;
+      COLORREF cSurface = pNode->bSurface && !scNodeHasBackgroundOverride(pNode, eState)
+        ? pGui->theme.dwPanel : scGetNodeBackground(pNode, eState);
+      if (bHasSurface && bVisible && !bRounded) {
+        HBRUSH hBrush = CreateSolidBrush(cSurface);
+        if (hBrush) {
+          FillRect(hDC, &r, hBrush);
+          DeleteObject(hBrush);
+        }
       }
-      if (pNode->fCardRadius > 0.0f && bVisible) {
+      if (bRounded && bVisible && (bHasSurface || pNode->fCardRadius > 0.0f ||
+          pNode->style.dwBorder != CLR_INVALID || pNode->style.dwHoverBorder != CLR_INVALID)) {
         GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-        gpFillRound(pGraphics, r, pNode->fCardRadius * pGui->fScale, gpColor(pGui->theme.dwCard, 255));
-        gpStrokeRound(pGraphics, r, pNode->fCardRadius * pGui->fScale, gpColor(pGui->theme.dwStrokeSoft, 255), 1.0f);
+        f32 fBaseRadius = pNode->fCardRadius > 0.0f ? pNode->fCardRadius : 4.0f;
+        f32 fRad = scGetNodeCornerRadius(pNode, fBaseRadius) * pGui->fScale;
+        if (bHasSurface || pNode->fCardRadius > 0.0f) gpFillRound(pGraphics, r, fRad, gpColor(cSurface, 255));
+        if (pNode->fCardRadius > 0.0f || pNode->style.dwBorder != CLR_INVALID || pNode->style.dwHoverBorder != CLR_INVALID) {
+          gpStrokeRound(pGraphics, r, fRad, gpColor(scGetNodeBorderColor(pNode, bHovered), 255), scGetNodeBorderWidth(pNode, pGui->theme.fBorderWidth > 0.0f ? pGui->theme.fBorderWidth : 1.0f) * pGui->fScale);
+        }
         gpGraphicsEnd(pGraphics);
       }
 
@@ -1284,7 +1677,7 @@ _scPaintNode(scGui* pGui, HDC hDC, scNode* pNode, s32 iOffY, const RECT* pClip) 
       }
       if (pNode->fOutlineRadius > 0.0f && bVisible) {
         GpGraphics* pGraphics = gpGraphicsBegin(hDC);
-        gpStrokeRound(pGraphics, r, pNode->fOutlineRadius * pGui->fScale, gpColor(pGui->theme.dwStroke, 255), 1.0f);
+        gpStrokeRound(pGraphics, r, pNode->fOutlineRadius * pGui->fScale, gpColor(scGetNodeBorderColor(pNode, false), 255), scGetNodeBorderWidth(pNode, pGui->theme.fBorderWidth > 0.0f ? pGui->theme.fBorderWidth : 1.0f) * pGui->fScale);
         gpGraphicsEnd(pGraphics);
       }
       return;
@@ -1299,20 +1692,28 @@ _scPaintNode(scGui* pGui, HDC hDC, scNode* pNode, s32 iOffY, const RECT* pClip) 
 
   switch (pNode->eType) {
     case SC_NODE_DIVIDER: {
-      HBRUSH hBrush = CreateSolidBrush(pGui->theme.dwStrokeSoft);
+      HBRUSH hBrush = CreateSolidBrush(pNode->style.dwBackground != CLR_INVALID
+        ? scGetNodeBackground(pNode, SC_NODE_STATE_NORMAL) : pGui->theme.dwStrokeSoft);
       FillRect(hDC, &r, hBrush);
       DeleteObject(hBrush);
       break;
     }
-    case SC_NODE_LABEL:    _scDrawLabel   (pGui, hDC, pNode, r);           break;
+    case SC_NODE_LABEL:
+      _scDrawNodeStyleSurface(pGui, hDC, pNode, r, bHovered);
+      _scDrawLabel(pGui, hDC, pNode, r, bHovered);
+      break;
     case SC_NODE_FIELD:    _scDrawField   (pGui, hDC, pNode, r);           break;
     case SC_NODE_BUTTON:   _scDrawButton  (pGui, hDC, pNode, r, bHovered); break;
-    case SC_NODE_LINK:     _scDrawLink    (pGui, hDC, pNode, r, bHovered); break;
+    case SC_NODE_LINK:
+      _scDrawNodeStyleSurface(pGui, hDC, pNode, r, bHovered);
+      _scDrawLink(pGui, hDC, pNode, r, bHovered);
+      break;
     case SC_NODE_TAB:      _scDrawTab     (pGui, hDC, pNode, r, bHovered); break;
     case SC_NODE_TOGGLE:   _scDrawToggle  (pGui, hDC, pNode, r, bHovered); break;
     case SC_NODE_SLIDER:   _scDrawSlider  (pGui, hDC, pNode, r, bHovered); break;
     case SC_NODE_DROPDOWN: _scDrawDropdown(pGui, hDC, pNode, r, bHovered); break;
     case SC_NODE_CUSTOM: {
+      _scDrawNodeStyleSurface(pGui, hDC, pNode, r, bHovered);
       if (pNode->u.custom.pfnDraw) {
         pNode->u.custom.pfnDraw(pNode, hDC, r, rcVisible, bHovered);
       }
@@ -1332,11 +1733,11 @@ _scPaintPopup(scGui* pGui, HDC hDC) {
 
   scGuiTheme* t = &pGui->theme;
   scPopupGeom pg = _scPopupGeom(pGui, pNode);
-  f32 fRad = 6.0f * pGui->fScale;
+  f32 fRad = scGetNodeCornerRadius(pNode, t->fPanelRadius > 0.0f ? t->fPanelRadius : 6.0f) * pGui->fScale;
 
   GpGraphics* pGraphics = gpGraphicsBegin(hDC);
   gpFillRound(pGraphics, pg.rcBox, fRad, gpColor(t->dwPopup, 255));
-  gpStrokeRound(pGraphics, pg.rcBox, fRad, gpColor(t->dwStroke, 255), 1.0f);
+  gpStrokeRound(pGraphics, pg.rcBox, fRad, gpColor(scGetNodeBorderColor(pNode, false), 255), scGetNodeBorderWidth(pNode, t->fBorderWidth > 0.0f ? t->fBorderWidth : 1.0f) * pGui->fScale);
   gpGraphicsEnd(pGraphics);
 
   s32 iSaved = SaveDC(hDC);
@@ -1352,7 +1753,8 @@ _scPaintPopup(scGui* pGui, HDC hDC) {
     }
     if (pGui->iPopupHover == i) {
       RECT rcItem = { pg.rcBox.left + _scPx(pGui, 3.0f), iTop + _scPx(pGui, 1.0f), pg.rcBox.right - _scPx(pGui, pg.bHasScroll ? 11.0f : 3.0f), iBottom - _scPx(pGui, 1.0f) };
-      gpFillRound(pGraphics, rcItem, 4.0f * pGui->fScale, gpColor(t->dwCardHover, 255));
+      gpFillRound(pGraphics, rcItem, (t->fControlRadius > 0.0f ? t->fControlRadius : 4.0f) * pGui->fScale,
+                  gpColor(scGetNodeBackground(pNode, SC_NODE_STATE_HOVER), 255));
     }
     if (pNode->u.dropdown.iSelected == i) {
       s32 iCy = (iTop + iBottom) / 2;
@@ -1368,8 +1770,9 @@ _scPaintPopup(scGui* pGui, HDC hDC) {
   }
   gpGraphicsEnd(pGraphics);
 
-  SelectObject(hDC, t->hFont);
-  SetTextColor(hDC, t->dwText);
+  HFONT hFont = scGetNodeFont(pNode, SC_FONT_BODY);
+  SelectObject(hDC, hFont ? hFont : t->hFont);
+  SetTextColor(hDC, scGetNodeTextColor(pNode, SC_NODE_STATE_NORMAL));
   for (s32 i = 0; i < pNode->u.dropdown.nOptionCount; ++i) {
     s32 iTop    = pg.rcBox.top + i * pg.iItemH - pGui->iPopupScroll;
     s32 iBottom = iTop + pg.iItemH;
@@ -1761,6 +2164,7 @@ void scGuiCaptureLost(scGui* pGui) {
 //------------------------------------------------------------------------
 scGui* scGuiCreate(const scGuiHost* pHost) {
   scGui* pGui = (scGui*)calloc(1, sizeof(scGui));
+  if (!pGui) return NULL;
   if (pHost) {
     pGui->host = *pHost;
   }
@@ -1781,18 +2185,20 @@ void scGuiDestroy(scGui* pGui) {
 }
 
 void scGuiSetTheme(scGui* pGui, const scGuiTheme* pTheme) {
+  if (!pGui || !pTheme) return;
   pGui->theme = *pTheme;
   scGuiInvalidateLayout(pGui);
 }
 
 void scGuiSetScale(scGui* pGui, f32 fScale) {
-  if (pGui->fScale != fScale) {
+  if (pGui && fScale > 0.0f && pGui->fScale != fScale) {
     pGui->fScale = fScale;
     scGuiInvalidateLayout(pGui);
   }
 }
 
 void scGuiSetRoot(scGui* pGui, scNode* pRoot) {
+  if (!pGui) return;
   if (pGui->drag.bActive) {
     pGui->drag.bActive = false;
     _scCapture(pGui, false);
@@ -1834,12 +2240,11 @@ void scGuiResize(scGui* pGui, s32 iWidth, s32 iHeight) {
 }
 
 void scGuiInvalidate(scGui* pGui) {
-  if (pGui) {
-    _scInvalidate(pGui, NULL);
-  }
+  if (pGui) _scInvalidate(pGui, NULL);
 }
 
 void scGuiInvalidateLayout(scGui* pGui) {
+  if (!pGui) return;
   pGui->bLayoutDirty = true;
   _scInvalidate(pGui, NULL);
 }
