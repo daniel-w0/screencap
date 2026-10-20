@@ -7,6 +7,7 @@
 #include "scLogging.h"
 #include "scGdiPlus.h"
 #include "scLocale.h"
+#include "scConfig.h"
 #include "stb_image.h"
 #include "scTray.h"
 #include "scAudio.h"
@@ -18,6 +19,9 @@
 #ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
+
+#define SC_WINDOW_SAVE_TIMER_ID  1
+#define SC_WINDOW_SAVE_DELAY_MS  500
 
 #define WM_HOTKEY_RECORDED (WM_APP + 100)
 #define WM_THUMB_LOADED    (WM_APP + 101)
@@ -1945,6 +1949,7 @@ _scBuildSettingsGeneral() {
   _scAddToggle(pPage, "Start Minimized", &gApp->config.bStartMinimized, NULL);
   _scAddToggle(pPage, "Icon uses Accent Color", &gApp->config.bAccentIcon, _scUpdateIconOption);
   _scAddToggle(pPage, "Interactive mode uses Accent Color", &gApp->config.bAccentInteractive, NULL);
+  _scAddToggle(pPage, "Preserve Window Position & Size", &gApp->config.bPreserveWindowPosSize, NULL);
   return pPage;
 }
 
@@ -2308,10 +2313,40 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       pMmi->ptMinTrackSize.y = _scScale(WINDOW_MIN_HEIGHT);
       return 0;
     }
+    case WM_MOVE: {
+      if (!IsIconic(hWnd) && !IsZoomed(hWnd) && gApp->config.bPreserveWindowPosSize) {
+        KillTimer(hWnd, SC_WINDOW_SAVE_TIMER_ID);
+        SetTimer(hWnd, SC_WINDOW_SAVE_TIMER_ID, SC_WINDOW_SAVE_DELAY_MS, NULL);
+      }
+      return 0;
+    }
     case WM_SIZE: {
       if (wParam != SIZE_MINIMIZED) {
+        if (wParam != SIZE_MAXIMIZED && gApp->config.bPreserveWindowPosSize) {
+          KillTimer(hWnd, SC_WINDOW_SAVE_TIMER_ID);
+          SetTimer(hWnd, SC_WINDOW_SAVE_TIMER_ID, SC_WINDOW_SAVE_DELAY_MS, NULL);
+        }
+
         scGuiResize(gUI.pGui, LOWORD(lParam), HIWORD(lParam));
         _scAudioLayoutCheck();
+      }
+      return 0;
+    }
+    case WM_TIMER: {
+      if (wParam == SC_WINDOW_SAVE_TIMER_ID && gApp->config.bPreserveWindowPosSize) {
+        KillTimer(hWnd, SC_WINDOW_SAVE_TIMER_ID);
+
+        if (!IsIconic(hWnd) && !IsZoomed(hWnd)) {
+          RECT rc;
+          if (GetWindowRect(hWnd, &rc)) {
+            int x = rc.left;
+            int y = rc.top;
+            int width = rc.right - rc.left;
+            int height = rc.bottom - rc.top;
+
+            scWriteWindowConfig(x, y, width, height);
+          }
+        }
       }
       return 0;
     }
@@ -2530,6 +2565,15 @@ void scUIOpenWindow() {
     BringWindowToTop(gUI.hWindow);
     SetForegroundWindow(gUI.hWindow);
     scLogDebug("Focused main window");
+  }
+
+  if (gApp->config.bPreserveWindowPosSize) {
+    int iX, iY, iW, iH;
+    if (scReadWindowConfig(&iX, &iY, &iW, &iH)) {
+      SetWindowPos(gUI.hWindow, NULL, iX, iY, iW, iH, SWP_NOZORDER | SWP_NOACTIVATE);
+    } else {
+      scLogWarn("Attempted to re-apply previous window size and position but failed to read window config");
+    }
   }
 
   ShowWindow(gUI.hWindow, SW_SHOW);

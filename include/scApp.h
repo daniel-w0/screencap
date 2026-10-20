@@ -6,7 +6,7 @@
 
 #define SC_VERSION_MAJOR 1
 #define SC_VERSION_MINOR 4
-#define SC_VERSION_PATCH 0
+#define SC_VERSION_PATCH 1
 
 #define SC_STRINGIZE_(x) #x
 #define SC_STRINGIZE(x) SC_STRINGIZE_(x)
@@ -94,6 +94,7 @@ typedef struct {
   float           fGuiScale;
   char            sLanguageCode[16];
   bool            bCopyToClipboard;
+  bool            bPreserveWindowPosSize;
   bool            bRunAtStartup;
   bool            bPlaySoundOnAction;
   bool            bShowNotification;

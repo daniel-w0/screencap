@@ -87,6 +87,80 @@ _scGetConfigFilepath(wchar_t wszPath[SC_PATH_MAX_LEN]) {
   }
 }
 
+void scWriteWindowConfig(int iX, int iY, int iWidth, int iHeight) {
+  wchar_t wszPath[SC_PATH_MAX_LEN];
+
+  if (!_scGetConfigFilepath(wszPath)) {
+    return;
+  }
+
+  wchar_t wszValue[32];
+
+  _snwprintf_s(wszValue, _countof(wszValue), _TRUNCATE, L"%d", iX);
+  WritePrivateProfileStringW(L"window", L"x", wszValue, wszPath);
+
+  _snwprintf_s(wszValue, _countof(wszValue), _TRUNCATE, L"%d", iY);
+  WritePrivateProfileStringW(L"window", L"y", wszValue, wszPath);
+
+  _snwprintf_s(wszValue, _countof(wszValue), _TRUNCATE, L"%d", iWidth);
+  WritePrivateProfileStringW(L"window", L"width", wszValue, wszPath);
+
+  _snwprintf_s(wszValue, _countof(wszValue), _TRUNCATE, L"%d", iHeight);
+  WritePrivateProfileStringW(L"window", L"height", wszValue, wszPath);
+
+  scLogDebug("Saved window { %d, %d, %d, %d }", iX, iY, iWidth, iHeight);
+}
+
+bool scReadWindowConfig(int* iX, int* iY, int* iWidth, int* iHeight) {
+  wchar_t wszPath[SC_PATH_MAX_LEN];
+
+  if (!_scGetConfigFilepath(wszPath)) {
+    return false;
+  }
+
+  int x = GetPrivateProfileIntW(L"window", L"x", INT_MIN, wszPath);
+  int y = GetPrivateProfileIntW(L"window", L"y", INT_MIN, wszPath);
+  int width = GetPrivateProfileIntW(L"window", L"width", INT_MIN, wszPath);
+  int height = GetPrivateProfileIntW(L"window", L"height", INT_MIN, wszPath);
+
+  if (x == INT_MIN || y == INT_MIN ||
+      width <= 0 || height <= 0 ||
+      x > INT_MAX - width || y > INT_MAX - height) {
+    return false;
+  }
+
+  RECT rc = {
+    .left = x,
+    .top = y,
+    .right = x + width,
+    .bottom = y + height
+  };
+
+  HMONITOR hMonitor = MonitorFromRect(&rc, MONITOR_DEFAULTTONULL);
+  if (!hMonitor) {
+    return false;
+  }
+
+  MONITORINFO mi = { .cbSize = sizeof(mi) };
+  if (!GetMonitorInfoW(hMonitor, &mi)) {
+    return false;
+  }
+
+  if (rc.left < mi.rcMonitor.left ||
+      rc.top < mi.rcMonitor.top ||
+      rc.right > mi.rcMonitor.right ||
+      rc.bottom > mi.rcMonitor.bottom) {
+    return false;
+  }
+
+  *iX = x;
+  *iY = y;
+  *iWidth = width;
+  *iHeight = height;
+
+  return true;
+}
+
 scInternal void
 _scConfigCreateDefaults(scAppConfig* pOutConfig) {
   pOutConfig->aHotkeys[SC_HOTKEY_SCREENSHOT]          = (scHotkey){ .eID = SC_HOTKEY_SCREENSHOT         , .uModifiers = 0,                       .uKey = VK_SNAPSHOT, .bRegistered = false };
@@ -110,14 +184,15 @@ _scConfigCreateDefaults(scAppConfig* pOutConfig) {
   _scGetDefaultSaveRootPath(pOutConfig->wszSavePath); // defaults to current directory if fails
   _scGetSystemLanguage(pOutConfig->sLanguageCode); // defaults to en if fails
 
-  pOutConfig->fGuiScale          = 1.0f;
-  pOutConfig->bCopyToClipboard   = true;
-  pOutConfig->bRunAtStartup      = false;
-  pOutConfig->bPlaySoundOnAction = true;
-  pOutConfig->bShowNotification  = true;
-  pOutConfig->bStartMinimized    = true;
-  pOutConfig->bAccentIcon        = true;
-  pOutConfig->bAccentInteractive = true;
+  pOutConfig->fGuiScale             = 1.0f;
+  pOutConfig->bCopyToClipboard      = true;
+  pOutConfig->bPreserveWindowPosSize = false;
+  pOutConfig->bRunAtStartup         = false;
+  pOutConfig->bPlaySoundOnAction    = true;
+  pOutConfig->bShowNotification     = true;
+  pOutConfig->bStartMinimized       = true;
+  pOutConfig->bAccentIcon           = true;
+  pOutConfig->bAccentInteractive    = true;
 }
 
 scInternal void
@@ -154,6 +229,7 @@ _scWriteConfig(scAppConfig* pConfig, wchar_t* wszPath) {
 
   WritePrivateProfileStringW(L"options", L"capture_audio",      pConfig->bCaptureAudio ? L"1" : L"0", wszActualPath);
 
+  WritePrivateProfileStringW(L"options", L"persist_window_pos_size", pConfig->bPreserveWindowPosSize ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"copy_to_clipboard", pConfig->bCopyToClipboard ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"run_on_startup",    pConfig->bRunAtStartup ? L"1" : L"0", wszActualPath);
   WritePrivateProfileStringW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction ? L"1" : L"0", wszActualPath);
@@ -220,6 +296,7 @@ _scConfigReadInto(scAppConfig* pConfig, wchar_t* wszPath) {
   }
 
   pConfig->bCaptureAudio      = GetPrivateProfileIntW(L"options", L"capture_audio", pConfig->bCaptureAudio, wszActualPath) != 0;
+  pConfig->bPreserveWindowPosSize = GetPrivateProfileIntW(L"options", L"persist_window_pos_size", pConfig->bPreserveWindowPosSize, wszActualPath) != 0;
   pConfig->bCopyToClipboard   = GetPrivateProfileIntW(L"options", L"copy_to_clipboard", pConfig->bCopyToClipboard, wszActualPath) != 0;
   pConfig->bRunAtStartup      = GetPrivateProfileIntW(L"options", L"run_on_startup",    pConfig->bRunAtStartup, wszActualPath) != 0;
   pConfig->bPlaySoundOnAction = GetPrivateProfileIntW(L"options", L"play_sound",        pConfig->bPlaySoundOnAction, wszActualPath) != 0;
