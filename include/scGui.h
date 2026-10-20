@@ -97,6 +97,15 @@ typedef struct {
   s32  (*pfnMeasure)(scNode* pNode, HDC hMeasureDC, s32 iWidth);
 } scCustomOps;
 
+typedef struct {
+  const wchar_t* wszText;
+  s32 iCommand;
+  bool bEnabled;
+  bool bDestructive;
+  bool bSeparator;
+  bool bHeader;
+} scGuiMenuItem;
+
 void scGuiThemeInit(scGuiTheme* pTheme, s32 iFontSize);
 void scGuiThemeDestroy(scGuiTheme* pTheme);
 f32 scGetDPIScale(HWND hWnd);
@@ -169,6 +178,8 @@ void   scGuiResize(scGui* pGui, s32 iWidth, s32 iHeight);
 void   scGuiInvalidate(scGui* pGui);
 void   scGuiInvalidateLayout(scGui* pGui);
 void   scGuiPaint(scGui* pGui, HDC hDC, const RECT* pClip);
+int    scGuiShowContextMenu(HWND hOwner, POINT ptScreen, const scGuiTheme* pTheme, f32 fScale,
+                            const scGuiMenuItem* pItems, s32 nItems);
 
 void scGuiMouseMove(scGui* pGui, POINT pt);
 void scGuiMouseLeave(scGui* pGui);

@@ -48,44 +48,45 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
         POINT pt;
         GetCursorPos(&pt);
 
-        const wchar_t* wszSettingsText = scLocaleGet("Open Window");
-        const wchar_t* wszExitText     = scLocaleGet("Exit");
+        scGuiMenuItem aItems[_SC_HOTKEY_COUNT + 3] = { 0 };
+        wchar_t aActionNames[_SC_HOTKEY_COUNT][128] = { 0 };
+        s32 nItems = 0;
 
-        HMENU hActionMenu = CreatePopupMenu();
+        aItems[nItems++] = (scGuiMenuItem){ scLocaleGet("Actions"), 0, false, false, false, true };
         for (s32 i = 0; i < _SC_HOTKEY_COUNT; ++i) {
-          if (i == SC_HOTKEY_ACTIVE_WINDOW) {
+          if (i == SC_HOTKEY_ACTIVE_WINDOW || (i == SC_HOTKEY_OCR && !gApp->bIsGeWin10)) {
             continue;
           }
-          if (i == SC_HOTKEY_OCR && !gApp->bIsGeWin10) {
-            continue;
+          if (!MultiByteToWideChar(CP_ACP, 0, scCaptureActionNames[i], -1,
+                                   aActionNames[i], ARRAYSIZE(aActionNames[i]))) {
+            aActionNames[i][0] = L'\0';
           }
-          AppendMenuA(hActionMenu, MF_STRING, TRAY_ACTION_ID(i), scCaptureActionNames[i]);
+          aItems[nItems++] = (scGuiMenuItem){ aActionNames[i], TRAY_ACTION_ID(i), true, false, false, false };
         }
+        aItems[nItems++] = (scGuiMenuItem){ NULL, 0, false, false, true, false };
+        aItems[nItems++] = (scGuiMenuItem){ scLocaleGet("Open Window"), TRAY_MENU_SETTINGS, true, false, false, false };
+        aItems[nItems++] = (scGuiMenuItem){ scLocaleGet("Exit"), TRAY_MENU_EXIT, true, true, false, false };
 
-        HMENU hMenu = CreatePopupMenu();
-        AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hActionMenu, scLocaleGet("Actions"));
-        AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-        AppendMenuW(hMenu, MF_STRING, TRAY_MENU_SETTINGS, wszSettingsText);
-        AppendMenuW(hMenu, MF_STRING, TRAY_MENU_EXIT, wszExitText);
-
-        SetForegroundWindow(hWnd);
-        TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, 0, hWnd, NULL);
-        DestroyMenu(hMenu);
+        f32 fScale = scGetDPIScale(hWnd);
+        if (gApp->config.fGuiScale > 0.0f) fScale *= gApp->config.fGuiScale;
+        int iCmd = scGuiShowContextMenu(hWnd, pt, NULL, fScale, aItems, nItems);
+        if (iCmd) SendMessageW(hWnd, WM_COMMAND, MAKEWPARAM(iCmd, 0), 0);
       }
       return 0;
     }
     case WM_COMMAND: {
-      switch (LOWORD(wParam)) {
-        case TRAY_ACTION_ID(SC_HOTKEY_SCREENSHOT):
-        case TRAY_ACTION_ID(SC_HOTKEY_CLIPBOARD):
-        case TRAY_ACTION_ID(SC_HOTKEY_OCR):
-        case TRAY_ACTION_ID(SC_HOTKEY_ACTIVE_MONITOR):
-        case TRAY_ACTION_ID(SC_HOTKEY_FALLBACK_SCREENSHOT):
-        case TRAY_ACTION_ID(SC_HOTKEY_RECORD): {
-          scHotkeyID hkID = (scHotkeyID)(LOWORD(wParam) - _TRAY_MENU_LAST_ACTION_IDX);
+      s32 iCommand = LOWORD(wParam);
+      if (iCommand >= _TRAY_MENU_LAST_ACTION_IDX &&
+          iCommand < _TRAY_MENU_LAST_ACTION_IDX + _SC_HOTKEY_COUNT) {
+        scHotkeyID hkID = (scHotkeyID)(iCommand - _TRAY_MENU_LAST_ACTION_IDX);
+        if (hkID != SC_HOTKEY_ACTIVE_WINDOW &&
+            (hkID != SC_HOTKEY_OCR || gApp->bIsGeWin10)) {
           scAppRunHandlerFromActionID(hkID);
-          break;
-        } case TRAY_MENU_SETTINGS: {
+        }
+        return 0;
+      }
+      switch (iCommand) {
+        case TRAY_MENU_SETTINGS: {
           scUIOpenWindow();
           break;
         }
@@ -100,6 +101,7 @@ LRESULT CALLBACK TrayUtilityWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             gTray.hIcon = NULL;
           }
           PostQuitMessage(0);
+          break;
         }
       }
       return 0;

@@ -6,6 +6,7 @@
 #include "scLogging.h"
 
 #include <math.h>
+#include <windowsx.h>
 
 //------------------------------------------------------------------------
 // Types
@@ -394,6 +395,485 @@ scGuiThemeInit(scGuiTheme* pTheme, s32 iFontSize) {
   pTheme->fFocusBorderWidth = 1.5f;
   scLogDebug("Created GUI theme, dark mode: %s", pTheme->bDark ? "true" : "false");
 }
+
+typedef struct {
+  HWND hWnd;
+  scGuiTheme theme;
+  scGuiMenuItem* pItems;
+  wchar_t** aText;
+  s32 nItems;
+  s32 iHover;
+  s32 iWidth;
+  s32 iHeight;
+  s32 iPaddingX;
+  s32 iPaddingY;
+  s32 iScrollY;
+  s32 iMaxScroll;
+  s32 iRowHeight;
+  s32 iSeparatorHeight;
+  s32 iHeaderHeight;
+  f32 fScale;
+  int iCommand;
+  HWND hPreviousForeground;
+  bool bRestoreForeground;
+  bool bExplicitClose;
+  bool bDone;
+} scGuiContextMenu;
+
+static bool gScGuiContextMenuClassRegistered;
+
+scInternal s32
+_scGuiMenuPx(const scGuiContextMenu* pMenu, f32 fValue) {
+  s32 value = (s32)(fValue * pMenu->fScale + 0.5f);
+  return value > 0 ? value : 1;
+}
+
+scInternal s32
+_scGuiMenuItemHeight(const scGuiContextMenu* pMenu, s32 iItem) {
+  const scGuiMenuItem* pItem = &pMenu->pItems[iItem];
+  if (pItem->bSeparator) return pMenu->iSeparatorHeight;
+  if (pItem->bHeader) return pMenu->iHeaderHeight;
+  return pMenu->iRowHeight;
+}
+
+scInternal s32
+_scGuiMenuItemTop(const scGuiContextMenu* pMenu, s32 iItem) {
+  s32 y = pMenu->iPaddingY;
+  for (s32 i = 0; i < iItem; ++i) y += _scGuiMenuItemHeight(pMenu, i);
+  return y - pMenu->iScrollY;
+}
+
+scInternal bool
+_scGuiMenuItemSelectable(const scGuiContextMenu* pMenu, s32 iItem) {
+  return iItem >= 0 && iItem < pMenu->nItems &&
+         pMenu->pItems[iItem].bEnabled && !pMenu->pItems[iItem].bSeparator &&
+         !pMenu->pItems[iItem].bHeader && pMenu->pItems[iItem].iCommand != 0;
+}
+
+scInternal s32
+_scGuiMenuClampScroll(const scGuiContextMenu* pMenu, s32 iScroll) {
+  if (iScroll < 0) return 0;
+  if (iScroll > pMenu->iMaxScroll) return pMenu->iMaxScroll;
+  return iScroll;
+}
+
+scInternal void
+_scGuiMenuEnsureVisible(scGuiContextMenu* pMenu, s32 iItem) {
+  if (iItem < 0 || iItem >= pMenu->nItems) return;
+  s32 top = _scGuiMenuItemTop(pMenu, iItem);
+  s32 bottom = top + _scGuiMenuItemHeight(pMenu, iItem);
+  s32 viewTop = pMenu->iPaddingY;
+  s32 viewBottom = pMenu->iHeight - pMenu->iPaddingY;
+  if (top < viewTop) pMenu->iScrollY -= viewTop - top;
+  if (bottom > viewBottom) pMenu->iScrollY += bottom - viewBottom;
+  pMenu->iScrollY = _scGuiMenuClampScroll(pMenu, pMenu->iScrollY);
+}
+
+scInternal s32
+_scGuiMenuHitTest(const scGuiContextMenu* pMenu, POINT pt) {
+  if (pt.x < pMenu->iPaddingX || pt.x >= pMenu->iWidth - pMenu->iPaddingX ||
+      pt.y < pMenu->iPaddingY || pt.y >= pMenu->iHeight - pMenu->iPaddingY) return -1;
+  s32 y = pt.y + pMenu->iScrollY;
+  s32 top = pMenu->iPaddingY;
+  for (s32 i = 0; i < pMenu->nItems; ++i) {
+    s32 bottom = top + _scGuiMenuItemHeight(pMenu, i);
+    if (y >= top && y < bottom) return _scGuiMenuItemSelectable(pMenu, i) ? i : -1;
+    top = bottom;
+  }
+  return -1;
+}
+
+scInternal void
+_scGuiMenuMoveHover(scGuiContextMenu* pMenu, s32 iDirection) {
+  if (!pMenu || !pMenu->nItems) return;
+  s32 i = pMenu->iHover;
+  for (s32 n = 0; n < pMenu->nItems; ++n) {
+    i += iDirection;
+    if (i < 0) i = pMenu->nItems - 1;
+    if (i >= pMenu->nItems) i = 0;
+    if (_scGuiMenuItemSelectable(pMenu, i)) {
+      pMenu->iHover = i;
+      _scGuiMenuEnsureVisible(pMenu, i);
+      InvalidateRect(pMenu->hWnd, NULL, FALSE);
+      return;
+    }
+  }
+}
+
+scInternal void
+_scGuiMenuCopyPalette(scGuiTheme* pDst, const scGuiTheme* pSrc) {
+  if (!pSrc) return;
+  pDst->bDark = pSrc->bDark;
+  pDst->dwText = pSrc->dwText;
+  pDst->dwTextDim = pSrc->dwTextDim;
+  pDst->dwTextFaint = pSrc->dwTextFaint;
+  pDst->dwBackground = pSrc->dwBackground;
+  pDst->dwPanel = pSrc->dwPanel;
+  pDst->dwPopup = pSrc->dwPopup;
+  pDst->dwCard = pSrc->dwCard;
+  pDst->dwCardHover = pSrc->dwCardHover;
+  pDst->dwCardActive = pSrc->dwCardActive;
+  pDst->dwStroke = pSrc->dwStroke;
+  pDst->dwStrokeSoft = pSrc->dwStrokeSoft;
+  pDst->dwAccent = pSrc->dwAccent;
+  pDst->dwAccentHover = pSrc->dwAccentHover;
+  pDst->dwAccentText = pSrc->dwAccentText;
+  pDst->dwPillOff = pSrc->dwPillOff;
+  pDst->dwScrollThumb = pSrc->dwScrollThumb;
+  pDst->dwOk = pSrc->dwOk;
+  pDst->dwWarn = pSrc->dwWarn;
+  pDst->dwError = pSrc->dwError;
+  pDst->fControlRadius = pSrc->fControlRadius;
+  pDst->fPanelRadius = pSrc->fPanelRadius;
+  pDst->fBorderWidth = pSrc->fBorderWidth;
+  pDst->fFocusBorderWidth = pSrc->fFocusBorderWidth;
+  if (pDst->hBackgroundBrush) DeleteObject(pDst->hBackgroundBrush);
+  if (pDst->hCardBrush) DeleteObject(pDst->hCardBrush);
+  pDst->hBackgroundBrush = CreateSolidBrush(pDst->dwBackground);
+  pDst->hCardBrush = CreateSolidBrush(pDst->dwCard);
+}
+
+scInternal void
+_scGuiMenuFree(scGuiContextMenu* pMenu) {
+  if (!pMenu) return;
+  if (pMenu->aText) {
+    for (s32 i = 0; i < pMenu->nItems; ++i) free(pMenu->aText[i]);
+  }
+  free(pMenu->aText);
+  free(pMenu->pItems);
+  scGuiThemeDestroy(&pMenu->theme);
+  memset(pMenu, 0, sizeof(*pMenu));
+}
+
+scInternal void
+_scGuiMenuPaint(scGuiContextMenu* pMenu, HDC hDC) {
+  RECT client;
+  GetClientRect(pMenu->hWnd, &client);
+  HBRUSH hBackground = CreateSolidBrush(pMenu->theme.dwPopup);
+  HPEN hBorder = CreatePen(PS_SOLID, _scGuiMenuPx(pMenu, pMenu->theme.fBorderWidth), pMenu->theme.dwStroke);
+  if (hBackground && hBorder) {
+    HGDIOBJ hOldBrush = SelectObject(hDC, hBackground);
+    HGDIOBJ hOldPen = SelectObject(hDC, hBorder);
+    RoundRect(hDC, client.left, client.top, client.right, client.bottom,
+              _scGuiMenuPx(pMenu, 9.0f), _scGuiMenuPx(pMenu, 9.0f));
+    SelectObject(hDC, hOldPen);
+    SelectObject(hDC, hOldBrush);
+  } else {
+    FillRect(hDC, &client, hBackground ? hBackground : GetSysColorBrush(COLOR_MENU));
+  }
+  if (hBorder) DeleteObject(hBorder);
+  if (hBackground) DeleteObject(hBackground);
+
+  s32 iSaved = SaveDC(hDC);
+  IntersectClipRect(hDC, pMenu->iPaddingX, pMenu->iPaddingY,
+                    pMenu->iWidth - pMenu->iPaddingX, pMenu->iHeight - pMenu->iPaddingY);
+  SetBkMode(hDC, TRANSPARENT);
+  s32 y = pMenu->iPaddingY - pMenu->iScrollY;
+  for (s32 i = 0; i < pMenu->nItems; ++i) {
+    const scGuiMenuItem* pItem = &pMenu->pItems[i];
+    s32 rowHeight = _scGuiMenuItemHeight(pMenu, i);
+    RECT row = { pMenu->iPaddingX, y, pMenu->iWidth - pMenu->iPaddingX, y + rowHeight };
+    if (row.bottom > pMenu->iPaddingY && row.top < pMenu->iHeight - pMenu->iPaddingY) {
+      if (pItem->bSeparator) {
+        HPEN hPen = CreatePen(PS_SOLID, 1, pMenu->theme.dwStrokeSoft);
+        if (hPen) {
+          HGDIOBJ hOldPen = SelectObject(hDC, hPen);
+          s32 cy = (row.top + row.bottom) / 2;
+          MoveToEx(hDC, row.left + _scGuiMenuPx(pMenu, 5.0f), cy, NULL);
+          LineTo(hDC, row.right - _scGuiMenuPx(pMenu, 5.0f), cy);
+          SelectObject(hDC, hOldPen);
+          DeleteObject(hPen);
+        }
+      } else {
+        if (i == pMenu->iHover && pItem->bEnabled && !pItem->bHeader) {
+          HBRUSH hHover = CreateSolidBrush(pMenu->theme.dwCardHover);
+          HPEN hHoverPen = CreatePen(PS_SOLID, 1, pMenu->theme.dwCardHover);
+          if (hHover && hHoverPen) {
+            HGDIOBJ hOldBrush = SelectObject(hDC, hHover);
+            HGDIOBJ hOldPen = SelectObject(hDC, hHoverPen);
+            RoundRect(hDC, row.left, row.top + _scGuiMenuPx(pMenu, 1.0f),
+                      row.right, row.bottom - _scGuiMenuPx(pMenu, 1.0f),
+                      _scGuiMenuPx(pMenu, 5.0f), _scGuiMenuPx(pMenu, 5.0f));
+            SelectObject(hDC, hOldPen);
+            SelectObject(hDC, hOldBrush);
+          }
+          if (hHoverPen) DeleteObject(hHoverPen);
+          if (hHover) DeleteObject(hHover);
+        }
+
+        HFONT hFont = pItem->bHeader ? pMenu->theme.hSmallFont : pMenu->theme.hFont;
+        if (!hFont) hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        HGDIOBJ hOldFont = SelectObject(hDC, hFont);
+        COLORREF textColor = !pItem->bEnabled ? pMenu->theme.dwTextDim :
+                             (pItem->bDestructive ? pMenu->theme.dwError : pMenu->theme.dwText);
+        SetTextColor(hDC, textColor);
+        RECT text = row;
+        text.left += _scGuiMenuPx(pMenu, pItem->bHeader ? 10.0f : 12.0f);
+        text.right -= _scGuiMenuPx(pMenu, 10.0f);
+        if (pItem->bHeader) text.top += _scGuiMenuPx(pMenu, 1.0f);
+        DrawTextW(hDC, pItem->wszText ? pItem->wszText : L"", -1, &text,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(hDC, hOldFont);
+      }
+    }
+    y += rowHeight;
+  }
+  RestoreDC(hDC, iSaved);
+}
+
+scInternal LRESULT CALLBACK
+_scGuiContextMenuWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  scGuiContextMenu* pMenu = (scGuiContextMenu*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+  switch (uMsg) {
+    case WM_NCCREATE: {
+      CREATESTRUCTW* pCreate = (CREATESTRUCTW*)lParam;
+      pMenu = (scGuiContextMenu*)pCreate->lpCreateParams;
+      pMenu->hWnd = hWnd;
+      SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)pMenu);
+      return TRUE;
+    }
+    case WM_ERASEBKGND:
+      return 1;
+    case WM_PAINT: {
+      PAINTSTRUCT ps;
+      HDC hDC = BeginPaint(hWnd, &ps);
+      _scGuiMenuPaint(pMenu, hDC);
+      EndPaint(hWnd, &ps);
+      return 0;
+    }
+    case WM_MOUSEMOVE: {
+      TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hWnd, 0 };
+      TrackMouseEvent(&tme);
+      POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+      s32 iHover = _scGuiMenuHitTest(pMenu, pt);
+      if (iHover != pMenu->iHover) {
+        pMenu->iHover = iHover;
+        InvalidateRect(hWnd, NULL, FALSE);
+      }
+      return 0;
+    }
+    case WM_MOUSELEAVE:
+      if (pMenu->iHover != -1) {
+        pMenu->iHover = -1;
+        InvalidateRect(hWnd, NULL, FALSE);
+      }
+      return 0;
+    case WM_LBUTTONUP: {
+      POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+      s32 iItem = _scGuiMenuHitTest(pMenu, pt);
+      if (_scGuiMenuItemSelectable(pMenu, iItem)) {
+        pMenu->iCommand = pMenu->pItems[iItem].iCommand;
+        pMenu->bExplicitClose = true;
+        DestroyWindow(hWnd);
+      }
+      return 0;
+    }
+    case WM_RBUTTONUP:
+      pMenu->bExplicitClose = true;
+      DestroyWindow(hWnd);
+      return 0;
+    case WM_MOUSEWHEEL: {
+      s32 delta = GET_WHEEL_DELTA_WPARAM(wParam);
+      pMenu->iScrollY = _scGuiMenuClampScroll(pMenu, pMenu->iScrollY -
+                           (delta / WHEEL_DELTA) * pMenu->iRowHeight * 3);
+      InvalidateRect(hWnd, NULL, FALSE);
+      return 0;
+    }
+    case WM_KEYDOWN:
+      switch (wParam) {
+        case VK_ESCAPE:
+          pMenu->bExplicitClose = true;
+          DestroyWindow(hWnd);
+          return 0;
+        case VK_DOWN:
+          _scGuiMenuMoveHover(pMenu, 1);
+          return 0;
+        case VK_UP:
+          _scGuiMenuMoveHover(pMenu, -1);
+          return 0;
+        case VK_HOME:
+          pMenu->iHover = -1;
+          _scGuiMenuMoveHover(pMenu, 1);
+          return 0;
+        case VK_END:
+          pMenu->iHover = 0;
+          _scGuiMenuMoveHover(pMenu, -1);
+          return 0;
+        case VK_RETURN:
+        case VK_SPACE:
+          if (_scGuiMenuItemSelectable(pMenu, pMenu->iHover)) {
+            pMenu->iCommand = pMenu->pItems[pMenu->iHover].iCommand;
+            pMenu->bExplicitClose = true;
+            DestroyWindow(hWnd);
+          }
+          return 0;
+      }
+      break;
+    case WM_KILLFOCUS:
+      if (!pMenu->bExplicitClose) pMenu->bRestoreForeground = false;
+      PostMessageW(hWnd, WM_CLOSE, 0, 0);
+      return 0;
+    case WM_CLOSE:
+      if (!pMenu->bExplicitClose) pMenu->bRestoreForeground = false;
+      DestroyWindow(hWnd);
+      return 0;
+    case WM_DESTROY:
+      pMenu->bDone = true;
+      pMenu->hWnd = NULL;
+      return 0;
+    case WM_NCDESTROY:
+      SetWindowLongPtrW(hWnd, GWLP_USERDATA, 0);
+      return DefWindowProcW(hWnd, uMsg, wParam, lParam);
+  }
+  return DefWindowProcW(hWnd, uMsg, wParam, lParam);
+}
+
+int
+scGuiShowContextMenu(HWND hOwner, POINT ptScreen, const scGuiTheme* pTheme, f32 fScale,
+                     const scGuiMenuItem* pItems, s32 nItems) {
+  if (!pItems || nItems <= 0) return 0;
+  if (fScale <= 0.0f) fScale = 1.0f;
+  if (fScale > 8.0f) fScale = 8.0f;
+
+  scGuiContextMenu menu = { 0 };
+  menu.iHover = -1;
+  menu.fScale = fScale;
+  menu.nItems = nItems;
+  menu.hPreviousForeground = GetForegroundWindow();
+  menu.bRestoreForeground = true;
+  menu.iPaddingX = _scGuiMenuPx(&menu, 6.0f);
+  menu.iPaddingY = _scGuiMenuPx(&menu, 6.0f);
+  menu.iRowHeight = _scGuiMenuPx(&menu, 32.0f);
+  menu.iSeparatorHeight = _scGuiMenuPx(&menu, 9.0f);
+  menu.iHeaderHeight = _scGuiMenuPx(&menu, 24.0f);
+  menu.pItems = (scGuiMenuItem*)calloc((size_t)nItems, sizeof(*menu.pItems));
+  menu.aText = (wchar_t**)calloc((size_t)nItems, sizeof(*menu.aText));
+  if (!menu.pItems || !menu.aText) {
+    _scGuiMenuFree(&menu);
+    return 0;
+  }
+
+  for (s32 i = 0; i < nItems; ++i) {
+    menu.pItems[i] = pItems[i];
+    if (pItems[i].wszText) {
+      size_t nChars = wcslen(pItems[i].wszText) + 1;
+      menu.aText[i] = (wchar_t*)malloc(nChars * sizeof(wchar_t));
+      if (!menu.aText[i]) {
+        _scGuiMenuFree(&menu);
+        return 0;
+      }
+      memcpy(menu.aText[i], pItems[i].wszText, nChars * sizeof(wchar_t));
+      menu.pItems[i].wszText = menu.aText[i];
+    }
+  }
+
+  scGuiThemeInit(&menu.theme, _scGuiMenuPx(&menu, 15.0f));
+  _scGuiMenuCopyPalette(&menu.theme, pTheme);
+
+  if (!gScGuiContextMenuClassRegistered) {
+    WNDCLASSEXW wc = { 0 };
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = _scGuiContextMenuWndProc;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+    wc.hbrBackground = NULL;
+    wc.lpszClassName = L"ScGuiContextMenuWindow";
+    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+      _scGuiMenuFree(&menu);
+      return 0;
+    }
+    gScGuiContextMenuClassRegistered = true;
+  }
+
+  HMONITOR hMonitor = MonitorFromPoint(ptScreen, MONITOR_DEFAULTTONEAREST);
+  MONITORINFO mi = { sizeof(mi) };
+  RECT work = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+  if (hMonitor && GetMonitorInfoW(hMonitor, &mi)) work = mi.rcWork;
+  s32 workW = work.right - work.left;
+  s32 workH = work.bottom - work.top;
+
+  HDC hMeasureDC = hOwner ? GetDC(hOwner) : NULL;
+  bool bScreenDC = hMeasureDC == NULL;
+  if (bScreenDC) hMeasureDC = GetDC(NULL);
+  s32 maxTextW = 0;
+  if (hMeasureDC) {
+    HGDIOBJ hOldFont = SelectObject(hMeasureDC, menu.theme.hFont ? menu.theme.hFont : GetStockObject(DEFAULT_GUI_FONT));
+    for (s32 i = 0; i < nItems; ++i) {
+      if (!menu.pItems[i].wszText || menu.pItems[i].bSeparator) continue;
+      SIZE size = { 0, 0 };
+      if (GetTextExtentPoint32W(hMeasureDC, menu.pItems[i].wszText,
+                                lstrlenW(menu.pItems[i].wszText), &size) && size.cx > maxTextW) {
+        maxTextW = size.cx;
+      }
+    }
+    SelectObject(hMeasureDC, hOldFont);
+    ReleaseDC(bScreenDC ? NULL : hOwner, hMeasureDC);
+  }
+
+  menu.iWidth = maxTextW + _scGuiMenuPx(&menu, 34.0f);
+  if (menu.iWidth < _scGuiMenuPx(&menu, 180.0f)) menu.iWidth = _scGuiMenuPx(&menu, 180.0f);
+  if (menu.iWidth > _scGuiMenuPx(&menu, 360.0f)) menu.iWidth = _scGuiMenuPx(&menu, 360.0f);
+  if (menu.iWidth > workW) menu.iWidth = workW;
+
+  s32 rowsHeight = 0;
+  for (s32 i = 0; i < nItems; ++i) rowsHeight += _scGuiMenuItemHeight(&menu, i);
+  menu.iHeight = rowsHeight + menu.iPaddingY * 2;
+  if (menu.iHeight > workH) menu.iHeight = workH;
+  if (menu.iHeight < _scGuiMenuPx(&menu, 40.0f)) menu.iHeight = _scGuiMenuPx(&menu, 40.0f);
+  menu.iMaxScroll = rowsHeight - (menu.iHeight - menu.iPaddingY * 2);
+  if (menu.iMaxScroll < 0) menu.iMaxScroll = 0;
+
+  if (ptScreen.x + menu.iWidth > work.right) ptScreen.x -= menu.iWidth;
+  if (ptScreen.y + menu.iHeight > work.bottom) ptScreen.y -= menu.iHeight;
+  if (ptScreen.x < work.left) ptScreen.x = work.left;
+  if (ptScreen.y < work.top) ptScreen.y = work.top;
+
+  for (s32 i = 0; i < nItems; ++i) {
+    if (_scGuiMenuItemSelectable(&menu, i)) {
+      menu.iHover = i;
+      break;
+    }
+  }
+  _scGuiMenuEnsureVisible(&menu, menu.iHover);
+
+  HWND hWnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"ScGuiContextMenuWindow", L"",
+                              WS_POPUP, ptScreen.x, ptScreen.y, menu.iWidth, menu.iHeight,
+                              hOwner, NULL, GetModuleHandleW(NULL), &menu);
+  if (!hWnd) {
+    _scGuiMenuFree(&menu);
+    return 0;
+  }
+  HRGN hRegion = CreateRoundRectRgn(0, 0, menu.iWidth + 1, menu.iHeight + 1,
+                                     _scGuiMenuPx(&menu, 9.0f), _scGuiMenuPx(&menu, 9.0f));
+  if (hRegion && !SetWindowRgn(hWnd, hRegion, TRUE)) DeleteObject(hRegion);
+
+  if (hOwner && IsWindow(hOwner)) SetForegroundWindow(hOwner);
+  ShowWindow(hWnd, SW_SHOWNORMAL);
+  SetForegroundWindow(hWnd);
+  SetFocus(hWnd);
+  while (!menu.bDone) {
+    MSG msg;
+    BOOL result = GetMessageW(&msg, NULL, 0, 0);
+    if (result <= 0) {
+      menu.bRestoreForeground = false;
+      if (result == 0) PostQuitMessage((int)msg.wParam);
+      if (menu.hWnd && IsWindow(menu.hWnd)) DestroyWindow(menu.hWnd);
+      break;
+    }
+    TranslateMessage(&msg);
+    DispatchMessageW(&msg);
+  }
+
+  int iCommand = menu.iCommand;
+  HWND hPreviousForeground = menu.hPreviousForeground;
+  bool bRestoreForeground = menu.bRestoreForeground;
+  _scGuiMenuFree(&menu);
+  if (bRestoreForeground && hPreviousForeground && IsWindow(hPreviousForeground)) {
+    SetForegroundWindow(hPreviousForeground);
+  }
+  return iCommand;
+}
+
 
 //------------------------------------------------------------------------
 // Nodes

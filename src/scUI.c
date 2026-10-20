@@ -1287,25 +1287,18 @@ _scOnGalleryContext(scNode* pNode, POINT pt) {
   char szPath[MAX_PATH];
   strcpy_s(szPath, MAX_PATH, pItem->szPath);
 
-  HMENU hMenu = CreatePopupMenu();
-
-  MENUINFO mi = { sizeof(MENUINFO) };
-  mi.fMask   = MIM_BACKGROUND | MIM_STYLE;
-  mi.dwStyle = MNS_NOCHECK;
-  mi.hbrBack = gUI.theme.hBackgroundBrush;
-  SetMenuInfo(hMenu, &mi);
-
-  AppendMenuW(hMenu, MF_OWNERDRAW, 2, (LPCWSTR)scLocaleGet("Open Folder"));
-  if (!bIsFolder) {
-    AppendMenuW(hMenu, MF_OWNERDRAW, 1, (LPCWSTR)scLocaleGet("Copy to Clipboard"));
-    AppendMenuW(hMenu, MF_OWNERDRAW, 3, (LPCWSTR)scLocaleGet("Open"));
-    AppendMenuW(hMenu, MF_OWNERDRAW, 4, (LPCWSTR)scLocaleGet("Delete"));
-  }
-
   POINT ptScreen = pt;
   ClientToScreen(hWnd, &ptScreen);
-  int iCmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, ptScreen.x, ptScreen.y, 0, hWnd, NULL);
-  DestroyMenu(hMenu);
+  scGuiMenuItem aItems[5] = { 0 };
+  s32 nItems = 0;
+  aItems[nItems++] = (scGuiMenuItem){ scLocaleGet("Open Folder"), 2, true, false, false, false };
+  if (!bIsFolder) {
+    aItems[nItems++] = (scGuiMenuItem){ scLocaleGet("Copy to Clipboard"), 1, true, false, false, false };
+    aItems[nItems++] = (scGuiMenuItem){ scLocaleGet("Open"), 3, true, false, false, false };
+    aItems[nItems++] = (scGuiMenuItem){ NULL, 0, false, false, true, false };
+    aItems[nItems++] = (scGuiMenuItem){ scLocaleGet("Delete"), 4, true, true, false, false };
+  }
+  int iCmd = scGuiShowContextMenu(hWnd, ptScreen, &gUI.theme, gUI.fUIScale, aItems, nItems);
 
   switch (iCmd) {
     case 1: {
@@ -2239,52 +2232,6 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     case WM_CAPTURECHANGED: {
       scGuiCaptureLost(gUI.pGui);
       return 0;
-    }
-    case WM_DRAWITEM: {
-      LPDRAWITEMSTRUCT pDIS = (LPDRAWITEMSTRUCT)lParam;
-      if (pDIS->CtlType == ODT_MENU) {
-        FillRect(pDIS->hDC, &pDIS->rcItem, gUI.theme.hBackgroundBrush);
-        if (pDIS->itemState & ODS_SELECTED) {
-          RECT rcSel = pDIS->rcItem;
-          InflateRect(&rcSel, -_scScale(3), -_scScale(2));
-          GpGraphics* pGraphics = gpGraphicsBegin(pDIS->hDC);
-          gpFillRound(pGraphics, rcSel, 4.0f * gUI.fUIScale, gpColor(gUI.theme.dwCardHover, 255));
-          gpGraphicsEnd(pGraphics);
-        }
-        if (pDIS->itemData) {
-          SetBkMode(pDIS->hDC, TRANSPARENT);
-          SetTextColor(pDIS->hDC, gUI.theme.dwText);
-          SelectObject(pDIS->hDC, gUI.theme.hFont);
-          RECT rcText = pDIS->rcItem;
-          rcText.left += _scScale(12);
-          DrawTextW(pDIS->hDC, (const wchar_t*)pDIS->itemData, -1, &rcText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        }
-        return TRUE;
-      }
-      break;
-    }
-    case WM_MEASUREITEM: {
-      LPMEASUREITEMSTRUCT pMIS = (LPMEASUREITEMSTRUCT)lParam;
-      if (pMIS->CtlType == ODT_MENU) {
-        UINT uTextWidth = 0;
-        if (pMIS->itemData) {
-          const wchar_t* wszText = (const wchar_t*)pMIS->itemData;
-          HDC hDC = GetDC(gUI.hWindow);
-          HFONT hOldFont = (HFONT)SelectObject(hDC, gUI.theme.hFont);
-          SIZE stSize;
-          if (GetTextExtentPoint32W(hDC, wszText, lstrlenW(wszText), &stSize)) {
-            uTextWidth = (UINT)stSize.cx;
-          }
-          SelectObject(hDC, hOldFont);
-          ReleaseDC(gUI.hWindow, hDC);
-        }
-        UINT uMinWidth = _scScale(150);
-        UINT uWidth    = uTextWidth + _scScale(30);
-        pMIS->itemWidth  = uWidth > uMinWidth ? uWidth : uMinWidth;
-        pMIS->itemHeight = _scScale(24);
-        return TRUE;
-      }
-      break;
     }
     case WM_HOTKEY_RECORDED: {
       if (gUI.iEditingHotkey == -1) {
