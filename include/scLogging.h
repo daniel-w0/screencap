@@ -10,8 +10,8 @@ typedef enum scLogLevel {
   SC_LOG_ERROR
 } scLogLevel;
 
-#define SC_LOG_STORE_MAX 128
-#define SC_LOG_STORE_LEN 1024
+#define SC_LOG_STORE_MAX 1024
+#define SC_LOG_STORE_LEN 512
 
 typedef void (*scLogSink)(void);
 
