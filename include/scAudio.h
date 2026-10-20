@@ -16,7 +16,6 @@
 typedef struct {
   char szName[128];
   ma_device_id id;
-  bool bIsPlayback;
 } scAudioDevice;
 
 typedef struct {
@@ -26,9 +25,15 @@ typedef struct {
 
 typedef struct {
   scAudioDevice* pCaptureDevices;
-  uint32_t deviceCount;
-  scAudioSelection aSelections[SC_AUDIO_MAX_DEVICE_SELECTIONS];
-  uint32_t selectionCount;
+  uint32_t captureDeviceCount;
+  scAudioDevice* pPlaybackDevices;
+  uint32_t playbackDeviceCount;
+
+  scAudioSelection aInputs[SC_AUDIO_MAX_DEVICE_SELECTIONS];
+  uint32_t inputCount;
+  scAudioSelection aOutputs[SC_AUDIO_MAX_DEVICE_SELECTIONS];
+  uint32_t outputCount;
+
   ma_context maCtx;
 } scAudio;
 
@@ -38,6 +43,17 @@ extern scAudio gAudio;
 
 bool scAudioInit();
 void scAudioDestroy();
+bool scAudioInputSelectionAdd(void);
+void scAudioInputSelectionRemove(uint32_t iSelection);
+void scAudioInputSelectionSetDevice(uint32_t iSelection, int32_t iDevice);
+void scAudioInputSelectionSetTrack(uint32_t iSelection, int32_t iTrack);
+
+bool scAudioOutputSelectionAdd(void);
+void scAudioOutputSelectionRemove(uint32_t iSelection);
+void scAudioOutputSelectionSetDevice(uint32_t iSelection, int32_t iDevice);
+void scAudioOutputSelectionSetTrack(uint32_t iSelection, int32_t iTrack);
+
+/* Legacy entry points retained for callers that use the input selection list. */
 bool scAudioSelectionAdd(void);
 void scAudioSelectionRemove(uint32_t iSelection);
 void scAudioSelectionSetDevice(uint32_t iSelection, int32_t iDevice);

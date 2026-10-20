@@ -1441,24 +1441,30 @@ static const s32         kRecordResValues[]  = { SC_MAXRES_NATIVE, SC_MAXRES_108
 
 static const char* const kAudioTrackOptions[] = { "0", "1", "2", "3", "4", "5", "6", "7" };
 
-static const char** gAudioDeviceOptions;
-static uint32_t gAudioDeviceOptionsCap;
+static const char** gAudioInputDeviceOptions;
+static uint32_t gAudioInputDeviceOptionsCap;
+static const char** gAudioOutputDeviceOptions;
+static uint32_t gAudioOutputDeviceOptionsCap;
 
 scInternal bool
-_scBuildAudioDeviceOptions(void) {
-  uint32_t nRequired = gAudio.deviceCount + 1;
-  if (nRequired > gAudioDeviceOptionsCap) {
-    const char** aOptions = (const char**)realloc(gAudioDeviceOptions, nRequired * sizeof(char*));
+_scBuildAudioDeviceOptions(const scAudioDevice* pDevices, uint32_t nDevices,
+                           const char*** ppOptions, uint32_t* pOptionsCap) {
+  uint32_t nRequired = nDevices + 1;
+  if (!ppOptions || !pOptionsCap) {
+    return false;
+  }
+  if (nRequired > *pOptionsCap) {
+    const char** aOptions = (const char**)realloc(*ppOptions, nRequired * sizeof(char*));
     if (!aOptions) {
       return false;
     }
-    gAudioDeviceOptions = aOptions;
-    gAudioDeviceOptionsCap = nRequired;
+    *ppOptions = aOptions;
+    *pOptionsCap = nRequired;
   }
 
-  gAudioDeviceOptions[0] = "";
-  for (uint32_t i = 0; i < gAudio.deviceCount; ++i) {
-    gAudioDeviceOptions[i + 1] = gAudio.pCaptureDevices[i].szName;
+  (*ppOptions)[0] = "";
+  for (uint32_t i = 0; i < nDevices; ++i) {
+    (*ppOptions)[i + 1] = pDevices[i].szName;
   }
   return true;
 }
@@ -1511,28 +1517,54 @@ _scOnCaptureAudioToggled(bool bValue, s32 iParam) {
 }
 
 scInternal void
-_scOnAudioDeviceSelected(s32 iIndex, s32 iParam) {
-  scAudioSelectionSetDevice((uint32_t)iParam, iIndex - 1);
+_scOnAudioInputDeviceSelected(s32 iIndex, s32 iParam) {
+  scAudioInputSelectionSetDevice((uint32_t)iParam, iIndex - 1);
   _scRebuild();
 }
 
 scInternal void
-_scOnAudioTrackSelected(s32 iIndex, s32 iParam) {
-  scAudioSelectionSetTrack((uint32_t)iParam, iIndex);
+_scOnAudioInputTrackSelected(s32 iIndex, s32 iParam) {
+  scAudioInputSelectionSetTrack((uint32_t)iParam, iIndex);
   _scRebuild();
 }
 
 scInternal void
-_scOnAudioAddDevice(s32 iParam) {
+_scOnAudioInputAdd(s32 iParam) {
   (void)iParam;
-  if (scAudioSelectionAdd()) {
+  if (scAudioInputSelectionAdd()) {
     _scRebuild();
   }
 }
 
 scInternal void
-_scOnAudioRemoveDevice(s32 iParam) {
-  scAudioSelectionRemove((uint32_t)iParam);
+_scOnAudioInputRemove(s32 iParam) {
+  scAudioInputSelectionRemove((uint32_t)iParam);
+  _scRebuild();
+}
+
+scInternal void
+_scOnAudioOutputDeviceSelected(s32 iIndex, s32 iParam) {
+  scAudioOutputSelectionSetDevice((uint32_t)iParam, iIndex - 1);
+  _scRebuild();
+}
+
+scInternal void
+_scOnAudioOutputTrackSelected(s32 iIndex, s32 iParam) {
+  scAudioOutputSelectionSetTrack((uint32_t)iParam, iIndex);
+  _scRebuild();
+}
+
+scInternal void
+_scOnAudioOutputAdd(s32 iParam) {
+  (void)iParam;
+  if (scAudioOutputSelectionAdd()) {
+    _scRebuild();
+  }
+}
+
+scInternal void
+_scOnAudioOutputRemove(s32 iParam) {
+  scAudioOutputSelectionRemove((uint32_t)iParam);
   _scRebuild();
 }
 
@@ -1650,41 +1682,105 @@ _scBuildSettings() {
   _scAddToggle(pPage, "Capture Audio", &gApp->config.bCaptureAudio, _scOnCaptureAudioToggled);
 
   if (gApp->config.bCaptureAudio) {
-    bool bHaveDeviceOptions = _scBuildAudioDeviceOptions();
-    const char* const* aDeviceOptions = bHaveDeviceOptions ? gAudioDeviceOptions : NULL;
-    s32 nDeviceOptions = bHaveDeviceOptions ? (s32)gAudio.deviceCount + 1 : 0;
+    bool bHaveInputOptions = _scBuildAudioDeviceOptions(
+        gAudio.pCaptureDevices, gAudio.captureDeviceCount,
+        &gAudioInputDeviceOptions, &gAudioInputDeviceOptionsCap);
+    bool bHaveOutputOptions = _scBuildAudioDeviceOptions(
+        gAudio.pPlaybackDevices, gAudio.playbackDeviceCount,
+        &gAudioOutputDeviceOptions, &gAudioOutputDeviceOptionsCap);
+    const char* const* aInputOptions = bHaveInputOptions ? gAudioInputDeviceOptions : NULL;
+    const char* const* aOutputOptions = bHaveOutputOptions ? gAudioOutputDeviceOptions : NULL;
+    s32 nInputOptions = bHaveInputOptions ? (s32)gAudio.captureDeviceCount + 1 : 0;
+    s32 nOutputOptions = bHaveOutputOptions ? (s32)gAudio.playbackDeviceCount + 1 : 0;
 
-    for (uint32_t i = 0; i < gAudio.selectionCount; ++i) {
+    scNode* pAudioColumns = scCreateHStack(scLengthPercent(1.0f), scLengthAuto());
+    scSetSpacing(pAudioColumns, 10);
+
+    scNode* pInputColumn = scCreateVStack(scLengthStretch(1.0f), scLengthAuto());
+    scSetSpacing(pInputColumn, 6);
+
+    scNode* pInputHeader = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(28));
+    scAddChild(pInputHeader, scCreateSpacer(scLengthStretch(1.0f), scLengthPixels(1)));
+    scAddChild(pInputHeader, scCreateLabel(scLocaleGet("Input"), true));
+    scAddChild(pInputHeader, scCreateSpacer(scLengthStretch(1.0f), scLengthPixels(1)));
+    scAddChild(pInputColumn, pInputHeader);
+
+    for (uint32_t i = 0; i < gAudio.inputCount; ++i) {
       s32 iSelected = 0;
-      if (gAudio.aSelections[i].iDevice >= 0 &&
-          (uint32_t)gAudio.aSelections[i].iDevice < gAudio.deviceCount) {
-        iSelected = gAudio.aSelections[i].iDevice + 1;
+      if (gAudio.aInputs[i].iDevice >= 0 &&
+          (uint32_t)gAudio.aInputs[i].iDevice < gAudio.captureDeviceCount) {
+        iSelected = gAudio.aInputs[i].iDevice + 1;
       }
 
       scNode* pRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(40));
-      scSetSpacing(pRow, 8);
+      scSetSpacing(pRow, 6);
       scSetAlignment(pRow, SC_ALIGN_MIDDLE);
-      scAddChild(pRow, scCreateSpacer(scLengthPixels(12), scLengthPixels(1)));
-      scAddChild(pRow, scCreateDropdown(L"", aDeviceOptions, nDeviceOptions, iSelected, _scOnAudioDeviceSelected, (s32)i));
+      scAddChild(pRow, scCreateDropdown(L"", aInputOptions, nInputOptions, iSelected,
+                                        _scOnAudioInputDeviceSelected, (s32)i));
 
-      scNode* pTrack = scCreateDropdown(L"", kAudioTrackOptions, ARRAYSIZE(kAudioTrackOptions), gAudio.aSelections[i].iTrack, _scOnAudioTrackSelected, (s32)i);
+      scNode* pTrack = scCreateDropdown(L"", kAudioTrackOptions, ARRAYSIZE(kAudioTrackOptions),
+                                        gAudio.aInputs[i].iTrack, _scOnAudioInputTrackSelected, (s32)i);
       scSetSize(pTrack, scLengthPixels(45), scLengthPixels(40));
       scAddChild(pRow, pTrack);
 
-      scNode* pRemove = scCreateButton(L"-", _scOnAudioRemoveDevice, (s32)i);
+      scNode* pRemove = scCreateButton(L"-", _scOnAudioInputRemove, (s32)i);
       scSetSize(pRemove, scLengthPixels(28), scLengthPixels(32));
       scAddChild(pRow, pRemove);
-      scAddChild(pPage, pRow);
+      scAddChild(pInputColumn, pRow);
     }
 
-    if (gAudio.selectionCount < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
-      scNode* pRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(35));
-      scAddChild(pRow, scCreateSpacer(scLengthPixels(20), scLengthPixels(1)));
-      scNode* pAdd = scCreateButton(scLocaleGet("Add Device"), _scOnAudioAddDevice, 0);
-      scSetSize(pAdd, scLengthPixels(130), scLengthPixels(35));
-      scAddChild(pRow, pAdd);
-      scAddChild(pPage, pRow);
+    if (gAudio.inputCount + gAudio.outputCount < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
+      scNode* pAddRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(35));
+      scNode* pAdd = scCreateButton(L"+", _scOnAudioInputAdd, 0);
+      scSetSize(pAdd, scLengthStretch(1.0f), scLengthPixels(35));
+      scAddChild(pAddRow, pAdd);
+      scAddChild(pInputColumn, pAddRow);
     }
+
+    scNode* pOutputColumn = scCreateVStack(scLengthStretch(1.0f), scLengthAuto());
+    scSetSpacing(pOutputColumn, 6);
+
+    scNode* pOutputHeader = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(28));
+    scAddChild(pOutputHeader, scCreateSpacer(scLengthStretch(1.0f), scLengthPixels(1)));
+    scAddChild(pOutputHeader, scCreateLabel(scLocaleGet("Output"), true));
+    scAddChild(pOutputHeader, scCreateSpacer(scLengthStretch(1.0f), scLengthPixels(1)));
+    scAddChild(pOutputColumn, pOutputHeader);
+
+    for (uint32_t i = 0; i < gAudio.outputCount; ++i) {
+      s32 iSelected = 0;
+      if (gAudio.aOutputs[i].iDevice >= 0 &&
+          (uint32_t)gAudio.aOutputs[i].iDevice < gAudio.playbackDeviceCount) {
+        iSelected = gAudio.aOutputs[i].iDevice + 1;
+      }
+
+      scNode* pRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(40));
+      scSetSpacing(pRow, 6);
+      scSetAlignment(pRow, SC_ALIGN_MIDDLE);
+      scAddChild(pRow, scCreateDropdown(L"", aOutputOptions, nOutputOptions, iSelected,
+                                        _scOnAudioOutputDeviceSelected, (s32)i));
+
+      scNode* pTrack = scCreateDropdown(L"", kAudioTrackOptions, ARRAYSIZE(kAudioTrackOptions),
+                                        gAudio.aOutputs[i].iTrack, _scOnAudioOutputTrackSelected, (s32)i);
+      scSetSize(pTrack, scLengthPixels(45), scLengthPixels(40));
+      scAddChild(pRow, pTrack);
+
+      scNode* pRemove = scCreateButton(L"-", _scOnAudioOutputRemove, (s32)i);
+      scSetSize(pRemove, scLengthPixels(28), scLengthPixels(32));
+      scAddChild(pRow, pRemove);
+      scAddChild(pOutputColumn, pRow);
+    }
+
+    if (gAudio.inputCount + gAudio.outputCount < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
+      scNode* pAddRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(35));
+      scNode* pAdd = scCreateButton(L"+", _scOnAudioOutputAdd, 0);
+      scSetSize(pAdd, scLengthStretch(1.0f), scLengthPixels(35));
+      scAddChild(pAddRow, pAdd);
+      scAddChild(pOutputColumn, pAddRow);
+    }
+
+    scAddChild(pAudioColumns, pInputColumn);
+    scAddChild(pAudioColumns, pOutputColumn);
+    scAddChild(pPage, pAudioColumns);
   }
 
   scAddChild(pPage, scCreateSpacer(scLengthPixels(1), scLengthPixels(15)));
@@ -2274,9 +2370,12 @@ void scUICloseWindow() {
   gUI.nLogCap   = 0;
   gUI.iLogWidth = 0;
 
-  free(gAudioDeviceOptions);
-  gAudioDeviceOptions = NULL;
-  gAudioDeviceOptionsCap = 0;
+  free(gAudioInputDeviceOptions);
+  gAudioInputDeviceOptions = NULL;
+  gAudioInputDeviceOptionsCap = 0;
+  free(gAudioOutputDeviceOptions);
+  gAudioOutputDeviceOptions = NULL;
+  gAudioOutputDeviceOptionsCap = 0;
 
   if (gUI.hWindow) {
     gUI.hWindow = NULL;

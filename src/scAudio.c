@@ -39,9 +39,13 @@ struct scAudioCapture {
 
 bool scAudioPopulateDevices();
 
+static uint32_t
+_scAudioSelectionTotalCount(void) {
+  return gAudio.inputCount + gAudio.outputCount;
+}
+
 bool scAudioInit() {
-  gAudio.pCaptureDevices = NULL;
-  gAudio.deviceCount = 0;
+  memset(&gAudio, 0, sizeof(gAudio));
 
   ma_result maRes = ma_context_init(NULL, 0, NULL, &gAudio.maCtx);
   if (maRes != MA_SUCCESS) {
@@ -55,19 +59,20 @@ bool scAudioInit() {
 }
 
 void scAudioDestroy() {
-  if (gAudio.pCaptureDevices) {
-    free(gAudio.pCaptureDevices);
-    gAudio.pCaptureDevices = NULL;
-  }
-  gAudio.deviceCount = 0;
+  free(gAudio.pCaptureDevices);
+  free(gAudio.pPlaybackDevices);
+  gAudio.pCaptureDevices = NULL;
+  gAudio.pPlaybackDevices = NULL;
+  gAudio.captureDeviceCount = 0;
+  gAudio.playbackDeviceCount = 0;
   ma_context_uninit(&gAudio.maCtx);
 }
 
 bool scAudioPopulateDevices() {
-  ma_device_info* pPlaybackInfos;
-  ma_uint32 playbackCount;
-  ma_device_info* pCaptureInfos;
-  ma_uint32 captureCount;
+  ma_device_info* pPlaybackInfos = NULL;
+  ma_uint32 playbackCount = 0;
+  ma_device_info* pCaptureInfos = NULL;
+  ma_uint32 captureCount = 0;
 
   ma_result maRes = ma_context_get_devices(&gAudio.maCtx, &pPlaybackInfos, &playbackCount, &pCaptureInfos, &captureCount);
   if (maRes != MA_SUCCESS) {
@@ -75,43 +80,47 @@ bool scAudioPopulateDevices() {
     return false;
   }
 
-  if (gAudio.pCaptureDevices) {
-    free(gAudio.pCaptureDevices);
-    gAudio.pCaptureDevices = NULL;
+  scAudioDevice* pCaptureDevices = NULL;
+  scAudioDevice* pPlaybackDevices = NULL;
+  if (captureCount > 0) {
+    pCaptureDevices = (scAudioDevice*)calloc(captureCount, sizeof(scAudioDevice));
+    if (!pCaptureDevices) {
+      scLogError("Failed to allocate capture device list");
+      return false;
+    }
+  }
+  if (playbackCount > 0) {
+    pPlaybackDevices = (scAudioDevice*)calloc(playbackCount, sizeof(scAudioDevice));
+    if (!pPlaybackDevices) {
+      free(pCaptureDevices);
+      scLogError("Failed to allocate playback device list");
+      return false;
+    }
   }
 
-  uint32_t totalDevices = playbackCount + captureCount;
-  if (totalDevices == 0) {
-    gAudio.deviceCount = 0;
-    return true;
+  for (ma_uint32 i = 0; i < captureCount; ++i) {
+    snprintf(pCaptureDevices[i].szName, sizeof(pCaptureDevices[i].szName), "%s", pCaptureInfos[i].name);
+    pCaptureDevices[i].id = pCaptureInfos[i].id;
+  }
+  for (ma_uint32 i = 0; i < playbackCount; ++i) {
+    snprintf(pPlaybackDevices[i].szName, sizeof(pPlaybackDevices[i].szName), "%s", pPlaybackInfos[i].name);
+    pPlaybackDevices[i].id = pPlaybackInfos[i].id;
   }
 
-  gAudio.pCaptureDevices = (scAudioDevice*)malloc(sizeof(scAudioDevice) * totalDevices);
-  if (!gAudio.pCaptureDevices) {
-    return false;
+  free(gAudio.pCaptureDevices);
+  free(gAudio.pPlaybackDevices);
+  gAudio.pCaptureDevices = pCaptureDevices;
+  gAudio.captureDeviceCount = captureCount;
+  gAudio.pPlaybackDevices = pPlaybackDevices;
+  gAudio.playbackDeviceCount = playbackCount;
+
+  scLogDebug("Capture devices:");
+  for (uint32_t i = 0; i < gAudio.captureDeviceCount; ++i) {
+    scLogDebug("  [Input] %u - %s", i, gAudio.pCaptureDevices[i].szName);
   }
-
-  uint32_t currentIdx = 0;
-
-  for (ma_uint32 i = 0; i < playbackCount; i++) {
-    snprintf(gAudio.pCaptureDevices[currentIdx].szName, sizeof(gAudio.pCaptureDevices[currentIdx].szName), "%s", pPlaybackInfos[i].name);
-    gAudio.pCaptureDevices[currentIdx].id = pPlaybackInfos[i].id;
-    gAudio.pCaptureDevices[currentIdx].bIsPlayback = true;
-    currentIdx++;
-  }
-
-  for (ma_uint32 i = 0; i < captureCount; i++) {
-    snprintf(gAudio.pCaptureDevices[currentIdx].szName, sizeof(gAudio.pCaptureDevices[currentIdx].szName), "%s", pCaptureInfos[i].name);
-    gAudio.pCaptureDevices[currentIdx].id = pCaptureInfos[i].id;
-    gAudio.pCaptureDevices[currentIdx].bIsPlayback = false;
-    currentIdx++;
-  }
-
-  gAudio.deviceCount = currentIdx;
-
-  scLogDebug("Devices:");
-  for (uint32_t i = 0; i < gAudio.deviceCount; i++) {
-    scLogDebug("  [%s] %d - %s", gAudio.pCaptureDevices[i].bIsPlayback ? "Playback/Loopback" : "Capture", i, gAudio.pCaptureDevices[i].szName);
+  scLogDebug("Playback devices:");
+  for (uint32_t i = 0; i < gAudio.playbackDeviceCount; ++i) {
+    scLogDebug("  [Output/Loopback] %u - %s", i, gAudio.pPlaybackDevices[i].szName);
   }
 
   return true;
@@ -124,51 +133,112 @@ _scAudioSaveSelections(void) {
   scSaveConfig();
 }
 
-bool scAudioSelectionAdd(void) {
-  if (gAudio.selectionCount >= SC_AUDIO_MAX_DEVICE_SELECTIONS) {
+static bool
+_scAudioSelectionAdd(scAudioSelection* aSelections, uint32_t* pCount) {
+  if (!aSelections || !pCount || *pCount >= SC_AUDIO_MAX_DEVICE_SELECTIONS ||
+      _scAudioSelectionTotalCount() >= SC_AUDIO_MAX_DEVICE_SELECTIONS) {
     return false;
   }
-
-  gAudio.aSelections[gAudio.selectionCount].iDevice = -1;
-  gAudio.aSelections[gAudio.selectionCount].iTrack = 0;
-  gAudio.selectionCount++;
+  aSelections[*pCount].iDevice = -1;
+  aSelections[*pCount].iTrack = 0;
+  ++(*pCount);
   _scAudioSaveSelections();
   return true;
 }
 
-void
-scAudioSelectionRemove(uint32_t iSelection) {
-  if (iSelection >= gAudio.selectionCount) {
+static void
+_scAudioSelectionRemove(scAudioSelection* aSelections, uint32_t* pCount, uint32_t iSelection) {
+  if (!aSelections || !pCount || iSelection >= *pCount) {
     return;
   }
-
-  if (iSelection + 1 < gAudio.selectionCount) {
-    memmove(&gAudio.aSelections[iSelection],
-            &gAudio.aSelections[iSelection + 1],
-            (gAudio.selectionCount - iSelection - 1) * sizeof(gAudio.aSelections[0]));
+  if (iSelection + 1 < *pCount) {
+    memmove(&aSelections[iSelection], &aSelections[iSelection + 1],
+            (*pCount - iSelection - 1) * sizeof(aSelections[0]));
   }
-
-  gAudio.selectionCount--;
+  --(*pCount);
   _scAudioSaveSelections();
 }
 
-void scAudioSelectionSetDevice(uint32_t iSelection, int32_t iDevice) {
-  if (iSelection >= gAudio.selectionCount || iDevice < -1 ||
-      (iDevice >= 0 && (uint32_t)iDevice >= gAudio.deviceCount)) {
+static void
+_scAudioSelectionSetDevice(scAudioSelection* aSelections, uint32_t nSelections,
+                           uint32_t nDevices, uint32_t iSelection, int32_t iDevice) {
+  if (!aSelections || iSelection >= nSelections || iDevice < -1 ||
+      (iDevice >= 0 && (uint32_t)iDevice >= nDevices)) {
     return;
   }
-
-  gAudio.aSelections[iSelection].iDevice = iDevice;
+  aSelections[iSelection].iDevice = iDevice;
   _scAudioSaveSelections();
 }
 
-void scAudioSelectionSetTrack(uint32_t iSelection, int32_t iTrack) {
-  if (iSelection >= gAudio.selectionCount || iTrack < 0 || iTrack >= SC_AUDIO_MAX_TRACKS) {
+static void
+_scAudioSelectionSetTrack(scAudioSelection* aSelections, uint32_t nSelections,
+                          uint32_t iSelection, int32_t iTrack) {
+  if (!aSelections || iSelection >= nSelections || iTrack < 0 || iTrack >= SC_AUDIO_MAX_TRACKS) {
     return;
   }
-
-  gAudio.aSelections[iSelection].iTrack = iTrack;
+  aSelections[iSelection].iTrack = iTrack;
   _scAudioSaveSelections();
+}
+
+bool scAudioInputSelectionAdd(void) {
+  return _scAudioSelectionAdd(gAudio.aInputs, &gAudio.inputCount);
+}
+
+void scAudioInputSelectionRemove(uint32_t iSelection) {
+  _scAudioSelectionRemove(gAudio.aInputs, &gAudio.inputCount, iSelection);
+}
+
+void scAudioInputSelectionSetDevice(uint32_t iSelection, int32_t iDevice) {
+  _scAudioSelectionSetDevice(gAudio.aInputs, gAudio.inputCount, gAudio.captureDeviceCount, iSelection, iDevice);
+}
+
+void scAudioInputSelectionSetTrack(uint32_t iSelection, int32_t iTrack) {
+  _scAudioSelectionSetTrack(gAudio.aInputs, gAudio.inputCount, iSelection, iTrack);
+}
+
+bool scAudioOutputSelectionAdd(void) {
+  return _scAudioSelectionAdd(gAudio.aOutputs, &gAudio.outputCount);
+}
+
+void scAudioOutputSelectionRemove(uint32_t iSelection) {
+  _scAudioSelectionRemove(gAudio.aOutputs, &gAudio.outputCount, iSelection);
+}
+
+void scAudioOutputSelectionSetDevice(uint32_t iSelection, int32_t iDevice) {
+  _scAudioSelectionSetDevice(gAudio.aOutputs, gAudio.outputCount, gAudio.playbackDeviceCount, iSelection, iDevice);
+}
+
+void scAudioOutputSelectionSetTrack(uint32_t iSelection, int32_t iTrack) {
+  _scAudioSelectionSetTrack(gAudio.aOutputs, gAudio.outputCount, iSelection, iTrack);
+}
+
+/* Keep the original API as wrappers for input selections. */
+bool scAudioSelectionAdd(void) { return scAudioInputSelectionAdd(); }
+void scAudioSelectionRemove(uint32_t iSelection) { scAudioInputSelectionRemove(iSelection); }
+void scAudioSelectionSetDevice(uint32_t iSelection, int32_t iDevice) { scAudioInputSelectionSetDevice(iSelection, iDevice); }
+void scAudioSelectionSetTrack(uint32_t iSelection, int32_t iTrack) { scAudioInputSelectionSetTrack(iSelection, iTrack); }
+
+static bool
+_scAudioAppendSelection(char* szOut, size_t nOutCap, size_t* pLen, char cType,
+                        const scAudioSelection* pSelection,
+                        const scAudioDevice* pDevices, uint32_t nDevices) {
+  const char* szName = "";
+  if (pSelection->iDevice >= 0 && (uint32_t)pSelection->iDevice < nDevices) {
+    szName = pDevices[pSelection->iDevice].szName;
+  }
+
+  if (*pLen >= nOutCap) {
+    return false;
+  }
+  int nWritten = snprintf(szOut + *pLen, nOutCap - *pLen, "%s%c:%d@%s",
+                          *pLen ? "|" : "", cType, pSelection->iTrack, szName);
+  if (nWritten < 0 || (size_t)nWritten >= nOutCap - *pLen) {
+    szOut[*pLen] = '\0';
+    scLogWarn("Audio selections string truncated, buffer too small");
+    return false;
+  }
+  *pLen += (size_t)nWritten;
+  return true;
 }
 
 void scAudioGetSelectionsString(char* szOut, size_t nOutCap) {
@@ -176,28 +246,40 @@ void scAudioGetSelectionsString(char* szOut, size_t nOutCap) {
     return;
   }
   szOut[0] = '\0';
-
   size_t len = 0;
-  for (uint32_t i = 0; i < gAudio.selectionCount; ++i) {
-    const scAudioSelection* pSelection = &gAudio.aSelections[i];
-    const char* szName = "";
-    if (pSelection->iDevice >= 0 && (uint32_t)pSelection->iDevice < gAudio.deviceCount) {
-      szName = gAudio.pCaptureDevices[pSelection->iDevice].szName;
-    }
 
-    int nWritten = snprintf(szOut + len, nOutCap - len, "%s%d@%s",
-                            i ? "|" : "", pSelection->iTrack, szName);
-    if (nWritten < 0 || (size_t)nWritten >= nOutCap - len) {
-      szOut[len] = '\0';
-      scLogWarn("Audio selections string truncated, buffer too small");
-      break;
+  for (uint32_t i = 0; i < gAudio.inputCount; ++i) {
+    if (!_scAudioAppendSelection(szOut, nOutCap, &len, 'I', &gAudio.aInputs[i],
+                                 gAudio.pCaptureDevices, gAudio.captureDeviceCount)) {
+      return;
     }
-    len += (size_t)nWritten;
+  }
+  for (uint32_t i = 0; i < gAudio.outputCount; ++i) {
+    if (!_scAudioAppendSelection(szOut, nOutCap, &len, 'O', &gAudio.aOutputs[i],
+                                 gAudio.pPlaybackDevices, gAudio.playbackDeviceCount)) {
+      return;
+    }
   }
 }
 
+static bool
+_scAudioFindDeviceByName(const scAudioDevice* pDevices, uint32_t nDevices,
+                         const char* szName, int32_t* pDevice) {
+  if (!szName || !szName[0]) {
+    return false;
+  }
+  for (uint32_t i = 0; i < nDevices; ++i) {
+    if (_stricmp(pDevices[i].szName, szName) == 0) {
+      *pDevice = (int32_t)i;
+      return true;
+    }
+  }
+  return false;
+}
+
 void scAudioSetSelectionsFromString(const char* szSelections) {
-  gAudio.selectionCount = 0;
+  gAudio.inputCount = 0;
+  gAudio.outputCount = 0;
   if (!szSelections || !szSelections[0]) {
     return;
   }
@@ -208,13 +290,22 @@ void scAudioSetSelectionsFromString(const char* szSelections) {
 
   char* pCtx = NULL;
   char* pTok = strtok_s(szBuf, ",|", &pCtx);
-  while (pTok && gAudio.selectionCount < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
+  while (pTok && _scAudioSelectionTotalCount() < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
+    bool bExplicitType = false;
+    bool bOutput = false;
+    char* pValue = pTok;
+    if ((pTok[0] == 'I' || pTok[0] == 'i' || pTok[0] == 'O' || pTok[0] == 'o') && pTok[1] == ':') {
+      bExplicitType = true;
+      bOutput = (pTok[0] == 'O' || pTok[0] == 'o');
+      pValue += 2;
+    }
+
     int32_t iTrack = 0;
-    char* szName = pTok;
-    char* pAt = strchr(pTok, '@');
-    if (pAt && pAt != pTok) {
+    char* szName = pValue;
+    char* pAt = strchr(pValue, '@');
+    if (pAt && pAt != pValue) {
       bool bNumeric = true;
-      for (char* p = pTok; p < pAt; ++p) {
+      for (char* p = pValue; p < pAt; ++p) {
         if (*p < '0' || *p > '9') {
           bNumeric = false;
           break;
@@ -224,7 +315,7 @@ void scAudioSetSelectionsFromString(const char* szSelections) {
         char cAt = *pAt;
         *pAt = '\0';
         char* pEnd = NULL;
-        long nTrack = strtol(pTok, &pEnd, 10);
+        long nTrack = strtol(pValue, &pEnd, 10);
         if (pEnd && *pEnd == '\0' && nTrack >= 0 && nTrack < SC_AUDIO_MAX_TRACKS) {
           iTrack = (int32_t)nTrack;
           szName = pAt + 1;
@@ -235,18 +326,35 @@ void scAudioSetSelectionsFromString(const char* szSelections) {
     }
 
     int32_t iDevice = -1;
-    if (szName[0]) {
-      for (uint32_t i = 0; i < gAudio.deviceCount; ++i) {
-        if (_stricmp(gAudio.pCaptureDevices[i].szName, szName) == 0) {
-          iDevice = (int32_t)i;
-          break;
-        }
+    if (bExplicitType) {
+      if (bOutput) {
+        _scAudioFindDeviceByName(gAudio.pPlaybackDevices, gAudio.playbackDeviceCount, szName, &iDevice);
+      } else {
+        _scAudioFindDeviceByName(gAudio.pCaptureDevices, gAudio.captureDeviceCount, szName, &iDevice);
+      }
+    } else if (szName[0]) {
+      /* The old combined list placed playback devices before capture devices. */
+      if (_scAudioFindDeviceByName(gAudio.pPlaybackDevices, gAudio.playbackDeviceCount, szName, &iDevice)) {
+        bOutput = true;
+      } else {
+        _scAudioFindDeviceByName(gAudio.pCaptureDevices, gAudio.captureDeviceCount, szName, &iDevice);
       }
     }
 
-    scAudioSelection* pSelection = &gAudio.aSelections[gAudio.selectionCount++];
-    pSelection->iDevice = iDevice;
-    pSelection->iTrack = iTrack;
+    if (bOutput) {
+      if (gAudio.outputCount < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
+        scAudioSelection* pSelection = &gAudio.aOutputs[gAudio.outputCount++];
+        pSelection->iDevice = iDevice;
+        pSelection->iTrack = iTrack;
+      }
+    } else {
+      if (gAudio.inputCount < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
+        scAudioSelection* pSelection = &gAudio.aInputs[gAudio.inputCount++];
+        pSelection->iDevice = iDevice;
+        pSelection->iTrack = iTrack;
+      }
+    }
+
     pTok = strtok_s(NULL, ",|", &pCtx);
   }
 }
@@ -332,52 +440,60 @@ scAudioCapture* scAudioCaptureStart(void) {
   InitializeCriticalSection(&pCap->csMix);
   pCap->bMixLockInitialized = true;
 
-  for (uint32_t i = 0; i < gAudio.selectionCount; ++i) {
-    scAudioSelection* pSelection = &gAudio.aSelections[i];
-    scAudioDevice* pAudioDevice;
-    scAudioCaptureDevice* pDev;
-    ma_device_config devConfig;
+  for (uint32_t iType = 0; iType < 2; ++iType) {
+    const bool bPlayback = (iType == 1);
+    const scAudioSelection* aSelections = bPlayback ? gAudio.aOutputs : gAudio.aInputs;
+    const uint32_t nSelections = bPlayback ? gAudio.outputCount : gAudio.inputCount;
+    const scAudioDevice* pDevices = bPlayback ? gAudio.pPlaybackDevices : gAudio.pCaptureDevices;
+    const uint32_t nDevices = bPlayback ? gAudio.playbackDeviceCount : gAudio.captureDeviceCount;
 
-    if (pSelection->iDevice < 0 || (uint32_t)pSelection->iDevice >= gAudio.deviceCount ||
-        pSelection->iTrack < 0 || pSelection->iTrack >= SC_AUDIO_MAX_TRACKS) {
-      continue;
+    for (uint32_t i = 0; i < nSelections; ++i) {
+      const scAudioSelection* pSelection = &aSelections[i];
+      const scAudioDevice* pAudioDevice;
+      scAudioCaptureDevice* pDev;
+      ma_device_config devConfig;
+
+      if (pSelection->iDevice < 0 || (uint32_t)pSelection->iDevice >= nDevices ||
+          pSelection->iTrack < 0 || pSelection->iTrack >= SC_AUDIO_MAX_TRACKS) {
+        continue;
+      }
+      if (pCap->nDevices >= SC_MAX_ACTIVE_RECORDERS) {
+        scLogWarn("Reached maximum active audio recorders (%d)", SC_MAX_ACTIVE_RECORDERS);
+        break;
+      }
+
+      pAudioDevice = &pDevices[pSelection->iDevice];
+      pDev = &pCap->aDevices[pCap->nDevices];
+      memset(pDev, 0, sizeof(*pDev));
+      pDev->pCapture = pCap;
+      pDev->iTrack = (uint32_t)pSelection->iTrack;
+
+      devConfig = ma_device_config_init(bPlayback ? ma_device_type_loopback : ma_device_type_capture);
+      devConfig.capture.pDeviceID = &pAudioDevice->id;
+      devConfig.capture.format = ma_format_s16;
+      devConfig.capture.channels = SC_AUDIO_CHANNELS;
+      devConfig.sampleRate = SC_AUDIO_SAMPLE_RATE;
+      devConfig.periodSizeInMilliseconds = 10;
+      devConfig.dataCallback = _scAudioMixCallback;
+      devConfig.pUserData = pDev;
+
+      if (ma_device_init(&gAudio.maCtx, &devConfig, &pDev->device) != MA_SUCCESS) {
+        scLogError("Failed to initialize %s audio device %s", bPlayback ? "loopback" : "capture", pAudioDevice->szName);
+        continue;
+      }
+      pDev->bDeviceInitialized = true;
+
+      if (ma_device_start(&pDev->device) != MA_SUCCESS) {
+        scLogError("Failed to start %s audio device %s", bPlayback ? "loopback" : "capture", pAudioDevice->szName);
+        ma_device_uninit(&pDev->device);
+        pDev->bDeviceInitialized = false;
+        continue;
+      }
+
+      scLogInfo("Audio %s device '%s' started on track %d", bPlayback ? "output/loopback" : "input", pAudioDevice->szName, pSelection->iTrack);
+      pCap->abTracksUsed[pDev->iTrack] = true;
+      pCap->nDevices++;
     }
-    if (pCap->nDevices >= SC_MAX_ACTIVE_RECORDERS) {
-      scLogWarn("Reached maximum active audio recorders (%d)", SC_MAX_ACTIVE_RECORDERS);
-      break;
-    }
-
-    pAudioDevice = &gAudio.pCaptureDevices[pSelection->iDevice];
-    pDev = &pCap->aDevices[pCap->nDevices];
-    memset(pDev, 0, sizeof(*pDev));
-    pDev->pCapture = pCap;
-    pDev->iTrack = (uint32_t)pSelection->iTrack;
-
-    devConfig = ma_device_config_init(pAudioDevice->bIsPlayback ? ma_device_type_loopback : ma_device_type_capture);
-    devConfig.capture.pDeviceID = &pAudioDevice->id;
-    devConfig.capture.format = ma_format_s16;
-    devConfig.capture.channels = SC_AUDIO_CHANNELS;
-    devConfig.sampleRate = SC_AUDIO_SAMPLE_RATE;
-    devConfig.periodSizeInMilliseconds = 10;
-    devConfig.dataCallback = _scAudioMixCallback;
-    devConfig.pUserData = pDev;
-
-    if (ma_device_init(&gAudio.maCtx, &devConfig, &pDev->device) != MA_SUCCESS) {
-      scLogError("Failed to initialize capture device %s", pAudioDevice->szName);
-      continue;
-    }
-    pDev->bDeviceInitialized = true;
-
-    if (ma_device_start(&pDev->device) != MA_SUCCESS) {
-      scLogError("Failed to start capture device %s", pAudioDevice->szName);
-      ma_device_uninit(&pDev->device);
-      pDev->bDeviceInitialized = false;
-      continue;
-    }
-
-    scLogInfo("Audio device '%s' started on track %d", pAudioDevice->szName, pSelection->iTrack);
-    pCap->abTracksUsed[pDev->iTrack] = true;
-    pCap->nDevices++;
   }
 
   if (pCap->nDevices == 0) {
