@@ -1,16 +1,18 @@
 ## Screencap
 A simple standalone executable used for screenshotting  
 Features:
+- Single executable that's < 1mb
 - Windows 7 Support (Read Below)
 - Fast and Native UI using GDI
 - Theming that matches the current system settings
 - Interactive Screenshotting - Selecting window or region
 - Screenshot active window
 - Screenshot active desktop
-- Recording support (no audio and ffmpeg must be somewhere in the path of next to screencap)
+- Recording support (with audio)
 - OCR support with some basic text detection
 - Recent Gallery
 - Magnifier for Interactive Mode
+- Color Picker
 - Screenshot Sounds - made by [synthesthea](https://art.synthesthea.com/)
 - Ability to change hotkeys  
 
@@ -28,16 +30,24 @@ OCR will not work on Windows 7, however, everything else will function just fine
 ## Screenshots
 ### Interactive Mode
 ![interactive](screenshots/interactive.png)
-### General
-![general](screenshots/general.png)
+### Capture
+![capture](screenshots/capture.png)
 ### Settings
-![settings](screenshots/settings.png)
+![settings0](screenshots/settings0.png)
+![settings1](screenshots/settings1.png)
+![settings2](screenshots/settings2.png)
 ### Gallery
 ![gallery](screenshots/gallery0.png)
 ![gallery1](screenshots/gallery1.png)
 ### Logs
 ![logs](screenshots/logs.png)
+### Credits
+![credits](screenshots/credits.png)
+### Color Picker
+![colorpicker0](screenshots/colorpicker0.png)
+![colorpicker1](screenshots/colorpicker1.png)
 ### Windows 7
+(Slightly outdated image, but it's the same as all the above)
 ![win7](screenshots/win7.png)
 
 [Credits](credits.md)
