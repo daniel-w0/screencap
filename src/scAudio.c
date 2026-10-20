@@ -21,6 +21,7 @@ typedef struct {
   bool bDeviceInitialized;
   bool bPlaced;
   uint32_t iTrack;
+  int32_t iChannelMode;
   int64_t nExpectedFrame;
 } scAudioCaptureDevice;
 
@@ -38,6 +39,10 @@ struct scAudioCapture {
 };
 
 bool scAudioPopulateDevices();
+
+/* Stored in the config string in place of a device name. Cannot clash with a
+   real device name and contains none of the "," "|" separators. */
+#define SC_AUDIO_DEFAULT_DEVICE_TOKEN "<default>"
 
 static uint32_t
 _scAudioSelectionTotalCount(void) {
@@ -139,8 +144,9 @@ _scAudioSelectionAdd(scAudioSelection* aSelections, uint32_t* pCount) {
       _scAudioSelectionTotalCount() >= SC_AUDIO_MAX_DEVICE_SELECTIONS) {
     return false;
   }
-  aSelections[*pCount].iDevice = -1;
+  aSelections[*pCount].iDevice = SC_AUDIO_DEVICE_NONE;
   aSelections[*pCount].iTrack = 0;
+  aSelections[*pCount].iChannelMode = SC_AUDIO_CHANNELS_STEREO;
   ++(*pCount);
   _scAudioSaveSelections();
   return true;
@@ -162,7 +168,7 @@ _scAudioSelectionRemove(scAudioSelection* aSelections, uint32_t* pCount, uint32_
 static void
 _scAudioSelectionSetDevice(scAudioSelection* aSelections, uint32_t nSelections,
                            uint32_t nDevices, uint32_t iSelection, int32_t iDevice) {
-  if (!aSelections || iSelection >= nSelections || iDevice < -1 ||
+  if (!aSelections || iSelection >= nSelections || iDevice < SC_AUDIO_DEVICE_DEFAULT ||
       (iDevice >= 0 && (uint32_t)iDevice >= nDevices)) {
     return;
   }
@@ -177,6 +183,17 @@ _scAudioSelectionSetTrack(scAudioSelection* aSelections, uint32_t nSelections,
     return;
   }
   aSelections[iSelection].iTrack = iTrack;
+  _scAudioSaveSelections();
+}
+
+static void
+_scAudioSelectionSetChannelMode(scAudioSelection* aSelections, uint32_t nSelections,
+                                uint32_t iSelection, int32_t iChannelMode) {
+  if (!aSelections || iSelection >= nSelections ||
+      iChannelMode < 0 || iChannelMode >= SC_AUDIO_CHANNELS_COUNT) {
+    return;
+  }
+  aSelections[iSelection].iChannelMode = iChannelMode;
   _scAudioSaveSelections();
 }
 
@@ -196,6 +213,10 @@ void scAudioInputSelectionSetTrack(uint32_t iSelection, int32_t iTrack) {
   _scAudioSelectionSetTrack(gAudio.aInputs, gAudio.inputCount, iSelection, iTrack);
 }
 
+void scAudioInputSelectionSetChannelMode(uint32_t iSelection, int32_t iChannelMode) {
+  _scAudioSelectionSetChannelMode(gAudio.aInputs, gAudio.inputCount, iSelection, iChannelMode);
+}
+
 bool scAudioOutputSelectionAdd(void) {
   return _scAudioSelectionAdd(gAudio.aOutputs, &gAudio.outputCount);
 }
@@ -212,6 +233,10 @@ void scAudioOutputSelectionSetTrack(uint32_t iSelection, int32_t iTrack) {
   _scAudioSelectionSetTrack(gAudio.aOutputs, gAudio.outputCount, iSelection, iTrack);
 }
 
+void scAudioOutputSelectionSetChannelMode(uint32_t iSelection, int32_t iChannelMode) {
+  _scAudioSelectionSetChannelMode(gAudio.aOutputs, gAudio.outputCount, iSelection, iChannelMode);
+}
+
 /* Keep the original API as wrappers for input selections. */
 bool scAudioSelectionAdd(void) { return scAudioInputSelectionAdd(); }
 void scAudioSelectionRemove(uint32_t iSelection) { scAudioInputSelectionRemove(iSelection); }
@@ -223,15 +248,19 @@ _scAudioAppendSelection(char* szOut, size_t nOutCap, size_t* pLen, char cType,
                         const scAudioSelection* pSelection,
                         const scAudioDevice* pDevices, uint32_t nDevices) {
   const char* szName = "";
-  if (pSelection->iDevice >= 0 && (uint32_t)pSelection->iDevice < nDevices) {
+  if (pSelection->iDevice == SC_AUDIO_DEVICE_DEFAULT) {
+    szName = SC_AUDIO_DEFAULT_DEVICE_TOKEN;
+  } else if (pSelection->iDevice >= 0 && (uint32_t)pSelection->iDevice < nDevices) {
     szName = pDevices[pSelection->iDevice].szName;
   }
 
   if (*pLen >= nOutCap) {
     return false;
   }
-  int nWritten = snprintf(szOut + *pLen, nOutCap - *pLen, "%s%c:%d@%s",
-                          *pLen ? "|" : "", cType, pSelection->iTrack, szName);
+  /* Format: <I|O>:<track>:<channel mode>@<device name> */
+  int nWritten = snprintf(szOut + *pLen, nOutCap - *pLen, "%s%c:%d:%d@%s",
+                          *pLen ? "|" : "", cType, pSelection->iTrack,
+                          pSelection->iChannelMode, szName);
   if (nWritten < 0 || (size_t)nWritten >= nOutCap - *pLen) {
     szOut[*pLen] = '\0';
     scLogWarn("Audio selections string truncated, buffer too small");
@@ -268,6 +297,10 @@ _scAudioFindDeviceByName(const scAudioDevice* pDevices, uint32_t nDevices,
   if (!szName || !szName[0]) {
     return false;
   }
+  if (_stricmp(szName, SC_AUDIO_DEFAULT_DEVICE_TOKEN) == 0) {
+    *pDevice = SC_AUDIO_DEVICE_DEFAULT;
+    return true;
+  }
   for (uint32_t i = 0; i < nDevices; ++i) {
     if (_stricmp(pDevices[i].szName, szName) == 0) {
       *pDevice = (int32_t)i;
@@ -300,32 +333,37 @@ void scAudioSetSelectionsFromString(const char* szSelections) {
       pValue += 2;
     }
 
+    /* "<track>[:<channel mode>]@<name>". Older configs have no mode and
+       older still have no track, so everything but the name is optional. */
     int32_t iTrack = 0;
+    int32_t iChannelMode = SC_AUDIO_CHANNELS_STEREO;
     char* szName = pValue;
     char* pAt = strchr(pValue, '@');
     if (pAt && pAt != pValue) {
+      char* pColon = NULL;
       bool bNumeric = true;
       for (char* p = pValue; p < pAt; ++p) {
-        if (*p < '0' || *p > '9') {
+        if (*p == ':' && !pColon && p != pValue && p + 1 < pAt) {
+          pColon = p;
+        } else if (*p < '0' || *p > '9') {
           bNumeric = false;
           break;
         }
       }
       if (bNumeric) {
-        char cAt = *pAt;
-        *pAt = '\0';
-        char* pEnd = NULL;
-        long nTrack = strtol(pValue, &pEnd, 10);
-        if (pEnd && *pEnd == '\0' && nTrack >= 0 && nTrack < SC_AUDIO_MAX_TRACKS) {
+        /* strtol stops on its own at ':' or '@', no need to modify the buffer. */
+        long nTrack = strtol(pValue, NULL, 10);
+        long nMode = pColon ? strtol(pColon + 1, NULL, 10) : 0;
+        if (nTrack >= 0 && nTrack < SC_AUDIO_MAX_TRACKS &&
+            nMode >= 0 && nMode < SC_AUDIO_CHANNELS_COUNT) {
           iTrack = (int32_t)nTrack;
+          iChannelMode = (int32_t)nMode;
           szName = pAt + 1;
-        } else {
-          *pAt = cAt;
         }
       }
     }
 
-    int32_t iDevice = -1;
+    int32_t iDevice = SC_AUDIO_DEVICE_NONE;
     if (bExplicitType) {
       if (bOutput) {
         _scAudioFindDeviceByName(gAudio.pPlaybackDevices, gAudio.playbackDeviceCount, szName, &iDevice);
@@ -346,12 +384,14 @@ void scAudioSetSelectionsFromString(const char* szSelections) {
         scAudioSelection* pSelection = &gAudio.aOutputs[gAudio.outputCount++];
         pSelection->iDevice = iDevice;
         pSelection->iTrack = iTrack;
+        pSelection->iChannelMode = iChannelMode;
       }
     } else {
       if (gAudio.inputCount < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
         scAudioSelection* pSelection = &gAudio.aInputs[gAudio.inputCount++];
         pSelection->iDevice = iDevice;
         pSelection->iTrack = iTrack;
+        pSelection->iChannelMode = iChannelMode;
       }
     }
 
@@ -417,8 +457,16 @@ scInternal void _scAudioMixCallback(ma_device* pDevice, void* pOutput, const voi
     const size_t src = (size_t)(t - tStart) * SC_AUDIO_CHANNELS;
     const size_t dst = ((size_t)pDev->iTrack * SC_AUDIO_MIX_FRAMES +
                         (size_t)(t % SC_AUDIO_MIX_FRAMES)) * SC_AUDIO_CHANNELS;
-    pCap->pMix[dst + 0] += pSamples[src + 0];
-    pCap->pMix[dst + 1] += pSamples[src + 1];
+    int32_t l = pSamples[src + 0];
+    int32_t r = pSamples[src + 1];
+    switch (pDev->iChannelMode) {
+      case SC_AUDIO_CHANNELS_LEFT:  r = l; break;
+      case SC_AUDIO_CHANNELS_RIGHT: l = r; break;
+      case SC_AUDIO_CHANNELS_MONO:  l = r = (l + r) / 2; break;
+      default: break;
+    }
+    pCap->pMix[dst + 0] += l;
+    pCap->pMix[dst + 1] += r;
   }
   LeaveCriticalSection(&pCap->csMix);
 }
@@ -450,10 +498,14 @@ scAudioCapture* scAudioCaptureStart(void) {
     for (uint32_t i = 0; i < nSelections; ++i) {
       const scAudioSelection* pSelection = &aSelections[i];
       const scAudioDevice* pAudioDevice;
+      const char* szDeviceName;
+      bool bDefaultDevice;
       scAudioCaptureDevice* pDev;
       ma_device_config devConfig;
 
-      if (pSelection->iDevice < 0 || (uint32_t)pSelection->iDevice >= nDevices ||
+      if (pSelection->iDevice == SC_AUDIO_DEVICE_NONE ||
+          pSelection->iDevice < SC_AUDIO_DEVICE_DEFAULT ||
+          (pSelection->iDevice >= 0 && (uint32_t)pSelection->iDevice >= nDevices) ||
           pSelection->iTrack < 0 || pSelection->iTrack >= SC_AUDIO_MAX_TRACKS) {
         continue;
       }
@@ -462,14 +514,21 @@ scAudioCapture* scAudioCaptureStart(void) {
         break;
       }
 
-      pAudioDevice = &pDevices[pSelection->iDevice];
+      /* A NULL device ID makes miniaudio open the Windows default endpoint
+         (default recording device, or default playback device for loopback). */
+      bDefaultDevice = (pSelection->iDevice == SC_AUDIO_DEVICE_DEFAULT);
+      pAudioDevice = bDefaultDevice ? NULL : &pDevices[pSelection->iDevice];
+      szDeviceName = bDefaultDevice ? "(default)" : pAudioDevice->szName;
       pDev = &pCap->aDevices[pCap->nDevices];
       memset(pDev, 0, sizeof(*pDev));
       pDev->pCapture = pCap;
       pDev->iTrack = (uint32_t)pSelection->iTrack;
+      pDev->iChannelMode = (pSelection->iChannelMode >= 0 &&
+                            pSelection->iChannelMode < SC_AUDIO_CHANNELS_COUNT)
+                               ? pSelection->iChannelMode : SC_AUDIO_CHANNELS_STEREO;
 
       devConfig = ma_device_config_init(bPlayback ? ma_device_type_loopback : ma_device_type_capture);
-      devConfig.capture.pDeviceID = &pAudioDevice->id;
+      devConfig.capture.pDeviceID = bDefaultDevice ? NULL : &pAudioDevice->id;
       devConfig.capture.format = ma_format_s16;
       devConfig.capture.channels = SC_AUDIO_CHANNELS;
       devConfig.sampleRate = SC_AUDIO_SAMPLE_RATE;
@@ -478,19 +537,27 @@ scAudioCapture* scAudioCaptureStart(void) {
       devConfig.pUserData = pDev;
 
       if (ma_device_init(&gAudio.maCtx, &devConfig, &pDev->device) != MA_SUCCESS) {
-        scLogError("Failed to initialize %s audio device %s", bPlayback ? "loopback" : "capture", pAudioDevice->szName);
+        scLogError("Failed to initialize %s audio device %s", bPlayback ? "loopback" : "capture", szDeviceName);
         continue;
       }
       pDev->bDeviceInitialized = true;
 
       if (ma_device_start(&pDev->device) != MA_SUCCESS) {
-        scLogError("Failed to start %s audio device %s", bPlayback ? "loopback" : "capture", pAudioDevice->szName);
+        scLogError("Failed to start %s audio device %s", bPlayback ? "loopback" : "capture", szDeviceName);
         ma_device_uninit(&pDev->device);
         pDev->bDeviceInitialized = false;
         continue;
       }
 
-      scLogInfo("Audio %s device '%s' started on track %d", bPlayback ? "output/loopback" : "input", pAudioDevice->szName, pSelection->iTrack);
+      /* Log what WASAPI actually opened. Handy when a "default" selection
+         resolves to something unexpected, or an endpoint carries more
+         channels than the voice/mic on it. */
+      scLogInfo("Audio %s device '%s' (opened: '%s', %u ch @ %u Hz) started on track %d, channel mode %d",
+                bPlayback ? "output/loopback" : "input", szDeviceName,
+                pDev->device.capture.name,
+                (unsigned)pDev->device.capture.internalChannels,
+                (unsigned)pDev->device.capture.internalSampleRate,
+                pSelection->iTrack, pDev->iChannelMode);
       pCap->abTracksUsed[pDev->iTrack] = true;
       pCap->nDevices++;
     }

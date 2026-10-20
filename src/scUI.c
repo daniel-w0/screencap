@@ -95,6 +95,7 @@ typedef struct {
   scSettingsSection eSettingsSection;
   s32      aSettingsScrollY[SC_SETTINGS_SECTION_COUNT];
   bool     bSettingsExpanded;
+  bool     bAudioWideLayout; // layout the audio settings were last built with
 
   HBITMAP hBackBitmap;
   s32     iBackWidth;
@@ -1425,6 +1426,9 @@ static const s32         kRecordResValues[]  = { SC_MAXRES_NATIVE, SC_MAXRES_108
 #define SC_FRAMERATE_COUNT 3
 
 static const char* const kAudioTrackOptions[] = { "0", "1", "2", "3", "4", "5", "6", "7" };
+static const char* const kAudioChannelOptions[] = { "Stereo", "L", "R", "Mono" };
+
+#define SC_AUDIO_DEVICE_OPTION_EXTRA 2
 
 static const char** gAudioInputDeviceOptions;
 static uint32_t gAudioInputDeviceOptionsCap;
@@ -1434,7 +1438,7 @@ static uint32_t gAudioOutputDeviceOptionsCap;
 scInternal bool
 _scBuildAudioDeviceOptions(const scAudioDevice* pDevices, uint32_t nDevices,
                            const char*** ppOptions, uint32_t* pOptionsCap) {
-  uint32_t nRequired = nDevices + 1;
+  uint32_t nRequired = nDevices + SC_AUDIO_DEVICE_OPTION_EXTRA;
   if (!ppOptions || !pOptionsCap) {
     return false;
   }
@@ -1448,10 +1452,26 @@ _scBuildAudioDeviceOptions(const scAudioDevice* pDevices, uint32_t nDevices,
   }
 
   (*ppOptions)[0] = "";
+  (*ppOptions)[1] = "Default device";
   for (uint32_t i = 0; i < nDevices; ++i) {
-    (*ppOptions)[i + 1] = pDevices[i].szName;
+    (*ppOptions)[i + SC_AUDIO_DEVICE_OPTION_EXTRA] = pDevices[i].szName;
   }
   return true;
+}
+
+/* Dropdown index <-> scAudioSelection.iDevice */
+scInternal s32
+_scAudioDeviceFromOption(s32 iIndex) {
+  if (iIndex <= 0) return SC_AUDIO_DEVICE_NONE;
+  if (iIndex == 1) return SC_AUDIO_DEVICE_DEFAULT;
+  return iIndex - SC_AUDIO_DEVICE_OPTION_EXTRA;
+}
+
+scInternal s32
+_scAudioOptionFromDevice(s32 iDevice, uint32_t nDevices) {
+  if (iDevice == SC_AUDIO_DEVICE_DEFAULT) return 1;
+  if (iDevice >= 0 && (uint32_t)iDevice < nDevices) return iDevice + SC_AUDIO_DEVICE_OPTION_EXTRA;
+  return 0;
 }
 
 scInternal void
@@ -1503,13 +1523,19 @@ _scOnCaptureAudioToggled(bool bValue, s32 iParam) {
 
 scInternal void
 _scOnAudioInputDeviceSelected(s32 iIndex, s32 iParam) {
-  scAudioInputSelectionSetDevice((uint32_t)iParam, iIndex - 1);
+  scAudioInputSelectionSetDevice((uint32_t)iParam, _scAudioDeviceFromOption(iIndex));
   _scRebuild();
 }
 
 scInternal void
 _scOnAudioInputTrackSelected(s32 iIndex, s32 iParam) {
   scAudioInputSelectionSetTrack((uint32_t)iParam, iIndex);
+  _scRebuild();
+}
+
+scInternal void
+_scOnAudioInputChannelSelected(s32 iIndex, s32 iParam) {
+  scAudioInputSelectionSetChannelMode((uint32_t)iParam, iIndex);
   _scRebuild();
 }
 
@@ -1529,13 +1555,19 @@ _scOnAudioInputRemove(s32 iParam) {
 
 scInternal void
 _scOnAudioOutputDeviceSelected(s32 iIndex, s32 iParam) {
-  scAudioOutputSelectionSetDevice((uint32_t)iParam, iIndex - 1);
+  scAudioOutputSelectionSetDevice((uint32_t)iParam, _scAudioDeviceFromOption(iIndex));
   _scRebuild();
 }
 
 scInternal void
 _scOnAudioOutputTrackSelected(s32 iIndex, s32 iParam) {
   scAudioOutputSelectionSetTrack((uint32_t)iParam, iIndex);
+  _scRebuild();
+}
+
+scInternal void
+_scOnAudioOutputChannelSelected(s32 iIndex, s32 iParam) {
+  scAudioOutputSelectionSetChannelMode((uint32_t)iParam, iIndex);
   _scRebuild();
 }
 
@@ -1660,111 +1692,164 @@ _scBuildCapture() {
   return pPage;
 }
 
+/* Content width (unscaled px) needed to show Input and Output side by side.
+   Each column needs roughly 340px so the device dropdown keeps a readable
+   width next to the track, channel and remove controls. Below this the two
+   lists are stacked and each one gets the full width. */
+#define SC_AUDIO_WIDE_LAYOUT_MIN_WIDTH 720
+#define SC_PAGE_HORIZONTAL_PADDING     40  /* 20 left + 20 right, see _scCreatePage */
+
+scInternal bool
+_scAudioUseWideLayout(void) {
+  RECT rc;
+  if (!gUI.hWindow || !GetClientRect(gUI.hWindow, &rc) || rc.right <= 0) {
+    return false; /* not sized yet, stacked is the safe choice */
+  }
+  f32 fScale = gUI.fUIScale > 0.0f ? gUI.fUIScale : 1.0f;
+  f32 fContent = (f32)rc.right / fScale - SIDEBAR_WIDTH - SC_PAGE_HORIZONTAL_PADDING;
+  return fContent >= SC_AUDIO_WIDE_LAYOUT_MIN_WIDTH;
+}
+
+/* Called after a resize: rebuild only when the window crossed the breakpoint. */
 scInternal void
-_scBuildAudioSettings(scNode* pPage) {
-  if (gApp->config.bCaptureAudio) {
-    bool bHaveInputOptions = _scBuildAudioDeviceOptions(
-        gAudio.pCaptureDevices, gAudio.captureDeviceCount,
-        &gAudioInputDeviceOptions, &gAudioInputDeviceOptionsCap);
-    bool bHaveOutputOptions = _scBuildAudioDeviceOptions(
-        gAudio.pPlaybackDevices, gAudio.playbackDeviceCount,
-        &gAudioOutputDeviceOptions, &gAudioOutputDeviceOptionsCap);
-    const char* const* aInputOptions = bHaveInputOptions ? gAudioInputDeviceOptions : NULL;
-    const char* const* aOutputOptions = bHaveOutputOptions ? gAudioOutputDeviceOptions : NULL;
-    s32 nInputOptions = bHaveInputOptions ? (s32)gAudio.captureDeviceCount + 1 : 0;
-    s32 nOutputOptions = bHaveOutputOptions ? (s32)gAudio.playbackDeviceCount + 1 : 0;
+_scAudioLayoutCheck(void) {
+  if (gUI.eCurrentPage != SC_PAGE_SETTINGS ||
+      gUI.eSettingsSection != SC_SETTINGS_RECORDING ||
+      !gApp->config.bCaptureAudio) {
+    return;
+  }
+  if (_scAudioUseWideLayout() != gUI.bAudioWideLayout) {
+    _scRebuild();
+  }
+}
 
-    scNode* pAudioColumns = scCreateHStack(scLengthPercent(1.0f), scLengthAuto());
-    scSetSpacing(pAudioColumns, 10);
+typedef void (*scAudioDropdownFn)(s32 iIndex, s32 iParam);
+typedef void (*scAudioButtonFn)(s32 iParam);
 
-    scNode* pInputColumn = scCreateVStack(scLengthStretch(1.0f), scLengthAuto());
-    scSetSpacing(pInputColumn, 6);
+typedef struct {
+  const char*             szTitle;
+  const scAudioSelection* aSelections;
+  uint32_t                nSelections;
+  uint32_t                nDevices;
+  const char* const*      aDeviceOptions;
+  s32                     nDeviceOptions;
+  scAudioDropdownFn       pfnDevice;
+  scAudioDropdownFn       pfnTrack;
+  scAudioDropdownFn       pfnChannel;
+  scAudioButtonFn         pfnRemove;
+  scAudioButtonFn         pfnAdd;
+} scAudioListDesc;
 
-    scNode* pInputHeader = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(28));
-    scAddChild(pInputHeader, scCreateSpacer(scLengthStretch(1.0f), scLengthPixels(1)));
-    scAddChild(pInputHeader, scCreateLabel(scLocaleGet("Input"), true));
-    scAddChild(pInputHeader, scCreateSpacer(scLengthStretch(1.0f), scLengthPixels(1)));
-    scAddChild(pInputColumn, pInputHeader);
+/* One list (Input or Output): a header, one row per selection and a "+" row.
+   Row layout is [ device (stretches) | track | channels | - ]. */
+scInternal scNode*
+_scBuildAudioList(const scAudioListDesc* pDesc, bool bWide) {
+  scNode* pColumn = scCreateVStack(bWide ? scLengthStretch(1.0f) : scLengthPercent(1.0f), scLengthAuto());
+  //scSetNodeBackgroundColors(pColumn, RGB(0, 0, 0), RGB(100, 100, 100), RGB(255, 255, 255));
+  scSetSpacing(pColumn, 6);
+  scSetPadding(pColumn, 4);
+  //scSetOutline(pColumn, 8);
+  scSetCard(pColumn, 6);
 
-    for (uint32_t i = 0; i < gAudio.inputCount; ++i) {
-      s32 iSelected = 0;
-      if (gAudio.aInputs[i].iDevice >= 0 &&
-          (uint32_t)gAudio.aInputs[i].iDevice < gAudio.captureDeviceCount) {
-        iSelected = gAudio.aInputs[i].iDevice + 1;
-      }
+  scNode* pHeader = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(28));
+  //if (bWide) {
+    ///* Centred over its column. */
+    scAddChild(pHeader, scCreateSpacer(scLengthStretch(1.0f), scLengthPixels(1)));
+    scAddChild(pHeader, scCreateLabel(scLocaleGet(pDesc->szTitle), true));
+    scAddChild(pHeader, scCreateSpacer(scLengthStretch(1.0f), scLengthPixels(1)));
+  //} else {
+  //  scAddChild(pHeader, scCreateLabel(scLocaleGet(pDesc->szTitle), true));
+  //}
+  scAddChild(pColumn, pHeader);
 
-      scNode* pRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(40));
-      scSetSpacing(pRow, 6);
-      scSetAlignment(pRow, SC_ALIGN_MIDDLE);
-      scAddChild(pRow, scCreateDropdown(L"", aInputOptions, nInputOptions, iSelected,
-                                        _scOnAudioInputDeviceSelected, (s32)i));
+  for (uint32_t i = 0; i < pDesc->nSelections; ++i) {
+    const scAudioSelection* pSel = &pDesc->aSelections[i];
 
-      scNode* pTrack = scCreateDropdown(L"", kAudioTrackOptions, ARRAYSIZE(kAudioTrackOptions),
-                                        gAudio.aInputs[i].iTrack, _scOnAudioInputTrackSelected, (s32)i);
-      scSetSize(pTrack, scLengthPixels(45), scLengthPixels(40));
-      scAddChild(pRow, pTrack);
+    scNode* pRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(40));
+    scSetSpacing(pRow, 6);
+    scSetAlignment(pRow, SC_ALIGN_MIDDLE);
 
-      scNode* pRemove = scCreateButton(L"-", _scOnAudioInputRemove, (s32)i);
-      scSetSize(pRemove, scLengthPixels(28), scLengthPixels(32));
-      scAddChild(pRow, pRemove);
-      scAddChild(pInputColumn, pRow);
-    }
+    scNode* pDevice = scCreateDropdown(L"", pDesc->aDeviceOptions, pDesc->nDeviceOptions,
+                                       _scAudioOptionFromDevice(pSel->iDevice, pDesc->nDevices),
+                                       pDesc->pfnDevice, (s32)i);
+    scSetSize(pDevice, scLengthStretch(1.0f), scLengthPixels(40));
+    scAddChild(pRow, pDevice);
 
-    if (gAudio.inputCount + gAudio.outputCount < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
-      scNode* pAddRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(35));
-      scNode* pAdd = scCreateButton(L"+", _scOnAudioInputAdd, 0);
-      scSetSize(pAdd, scLengthStretch(1.0f), scLengthPixels(35));
-      scAddChild(pAddRow, pAdd);
-      scAddChild(pInputColumn, pAddRow);
-    }
+    scNode* pTrack = scCreateDropdown(L"", kAudioTrackOptions, ARRAYSIZE(kAudioTrackOptions),
+                                      pSel->iTrack, pDesc->pfnTrack, (s32)i);
+    scSetSize(pTrack, scLengthPixels(45), scLengthPixels(40));
+    scAddChild(pRow, pTrack);
 
-    scNode* pOutputColumn = scCreateVStack(scLengthStretch(1.0f), scLengthAuto());
-    scSetSpacing(pOutputColumn, 6);
+    scNode* pChannels = scCreateDropdown(L"", kAudioChannelOptions, ARRAYSIZE(kAudioChannelOptions),
+                                         pSel->iChannelMode, pDesc->pfnChannel, (s32)i);
+    scSetSize(pChannels, scLengthPixels(70), scLengthPixels(40));
+    scAddChild(pRow, pChannels);
 
-    scNode* pOutputHeader = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(28));
-    scAddChild(pOutputHeader, scCreateSpacer(scLengthStretch(1.0f), scLengthPixels(1)));
-    scAddChild(pOutputHeader, scCreateLabel(scLocaleGet("Output"), true));
-    scAddChild(pOutputHeader, scCreateSpacer(scLengthStretch(1.0f), scLengthPixels(1)));
-    scAddChild(pOutputColumn, pOutputHeader);
+    scNode* pRemove = scCreateButton(L"-", pDesc->pfnRemove, (s32)i);
+    scSetSize(pRemove, scLengthPixels(28), scLengthPixels(32));
+    scAddChild(pRow, pRemove);
 
-    for (uint32_t i = 0; i < gAudio.outputCount; ++i) {
-      s32 iSelected = 0;
-      if (gAudio.aOutputs[i].iDevice >= 0 &&
-          (uint32_t)gAudio.aOutputs[i].iDevice < gAudio.playbackDeviceCount) {
-        iSelected = gAudio.aOutputs[i].iDevice + 1;
-      }
-
-      scNode* pRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(40));
-      scSetSpacing(pRow, 6);
-      scSetAlignment(pRow, SC_ALIGN_MIDDLE);
-      scAddChild(pRow, scCreateDropdown(L"", aOutputOptions, nOutputOptions, iSelected,
-                                        _scOnAudioOutputDeviceSelected, (s32)i));
-
-      scNode* pTrack = scCreateDropdown(L"", kAudioTrackOptions, ARRAYSIZE(kAudioTrackOptions),
-                                        gAudio.aOutputs[i].iTrack, _scOnAudioOutputTrackSelected, (s32)i);
-      scSetSize(pTrack, scLengthPixels(45), scLengthPixels(40));
-      scAddChild(pRow, pTrack);
-
-      scNode* pRemove = scCreateButton(L"-", _scOnAudioOutputRemove, (s32)i);
-      scSetSize(pRemove, scLengthPixels(28), scLengthPixels(32));
-      scAddChild(pRow, pRemove);
-      scAddChild(pOutputColumn, pRow);
-    }
-
-    if (gAudio.inputCount + gAudio.outputCount < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
-      scNode* pAddRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(35));
-      scNode* pAdd = scCreateButton(L"+", _scOnAudioOutputAdd, 0);
-      scSetSize(pAdd, scLengthStretch(1.0f), scLengthPixels(35));
-      scAddChild(pAddRow, pAdd);
-      scAddChild(pOutputColumn, pAddRow);
-    }
-
-    scAddChild(pAudioColumns, pInputColumn);
-    scAddChild(pAudioColumns, pOutputColumn);
-    scAddChild(pPage, pAudioColumns);
+    scAddChild(pColumn, pRow);
   }
 
+  if (gAudio.inputCount + gAudio.outputCount < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
+    scNode* pAddRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(35));
+    scNode* pAdd = scCreateButton(L"+", pDesc->pfnAdd, 0);
+    scSetSize(pAdd, scLengthStretch(1.0f), scLengthPixels(35));
+    scAddChild(pAddRow, pAdd);
+    scAddChild(pColumn, pAddRow);
+  }
+  return pColumn;
+}
 
+scInternal void
+_scBuildAudioSettings(scNode* pPage) {
+  if (!gApp->config.bCaptureAudio) {
+    return;
+  }
+
+  bool bHaveInputOptions = _scBuildAudioDeviceOptions(
+      gAudio.pCaptureDevices, gAudio.captureDeviceCount,
+      &gAudioInputDeviceOptions, &gAudioInputDeviceOptionsCap);
+  bool bHaveOutputOptions = _scBuildAudioDeviceOptions(
+      gAudio.pPlaybackDevices, gAudio.playbackDeviceCount,
+      &gAudioOutputDeviceOptions, &gAudioOutputDeviceOptionsCap);
+
+  scAudioListDesc input = {
+    "Input",
+    gAudio.aInputs, gAudio.inputCount, gAudio.captureDeviceCount,
+    bHaveInputOptions ? gAudioInputDeviceOptions : NULL,
+    bHaveInputOptions ? (s32)gAudio.captureDeviceCount + SC_AUDIO_DEVICE_OPTION_EXTRA : 0,
+    _scOnAudioInputDeviceSelected, _scOnAudioInputTrackSelected, _scOnAudioInputChannelSelected,
+    _scOnAudioInputRemove, _scOnAudioInputAdd
+  };
+  scAudioListDesc output = {
+    "Output",
+    gAudio.aOutputs, gAudio.outputCount, gAudio.playbackDeviceCount,
+    bHaveOutputOptions ? gAudioOutputDeviceOptions : NULL,
+    bHaveOutputOptions ? (s32)gAudio.playbackDeviceCount + SC_AUDIO_DEVICE_OPTION_EXTRA : 0,
+    _scOnAudioOutputDeviceSelected, _scOnAudioOutputTrackSelected, _scOnAudioOutputChannelSelected,
+    _scOnAudioOutputRemove, _scOnAudioOutputAdd
+  };
+
+  bool bWide = _scAudioUseWideLayout();
+  gUI.bAudioWideLayout = bWide;
+
+  if (bWide) {
+    /* Input and Output next to each other. */
+    scNode* pColumns = scCreateHStack(scLengthPercent(1.0f), scLengthAuto());
+    scSetSpacing(pColumns, 10);
+    scAddChild(pColumns, _scBuildAudioList(&input, true));
+    scAddChild(pColumns, _scBuildAudioList(&output, true));
+    scSetPadding(pColumns, 4);
+    scSetSpacing(pColumns, 12);
+    scAddChild(pPage, pColumns);
+  } else {
+    /* Narrow window: Input on top, Output below, both at full width. */
+    scAddChild(pPage, _scBuildAudioList(&input, false));
+    //scAddChild(pPage, scCreateSpacer(scLengthPixels(1), scLengthPixels(10)));
+    scAddChild(pPage, _scBuildAudioList(&output, false));
+  }
 }
 
 scInternal scNode*
@@ -1819,6 +1904,7 @@ _scBuildSettingsRecording() {
   _scAddToggle(pPage, "Force Software Encoding", &gApp->config.bRecordForceSoftware, NULL);
   _scAddToggle(pPage, "Capture Audio", &gApp->config.bCaptureAudio, _scOnCaptureAudioToggled);
   if (gApp->config.bCaptureAudio) {
+    scAddChild(pPage, scCreateSpacer(scLengthPercent(1.0f), scLengthPixels(24.0f)));
     _scBuildAudioSettings(pPage);
   }
   return pPage;
@@ -2165,6 +2251,7 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     case WM_SIZE: {
       if (wParam != SIZE_MINIMIZED) {
         scGuiResize(gUI.pGui, LOWORD(lParam), HIWORD(lParam));
+        _scAudioLayoutCheck();
       }
       return 0;
     }

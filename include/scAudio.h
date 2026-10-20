@@ -18,9 +18,21 @@ typedef struct {
   ma_device_id id;
 } scAudioDevice;
 
+#define SC_AUDIO_DEVICE_NONE    (-1)
+#define SC_AUDIO_DEVICE_DEFAULT (-2)
+
+typedef enum {
+  SC_AUDIO_CHANNELS_STEREO = 0,
+  SC_AUDIO_CHANNELS_LEFT,
+  SC_AUDIO_CHANNELS_RIGHT,
+  SC_AUDIO_CHANNELS_MONO,
+  SC_AUDIO_CHANNELS_COUNT
+} scAudioChannelMode;
+
 typedef struct {
   int32_t iDevice;
   int32_t iTrack;
+  int32_t iChannelMode; /* scAudioChannelMode */
 } scAudioSelection;
 
 typedef struct {
@@ -47,11 +59,13 @@ bool scAudioInputSelectionAdd(void);
 void scAudioInputSelectionRemove(uint32_t iSelection);
 void scAudioInputSelectionSetDevice(uint32_t iSelection, int32_t iDevice);
 void scAudioInputSelectionSetTrack(uint32_t iSelection, int32_t iTrack);
+void scAudioInputSelectionSetChannelMode(uint32_t iSelection, int32_t iChannelMode);
 
 bool scAudioOutputSelectionAdd(void);
 void scAudioOutputSelectionRemove(uint32_t iSelection);
 void scAudioOutputSelectionSetDevice(uint32_t iSelection, int32_t iDevice);
 void scAudioOutputSelectionSetTrack(uint32_t iSelection, int32_t iTrack);
+void scAudioOutputSelectionSetChannelMode(uint32_t iSelection, int32_t iChannelMode);
 
 /* Legacy entry points retained for callers that use the input selection list. */
 bool scAudioSelectionAdd(void);
