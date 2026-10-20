@@ -1426,7 +1426,6 @@ static const s32         kRecordResValues[]  = { SC_MAXRES_NATIVE, SC_MAXRES_108
 #define SC_FRAMERATE_COUNT 3
 
 static const char* const kAudioTrackOptions[] = { "0", "1", "2", "3", "4", "5", "6", "7" };
-static const char* const kAudioChannelOptions[] = { "Stereo", "L", "R", "Mono" };
 
 #define SC_AUDIO_DEVICE_OPTION_EXTRA 2
 
@@ -1535,6 +1534,15 @@ _scOnAudioInputTrackSelected(s32 iIndex, s32 iParam) {
 
 scInternal void
 _scOnAudioInputChannelSelected(s32 iIndex, s32 iParam) {
+  if (iParam >= 0 && (uint32_t)iParam < gAudio.inputCount) {
+    if (gAudio.aInputs[iParam].iChannelMode == SC_AUDIO_CHANNELS_STEREO) iIndex *= 2;
+    scAudioInputSelectionSetChannel((uint32_t)iParam, iIndex);
+  }
+  _scRebuild();
+}
+
+scInternal void
+_scOnAudioInputModeSelected(s32 iIndex, s32 iParam) {
   scAudioInputSelectionSetChannelMode((uint32_t)iParam, iIndex);
   _scRebuild();
 }
@@ -1567,6 +1575,15 @@ _scOnAudioOutputTrackSelected(s32 iIndex, s32 iParam) {
 
 scInternal void
 _scOnAudioOutputChannelSelected(s32 iIndex, s32 iParam) {
+  if (iParam >= 0 && (uint32_t)iParam < gAudio.outputCount) {
+    if (gAudio.aOutputs[iParam].iChannelMode == SC_AUDIO_CHANNELS_STEREO) iIndex *= 2;
+    scAudioOutputSelectionSetChannel((uint32_t)iParam, iIndex);
+  }
+  _scRebuild();
+}
+
+scInternal void
+_scOnAudioOutputModeSelected(s32 iIndex, s32 iParam) {
   scAudioOutputSelectionSetChannelMode((uint32_t)iParam, iIndex);
   _scRebuild();
 }
@@ -1723,6 +1740,18 @@ _scAudioLayoutCheck(void) {
   }
 }
 
+/* Channel numbers shown to the user are 1-based. The same array serves every
+   row, a row just uses the first N entries. */
+static const char* const kAudioChannelNumbers[SC_AUDIO_MAX_SOURCE_CHANNELS] = {
+  "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16",
+  "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32"
+};
+static const char* const kAudioChannelPairs[SC_AUDIO_MAX_SOURCE_CHANNELS / 2] = {
+  "1 + 2", "3 + 4", "5 + 6", "7 + 8", "9 + 10", "11 + 12", "13 + 14", "15 + 16",
+  "17 + 18", "19 + 20", "21 + 22", "23 + 24", "25 + 26", "27 + 28", "29 + 30", "31 + 32"
+};
+static const char* const kAudioChannelModeOptions[SC_AUDIO_CHANNELS_COUNT] = { "Stereo", "Mono" };
+
 typedef void (*scAudioDropdownFn)(s32 iIndex, s32 iParam);
 typedef void (*scAudioButtonFn)(s32 iParam);
 
@@ -1736,6 +1765,7 @@ typedef struct {
   scAudioDropdownFn       pfnDevice;
   scAudioDropdownFn       pfnTrack;
   scAudioDropdownFn       pfnChannel;
+  scAudioDropdownFn       pfnMode;
   scAudioButtonFn         pfnRemove;
   scAudioButtonFn         pfnAdd;
 } scAudioListDesc;
@@ -1780,16 +1810,45 @@ _scBuildAudioList(const scAudioListDesc* pDesc, bool bWide) {
     scSetSize(pTrack, scLengthPixels(45), scLengthPixels(40));
     scAddChild(pRow, pTrack);
 
-    scNode* pChannels = scCreateDropdown(L"", kAudioChannelOptions, ARRAYSIZE(kAudioChannelOptions),
-                                         pSel->iChannelMode, pDesc->pfnChannel, (s32)i);
-    scSetSize(pChannels, scLengthPixels(70), scLengthPixels(40));
-    scAddChild(pRow, pChannels);
-
     scNode* pRemove = scCreateButton(L"-", pDesc->pfnRemove, (s32)i);
     scSetSize(pRemove, scLengthPixels(28), scLengthPixels(32));
     scAddChild(pRow, pRemove);
 
     scAddChild(pColumn, pRow);
+
+    uint32_t nChOptions = 0;
+    const char* const* aChannelOptions = kAudioChannelNumbers;
+    if (pSel->iDevice != SC_AUDIO_DEVICE_NONE) {
+      nChOptions = scAudioChannelOptionCount(pSel->nNativeChannels);
+      if (pSel->iChannelMode == SC_AUDIO_CHANNELS_STEREO) {
+        nChOptions /= 2;
+        aChannelOptions = kAudioChannelPairs;
+      }
+    }
+    if (nChOptions > 0) {
+      scNode* pChRow = scCreateHStack(scLengthPercent(1.0f), scLengthPixels(40));
+      scSetSpacing(pChRow, 6);
+      scSetAlignment(pChRow, SC_ALIGN_MIDDLE);
+
+      scNode* pChLabel = scCreateLabel(L"Channel", false);
+      scAddChild(pChRow, pChLabel);
+
+      s32 iChannel = pSel->iChannel;
+      if (pSel->iChannelMode == SC_AUDIO_CHANNELS_STEREO) iChannel /= 2;
+      if (iChannel < 0) iChannel = 0;
+      if ((uint32_t)iChannel >= nChOptions) iChannel = (s32)nChOptions - 1;
+      scNode* pChannel = scCreateDropdown(L"", aChannelOptions, (s32)nChOptions,
+                                          iChannel, pDesc->pfnChannel, (s32)i);
+      scSetSize(pChannel, scLengthPixels(60), scLengthPixels(40));
+      scAddChild(pChRow, pChannel);
+
+      scNode* pMode = scCreateDropdown(L"", kAudioChannelModeOptions, SC_AUDIO_CHANNELS_COUNT,
+                                       pSel->iChannelMode, pDesc->pfnMode, (s32)i);
+      scSetSize(pMode, scLengthStretch(1.0f), scLengthPixels(40));
+      scAddChild(pChRow, pMode);
+
+      scAddChild(pColumn, pChRow);
+    }
   }
 
   if (gAudio.inputCount + gAudio.outputCount < SC_AUDIO_MAX_DEVICE_SELECTIONS) {
@@ -1808,7 +1867,7 @@ _scBuildAudioSettings(scNode* pPage) {
     return;
   }
 
-  bool bHaveInputOptions = _scBuildAudioDeviceOptions(
+    bool bHaveInputOptions = _scBuildAudioDeviceOptions(
       gAudio.pCaptureDevices, gAudio.captureDeviceCount,
       &gAudioInputDeviceOptions, &gAudioInputDeviceOptionsCap);
   bool bHaveOutputOptions = _scBuildAudioDeviceOptions(
@@ -1820,7 +1879,7 @@ _scBuildAudioSettings(scNode* pPage) {
     gAudio.aInputs, gAudio.inputCount, gAudio.captureDeviceCount,
     bHaveInputOptions ? gAudioInputDeviceOptions : NULL,
     bHaveInputOptions ? (s32)gAudio.captureDeviceCount + SC_AUDIO_DEVICE_OPTION_EXTRA : 0,
-    _scOnAudioInputDeviceSelected, _scOnAudioInputTrackSelected, _scOnAudioInputChannelSelected,
+    _scOnAudioInputDeviceSelected, _scOnAudioInputTrackSelected, _scOnAudioInputChannelSelected, _scOnAudioInputModeSelected,
     _scOnAudioInputRemove, _scOnAudioInputAdd
   };
   scAudioListDesc output = {
@@ -1828,7 +1887,7 @@ _scBuildAudioSettings(scNode* pPage) {
     gAudio.aOutputs, gAudio.outputCount, gAudio.playbackDeviceCount,
     bHaveOutputOptions ? gAudioOutputDeviceOptions : NULL,
     bHaveOutputOptions ? (s32)gAudio.playbackDeviceCount + SC_AUDIO_DEVICE_OPTION_EXTRA : 0,
-    _scOnAudioOutputDeviceSelected, _scOnAudioOutputTrackSelected, _scOnAudioOutputChannelSelected,
+    _scOnAudioOutputDeviceSelected, _scOnAudioOutputTrackSelected, _scOnAudioOutputChannelSelected, _scOnAudioOutputModeSelected,
     _scOnAudioOutputRemove, _scOnAudioOutputAdd
   };
 

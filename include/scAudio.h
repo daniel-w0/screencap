@@ -23,16 +23,18 @@ typedef struct {
 
 typedef enum {
   SC_AUDIO_CHANNELS_STEREO = 0,
-  SC_AUDIO_CHANNELS_LEFT,
-  SC_AUDIO_CHANNELS_RIGHT,
   SC_AUDIO_CHANNELS_MONO,
   SC_AUDIO_CHANNELS_COUNT
 } scAudioChannelMode;
 
+#define SC_AUDIO_MAX_SOURCE_CHANNELS 32
+
 typedef struct {
   int32_t iDevice;
   int32_t iTrack;
-  int32_t iChannelMode; /* scAudioChannelMode */
+  int32_t iChannel;
+  int32_t iChannelMode;
+  uint32_t nNativeChannels;
 } scAudioSelection;
 
 typedef struct {
@@ -59,13 +61,20 @@ bool scAudioInputSelectionAdd(void);
 void scAudioInputSelectionRemove(uint32_t iSelection);
 void scAudioInputSelectionSetDevice(uint32_t iSelection, int32_t iDevice);
 void scAudioInputSelectionSetTrack(uint32_t iSelection, int32_t iTrack);
+void scAudioInputSelectionSetChannel(uint32_t iSelection, int32_t iChannel);
 void scAudioInputSelectionSetChannelMode(uint32_t iSelection, int32_t iChannelMode);
 
 bool scAudioOutputSelectionAdd(void);
 void scAudioOutputSelectionRemove(uint32_t iSelection);
 void scAudioOutputSelectionSetDevice(uint32_t iSelection, int32_t iDevice);
 void scAudioOutputSelectionSetTrack(uint32_t iSelection, int32_t iTrack);
+void scAudioOutputSelectionSetChannel(uint32_t iSelection, int32_t iChannel);
 void scAudioOutputSelectionSetChannelMode(uint32_t iSelection, int32_t iChannelMode);
+
+/* Number of entries for the channel dropdown ("1" .. "N"). 0 when the device
+   only has one channel, because there is nothing to choose. An unknown channel
+   count (0) is treated as stereo. */
+uint32_t scAudioChannelOptionCount(uint32_t nChannels);
 
 /* Legacy entry points retained for callers that use the input selection list. */
 bool scAudioSelectionAdd(void);
