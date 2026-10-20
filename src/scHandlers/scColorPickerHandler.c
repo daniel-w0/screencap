@@ -73,6 +73,17 @@ typedef struct {
   wchar_t wszVec4[80];
 } scColorStrings;
 
+void _getColorPickerWindows(HWND* h0, HWND* h1) {
+  scColorPickerContext* ctx = gColorPickerContext;
+  if (ctx) {
+    *h0 = ctx->hWnd;
+    *h1 = ctx->hPreviewWnd;
+  } else {
+    *h0 = NULL;
+    *h1 = NULL;
+  }
+}
+
 scInternal LRESULT CALLBACK
 _scPickerLowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
   if (nCode == HC_ACTION && wParam == WM_MOUSEWHEEL && gColorPickerContext &&
@@ -176,7 +187,9 @@ _scPickerApplyGuiTheme(scGui* pGui) {
 
 scInternal void
 _scPickerRefreshTheme(HWND hWnd) {
-  f32 scale = scGetDPIScale(hWnd);
+  f32 fUser = gApp->config.fGuiScale > 0.0f ? gApp->config.fGuiScale : 1.0f;
+  f32 scale = scGetDPIScale(hWnd) * fUser;
+
   bool dark = scIsWindowsDarkTheme();
   COLORREF accent = scGetSystemAccentColor();
 
@@ -785,6 +798,7 @@ _scColorPickerPreviewWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     case WM_MOUSEACTIVATE:
       return MA_NOACTIVATE;
     case WM_SETTINGCHANGE:
+    case WM_SC_COLOR_PICKER_REFRESH:
     case WM_THEMECHANGED:
       _scPickerRefreshTheme(ctx && ctx->hWnd ? ctx->hWnd : hWnd);
       InvalidateRect(hWnd, NULL, FALSE);

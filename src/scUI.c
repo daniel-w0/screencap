@@ -124,6 +124,7 @@ scInternal void _scBeginHotkeyRecording(s32 iIndex);
 scInternal void _scCancelHotkeyRecording();
 scInternal void _scOnVersionLinkClicked(s32 iParam);
 scInternal void _scRebuild();
+scInternal void _scApplyScale();
 
 //------------------------------------------------------------------------
 // Utility
@@ -164,10 +165,23 @@ _scHostCapture(void* pUser, bool bCapture) {
   }
 }
 
+extern void _getColorPickerWindows(HWND* h0, HWND* h1);
+
 scInternal void
 _scHostValueChanged(void* pUser) {
   (void)pUser;
   scSaveConfig();
+  _scApplyScale();
+
+  HWND h0;
+  HWND h1;
+  _getColorPickerWindows(&h0, &h1);
+  if (h0) {
+    PostMessageW(h0, WM_SC_COLOR_PICKER_REFRESH, 0, 0);
+  }
+  if (h1) {
+    PostMessageW(h1, WM_SC_COLOR_PICKER_REFRESH, 0, 0);
+  }
 }
 
 scInternal void
@@ -197,6 +211,45 @@ _scApplyTheme() {
   theme.hBoldFont     = (HFONT)t->pBoldFont;
   scGuiSetTheme(gUI.pGui, &theme);
   scGuiSetScale(gUI.pGui, gUI.fUIScale);
+}
+
+scInternal f32
+_scEffectiveScale() {
+  f32 fUser = gApp->config.fGuiScale > 0.0f ? gApp->config.fGuiScale : 1.0f;
+  return scGetDPIScale(gUI.hWindow) * fUser;
+}
+
+scInternal void
+_scReloadTheme() {
+  scUITheme* t = &gUI.theme;
+  if (t->pFont)            DeleteObject(t->pFont);
+  if (t->pBoldFont)        DeleteObject(t->pBoldFont);
+  if (t->hBackgroundBrush) DeleteObject(t->hBackgroundBrush);
+  if (t->hCardBrush)       DeleteObject(t->hCardBrush);
+  memset(t, 0, sizeof(*t));
+  scUIThemeGet(t, _scScale(15));
+  _scApplyTheme();
+}
+
+scInternal void
+_scApplyScale() {
+  f32 fNew = _scEffectiveScale();
+  if (!gUI.pGui || fNew == gUI.fUIScale) {
+    return;
+  }
+
+  f32 fRatio   = fNew / gUI.fUIScale;
+  gUI.fUIScale = fNew;
+  _scReloadTheme();
+  gUI.nLogLines = 0;
+
+  if (gUI.hWindow && !IsZoomed(gUI.hWindow)) {
+    RECT rc;
+    GetWindowRect(gUI.hWindow, &rc);
+    SetWindowPos(gUI.hWindow, NULL, 0, 0,
+                 (int)((rc.right - rc.left) * fRatio), (int)((rc.bottom - rc.top) * fRatio),
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  }
 }
 
 #define ICON_BASE_HUE 140.0f
@@ -1582,6 +1635,7 @@ _scBuildSettings() {
       break;
     }
   }
+  scAddChild(pPage, scCreateSlider(scLocaleGet("UI Scale"), &gApp->config.fGuiScale, 0.5, 4.0f, 0.1f, 0, NULL));
   scAddChild(pPage, scCreateDropdown(scLocaleGet("Language"), scLocaleCodes(), scLocaleCount(), iLanguage, _scOnLanguageSelected, 0));
 
   scAddChild(pPage, scCreateDropdown(scLocaleGet("Recording Framerate"), kFramerateOptions, SC_FRAMERATE_COUNT,
@@ -1924,6 +1978,15 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       }
       return 0;
     }
+    case WM_CHAR:
+      if (scGuiChar(gUI.pGui, (wchar_t)wParam)) return 0;
+      break;
+    case WM_KEYDOWN:
+      if (scGuiKeyDown(gUI.pGui, (u32)wParam)) return 0;
+      break;
+    case WM_KILLFOCUS:
+      scGuiFocusLost(gUI.pGui);
+      break;
     case WM_GETMINMAXINFO: {
       MINMAXINFO* pMmi = (MINMAXINFO*)lParam;
       pMmi->ptMinTrackSize.x = _scScale(WINDOW_MIN_WIDTH);
@@ -2066,7 +2129,7 @@ LRESULT CALLBACK UIWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     }
     case WM_SETTINGCHANGE: {
       if (gApp->bIsGeWin10 && lParam && wcscmp((const wchar_t*)lParam, L"ImmersiveColorSet") == 0) {
-        float fUIScale = scGetDPIScale(gUI.hWindow);
+        float fUIScale = _scEffectiveScale();
         if (scIsWindowsDarkTheme() != gUI.theme.bDark || scGetSystemAccentColor() != gUI.theme.dwAccent || gUI.fUIScale != fUIScale) {
           gUI.fUIScale = fUIScale;
           scUIThemeGet(&gUI.theme, _scScale(15));
@@ -2129,7 +2192,7 @@ void scUIOpenWindow() {
     gUI.pGui = scGuiCreate(&host);
   }
 
-  gUI.fUIScale = scGetDPIScale(gUI.hWindow);
+  gUI.fUIScale = _scEffectiveScale();
   scUIThemeGet(&gUI.theme, _scScale(15));
   _scApplyTheme();
   _scRebuild();

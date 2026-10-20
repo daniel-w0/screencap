@@ -56,6 +56,15 @@ _scGetDefaultSaveRootPath(wchar_t wszPath[SC_PATH_MAX_LEN]) {
   }
 }
 
+scInternal float
+_scGetProfileFloat(LPCWSTR lpAppName, LPCWSTR lpKeyName, float flDefault, LPCWSTR lpFileName) {
+    WCHAR szBuffer[64];
+    DWORD charsRead = GetPrivateProfileStringW(lpAppName, lpKeyName, L"", szBuffer, _countof(szBuffer), lpFileName);
+    
+    if (charsRead == 0) return flDefault;
+    return (float)_wtof(szBuffer);
+}
+
 scInternal bool
 _scGetConfigFilepath(wchar_t wszPath[SC_PATH_MAX_LEN]) {
   wszPath[0] = L'\0';
@@ -100,7 +109,8 @@ _scConfigCreateDefaults(scAppConfig* pOutConfig) {
 
   _scGetDefaultSaveRootPath(pOutConfig->wszSavePath); // defaults to current directory if fails
   _scGetSystemLanguage(pOutConfig->sLanguageCode); // defaults to en if fails
-    
+
+  pOutConfig->fGuiScale          = 1.0f;
   pOutConfig->bCopyToClipboard   = true;
   pOutConfig->bRunAtStartup      = false;
   pOutConfig->bPlaySoundOnAction = true;
@@ -153,6 +163,9 @@ _scWriteConfig(scAppConfig* pConfig, wchar_t* wszPath) {
   WritePrivateProfileStringW(L"options", L"record_force_software", pConfig->bRecordForceSoftware ? L"1" : L"0", wszActualPath);
 
   wchar_t wszValue[16];
+  _snwprintf_s(wszValue, 16, _TRUNCATE, L"%.2f", pConfig->fGuiScale);
+  WritePrivateProfileStringW(L"options", L"gui_scale", wszValue, wszActualPath);
+
   _snwprintf_s(wszValue, 16, _TRUNCATE, L"%d", pConfig->iFFmpegFramerate);
   WritePrivateProfileStringW(L"options", L"record_framerate", wszValue, wszActualPath);
 
@@ -215,6 +228,8 @@ _scConfigReadInto(scAppConfig* pConfig, wchar_t* wszPath) {
   pConfig->bRecordForceSoftware  = GetPrivateProfileIntW(L"options", L"record_force_software", pConfig->bRecordForceSoftware, wszActualPath) != 0;
   pConfig->iFFmpegFramerate   = GetPrivateProfileIntW(L"options", L"record_framerate",  pConfig->iFFmpegFramerate, wszActualPath);
   if (pConfig->iFFmpegFramerate < 1 || pConfig->iFFmpegFramerate > 120) pConfig->iFFmpegFramerate = 30;
+
+  pConfig->fGuiScale   = _scGetProfileFloat(L"options", L"gui_scale",  pConfig->fGuiScale, wszActualPath);
 
   UINT uQuality = GetPrivateProfileIntW(L"options", L"record_quality", (UINT)pConfig->eRecordQuality, wszActualPath);
   if (uQuality >= SC_QUALITY_COUNT) uQuality = SC_QUALITY_HIGH;

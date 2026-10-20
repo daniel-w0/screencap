@@ -82,6 +82,7 @@ scNode* scCreateButton(const wchar_t* wszText, void (*pfnClick)(s32 iParam), s32
 scNode* scCreateLink(const wchar_t* wszText, void (*pfnClick)(s32 iParam), s32 iParam);
 scNode* scCreateTab(const wchar_t* wszText, bool bActive, void (*pfnClick)(s32 iParam), s32 iParam);
 scNode* scCreateToggle(const wchar_t* wszText, bool* pValue, s32 iParam, void (*pfnChange)(bool bValue, s32 iParam));
+scNode* scCreateSlider(const wchar_t* wszText, f32* pValue, f32 fMin, f32 fMax, f32 fStep, s32 iParam, void (*pfnChange)(f32 fValue, s32 iParam));
 scNode* scCreateDropdown(const wchar_t* wszLabel, const char* const* aOptions, s32 nOptionCount, s32 iSelected, void (*pfnSelect)(s32 iIndex, s32 iParam), s32 iParam);
 scNode* scCreateCustom(scLength width, scLength height, const scCustomOps* pOps, const void* pUser, s32 nUserSize);
 
@@ -102,6 +103,7 @@ void scSetTextRole(scNode* pNode, scTextRole eRole);
 void scSetEllipsis(scNode* pNode, bool bEllipsis);
 void scSetCard(scNode* pNode, f32 fRadius);
 void scSetOutline(scNode* pNode, f32 fRadius);
+void scSetSliderRange(scNode* pNode, f32 fMin, f32 fMax, f32 fStep);
 void scSetScrollY(scNode* pNode, s32 iScrollY);
 s32  scGetScrollY(scNode* pNode);
 
@@ -121,6 +123,9 @@ void scGuiMouseDown(scGui* pGui, POINT pt);
 void scGuiMouseUp(scGui* pGui, POINT pt);
 void scGuiMouseRightUp(scGui* pGui, POINT pt);
 void scGuiMouseWheel(scGui* pGui, POINT pt, s32 iNotches);
+bool scGuiChar(scGui* pGui, wchar_t wc);
+bool scGuiKeyDown(scGui* pGui, u32 uVk);
+void scGuiFocusLost(scGui* pGui);
 bool scGuiHitClickable(scGui* pGui, POINT pt);
 void scGuiCaptureLost(scGui* pGui);
 

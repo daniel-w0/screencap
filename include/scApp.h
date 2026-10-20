@@ -14,6 +14,8 @@
 #define SC_VERSION_STRING_W L"" SC_VERSION_STRING
 #define SC_VERSION_STRING_FULL_W L"v" SC_VERSION_STRING
 
+#define WM_SC_COLOR_PICKER_REFRESH (WM_APP + 0x4A0)
+
 typedef enum {
   SC_HOTKEY_SCREENSHOT,
   SC_HOTKEY_CLIPBOARD,
@@ -89,6 +91,7 @@ typedef struct {
   bool            bCaptureAudio;
 
   // other
+  float           fGuiScale;
   char            sLanguageCode[16];
   bool            bCopyToClipboard;
   bool            bRunAtStartup;

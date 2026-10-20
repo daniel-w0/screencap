@@ -3,6 +3,8 @@
 #include "scGdiPlus.h"
 #include "scGui.h"
 
+#include <math.h>
+
 //------------------------------------------------------------------------
 // Types
 //------------------------------------------------------------------------
@@ -17,6 +19,7 @@ typedef enum {
   SC_NODE_LINK,
   SC_NODE_TAB,
   SC_NODE_TOGGLE,
+  SC_NODE_SLIDER,
   SC_NODE_DROPDOWN,
   SC_NODE_CUSTOM
 } scNodeType;
@@ -55,6 +58,7 @@ struct scNode {
     struct { bool bBold; } label;
     struct { void (*pfnClick)(s32 iParam); s32 iParam; bool bActive; } button;
     struct { bool* pValue; s32 iParam; void (*pfnChange)(bool bValue, s32 iParam); } toggle;
+    struct { f32* pValue; f32 fMin; f32 fMax; f32 fStep; s32 iParam; void (*pfnChange)(f32 fValue, s32 iParam); } slider;
     struct {
       const char* const* aOptions;
       s32                nOptionCount;
@@ -97,6 +101,15 @@ struct scGui {
   POINT   ptPress;
   scNode* pHotScroll;
 
+  scNode*  pSliding;
+  scNode*  pEditing;
+  wchar_t  wszEdit[32];
+  s32      nEdit;
+  bool     bEditFresh;
+  scNode*  pLastClick;
+  DWORD    dwLastClickTime;
+  POINT    ptLastClick;
+
   scNode* pExpanded;
   s32     iPopupHover;
   s32     iPopupScroll;
@@ -136,6 +149,7 @@ _scIsClickable(scNode* pNode) {
     case SC_NODE_LINK:
     case SC_NODE_TAB:
     case SC_NODE_TOGGLE:
+    case SC_NODE_SLIDER:
     case SC_NODE_DROPDOWN:
       return true;
     case SC_NODE_CUSTOM:
@@ -152,6 +166,7 @@ _scIsInteractive(scNode* pNode) {
     case SC_NODE_LINK:
     case SC_NODE_TAB:
     case SC_NODE_TOGGLE:
+    case SC_NODE_SLIDER:
     case SC_NODE_DROPDOWN:
       return true;
     case SC_NODE_CUSTOM:
@@ -301,6 +316,15 @@ scNode* scCreateToggle(const wchar_t* wszText, bool* pValue, s32 iParam, void (*
   return pNode;
 }
 
+scNode* scCreateSlider(const wchar_t* wszText, f32* pValue, f32 fMin, f32 fMax, f32 fStep, s32 iParam, void (*pfnChange)(f32 fValue, s32 iParam)) {
+  scNode* pNode = _scNewNode(SC_NODE_SLIDER, scLengthStretch(1.0f), scLengthPixels(40), wszText);
+  pNode->u.slider.pValue    = pValue;
+  pNode->u.slider.iParam    = iParam;
+  pNode->u.slider.pfnChange = pfnChange;
+  scSetSliderRange(pNode, fMin, fMax, fStep);
+  return pNode;
+}
+
 scNode* scCreateDropdown(const wchar_t* wszLabel, const char* const* aOptions, s32 nOptionCount, s32 iSelected, void (*pfnSelect)(s32 iIndex, s32 iParam), s32 iParam) {
   scNode* pNode = _scNewNode(SC_NODE_DROPDOWN, scLengthStretch(1.0f), scLengthPixels(40), wszLabel);
   pNode->u.dropdown.aOptions     = aOptions;
@@ -412,6 +436,16 @@ void scSetCard(scNode* pNode, f32 fRadius) {
 
 void scSetOutline(scNode* pNode, f32 fRadius) {
   pNode->fOutlineRadius = fRadius;
+  _scMarkDirty(pNode, false);
+}
+
+void scSetSliderRange(scNode* pNode, f32 fMin, f32 fMax, f32 fStep) {
+  if (pNode->eType != SC_NODE_SLIDER) {
+    return;
+  }
+  pNode->u.slider.fMin  = fMin < fMax ? fMin : fMax;
+  pNode->u.slider.fMax  = fMin < fMax ? fMax : fMin;
+  pNode->u.slider.fStep = fStep;
   _scMarkDirty(pNode, false);
 }
 
@@ -831,6 +865,144 @@ _scPopupGeom(scGui* pGui, scNode* pNode) {
 }
 
 //------------------------------------------------------------------------
+// Slider
+//------------------------------------------------------------------------
+scInternal s32
+_scSliderDecimals(scNode* pNode) {
+  f32 fStep = pNode->u.slider.fStep;
+  if (fStep <= 0.0f) {
+    return 2;
+  }
+  s32 nDecimals = 0;
+  while (nDecimals < 6 && fabsf(fStep - floorf(fStep + 0.5f)) > 0.0001f) {
+    fStep *= 10.0f;
+    ++nDecimals;
+  }
+  return nDecimals;
+}
+
+scInternal f32
+_scSliderSnap(scNode* pNode, f32 fValue) {
+  f32 fMin  = pNode->u.slider.fMin;
+  f32 fMax  = pNode->u.slider.fMax;
+  f32 fStep = pNode->u.slider.fStep;
+
+  fValue = fValue < fMin ? fMin : (fValue > fMax ? fMax : fValue);
+  if (fStep > 0.0f) {
+    fValue = fMin + floorf((fValue - fMin) / fStep + 0.5f) * fStep;
+    f32 fScale = powf(10.0f, (f32)_scSliderDecimals(pNode));
+    fValue = floorf(fValue * fScale + 0.5f) / fScale;
+    fValue = fValue > fMax ? fMax : fValue;
+  }
+  return fValue;
+}
+
+scInternal void
+_scSliderRects(scGui* pGui, scNode* pNode, RECT r, RECT* pTrack, RECT* pValue) {
+  s32 iValueW = _scPx(pGui, 64.0f);
+  s32 iGap    = _scPx(pGui, 12.0f);
+  *pValue = (RECT){ r.right - _scPx(pGui, 15.0f) - iValueW, r.top + _scPx(pGui, 6.0f),
+                    r.right - _scPx(pGui, 15.0f),           r.bottom - _scPx(pGui, 6.0f) };
+
+  s32 iAvail  = pValue->left - iGap - (r.left + _scPx(pGui, 15.0f));
+  s32 iTrackW = _scMax(_scPx(pGui, 40.0f), _scMin(_scPx(pGui, 150.0f), iAvail / 2));
+  s32 iCy     = (r.top + r.bottom) / 2;
+  *pTrack = (RECT){ pValue->left - iGap - iTrackW, iCy - _scPx(pGui, 2.0f),
+                    pValue->left - iGap,           iCy + _scPx(pGui, 2.0f) };
+}
+
+scInternal void
+_scSliderApply(scGui* pGui, scNode* pNode, f32 fRaw) {
+  f32* pValue = pNode->u.slider.pValue;
+  if (!pValue) {
+    return;
+  }
+  f32 fNew = _scSliderSnap(pNode, fRaw);
+  if (fNew == *pValue) {
+    return;
+  }
+  *pValue = fNew;
+
+  void (*pfnChange)(f32 fValue, s32 iParam) = pNode->u.slider.pfnChange;
+  s32 iParam = pNode->u.slider.iParam;
+  _scInvalidateNode(pGui, pNode);
+  if (pfnChange) {
+    pfnChange(fNew, iParam);
+  }
+}
+
+scInternal void
+_scSliderApplyFromX(scGui* pGui, scNode* pNode, s32 iX) {
+  RECT rcTrack, rcValue;
+  _scSliderRects(pGui, pNode, _scScreenRect(pNode), &rcTrack, &rcValue);
+  f32 fWidth = (f32)(rcTrack.right - rcTrack.left);
+  f32 fFrac  = fWidth > 0.0f ? (f32)(iX - rcTrack.left) / fWidth : 0.0f;
+  fFrac = fFrac < 0.0f ? 0.0f : (fFrac > 1.0f ? 1.0f : fFrac);
+  _scSliderApply(pGui, pNode, pNode->u.slider.fMin + fFrac * (pNode->u.slider.fMax - pNode->u.slider.fMin));
+}
+
+scInternal void
+_scBeginEdit(scGui* pGui, scNode* pNode) {
+  f32 fValue = pNode->u.slider.pValue ? *pNode->u.slider.pValue : pNode->u.slider.fMin;
+  pGui->pEditing = pNode;
+  swprintf_s(pGui->wszEdit, ARRAYSIZE(pGui->wszEdit), L"%.*f", _scSliderDecimals(pNode), fValue);
+  pGui->nEdit      = lstrlenW(pGui->wszEdit);
+  pGui->bEditFresh = true;
+  _scInvalidateNode(pGui, pNode);
+}
+
+scInternal void
+_scEndEdit(scGui* pGui, bool bCommit) {
+  scNode* pNode = pGui->pEditing;
+  if (!pNode) {
+    return;
+  }
+  pGui->pEditing = NULL;
+  _scInvalidateNode(pGui, pNode);
+
+  if (!bCommit || pGui->nEdit == 0) {
+    return;
+  }
+  wchar_t* pEnd = NULL;
+  double dValue = wcstod(pGui->wszEdit, &pEnd);
+  if (pEnd == pGui->wszEdit) {
+    return;
+  }
+  _scSliderApply(pGui, pNode, (f32)dValue);
+  if (pGui->host.pfnValueChanged) {
+    pGui->host.pfnValueChanged(pGui->host.pUser);
+  }
+}
+
+scInternal void
+_scSliderMouseDown(scGui* pGui, scNode* pNode, POINT pt) {
+  bool  bCtrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+  DWORD dwNow = GetTickCount();
+  bool  bDouble = pGui->pLastClick == pNode &&
+                  dwNow - pGui->dwLastClickTime <= GetDoubleClickTime() &&
+                  abs(pt.x - pGui->ptLastClick.x) <= GetSystemMetrics(SM_CXDOUBLECLK) / 2 &&
+                  abs(pt.y - pGui->ptLastClick.y) <= GetSystemMetrics(SM_CYDOUBLECLK) / 2;
+
+  pGui->pLastClick      = bDouble ? NULL : pNode;
+  pGui->dwLastClickTime = dwNow;
+  pGui->ptLastClick     = pt;
+
+  if (bCtrl || bDouble) {
+    _scBeginEdit(pGui, pNode);
+    return;
+  }
+
+  RECT rcTrack, rcValue;
+  _scSliderRects(pGui, pNode, _scScreenRect(pNode), &rcTrack, &rcValue);
+  RECT rcHit = { rcTrack.left - _scPx(pGui, 8.0f), _scScreenRect(pNode).top, rcTrack.right + _scPx(pGui, 8.0f), _scScreenRect(pNode).bottom };
+  if (PtInRect(&rcHit, pt)) {
+    pGui->pSliding = pNode;
+    _scCapture(pGui, true);
+    _scSliderApplyFromX(pGui, pNode, pt.x);
+  }
+}
+
+//------------------------------------------------------------------------
 // Drawing
 //------------------------------------------------------------------------
 scInternal void
@@ -849,7 +1021,7 @@ _scDrawLabel(scGui* pGui, HDC hDC, scNode* pNode, RECT r) {
   } else if (pNode->bWrap) {
     DrawTextW(hDC, pNode->wszText, -1, &r, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
   } else {
-    TextOutW(hDC, r.left, r.top, pNode->wszText, lstrlenW(pNode->wszText));
+    DrawTextW(hDC, pNode->wszText, -1, &r, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
   }
 }
 
@@ -881,7 +1053,8 @@ _scDrawButton(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
 
   SelectObject(hDC, t->hFont);
   SetTextColor(hDC, t->dwText);
-  DrawTextW(hDC, pNode->wszText, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+  RECT rText = { r.left + _scPx(pGui, 8.0f), r.top, r.right - _scPx(pGui, 8.0f), r.bottom };
+  DrawTextW(hDC, pNode->wszText, -1, &rText, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 }
 
 scInternal void
@@ -889,7 +1062,7 @@ _scDrawLink(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
   scGuiTheme* t = &pGui->theme;
   SelectObject(hDC, t->hFont);
   SetTextColor(hDC, bHovered ? t->dwAccent : t->dwTextFaint);
-  DrawTextW(hDC, pNode->wszText, -1, &r, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+  DrawTextW(hDC, pNode->wszText, -1, &r, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 }
 
 scInternal void
@@ -910,7 +1083,8 @@ _scDrawTab(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
 
   SelectObject(hDC, bActive ? t->hBoldFont : t->hFont);
   SetTextColor(hDC, bActive ? t->dwText : t->dwTextDim);
-  TextOutW(hDC, r.left + _scPx(pGui, 15.0f), r.top + _scPx(pGui, 7.0f), pNode->wszText, lstrlenW(pNode->wszText));
+  RECT rText = { r.left + _scPx(pGui, 15.0f), r.top + _scPx(pGui, 7.0f), r.right - _scPx(pGui, 8.0f), r.bottom };
+  DrawTextW(hDC, pNode->wszText, -1, &rText, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 }
 
 scInternal void
@@ -940,7 +1114,8 @@ _scDrawToggle(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
 
   SelectObject(hDC, t->hFont);
   SetTextColor(hDC, t->dwText);
-  TextOutW(hDC, r.left + _scPx(pGui, 15.0f), r.top + _scPx(pGui, 10.0f), pNode->wszText, lstrlenW(pNode->wszText));
+  RECT rText = { r.left + _scPx(pGui, 15.0f), r.top + _scPx(pGui, 10.0f), pill.left - _scPx(pGui, 10.0f), r.bottom };
+  DrawTextW(hDC, pNode->wszText, -1, &rText, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 }
 
 scInternal void
@@ -964,7 +1139,8 @@ _scDrawDropdown(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
   SelectObject(hDC, t->hFont);
   SetTextColor(hDC, t->dwText);
   if (!bCompact) {
-    TextOutW(hDC, r.left + _scPx(pGui, 15.0f), r.top + _scPx(pGui, 10.0f), pNode->wszText, lstrlenW(pNode->wszText));
+    RECT rLabel = { r.left + _scPx(pGui, 15.0f), r.top + _scPx(pGui, 10.0f), box.left - _scPx(pGui, 10.0f), r.bottom };
+    DrawTextW(hDC, pNode->wszText, -1, &rLabel, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
   }
 
   s32 iSelected = pNode->u.dropdown.iSelected;
@@ -978,6 +1154,78 @@ _scDrawDropdown(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
 
   SetTextColor(hDC, t->dwTextDim);
   TextOutW(hDC, box.right - _scPx(pGui, 20.0f), box.top + _scPx(pGui, 5.0f), L"\x25BC", 1);
+}
+
+scInternal void
+_scDrawSlider(scGui* pGui, HDC hDC, scNode* pNode, RECT r, bool bHovered) {
+  scGuiTheme* t = &pGui->theme;
+  bool bEditing = pGui->pEditing == pNode;
+  bool bSliding = pGui->pSliding == pNode;
+
+  RECT rcTrack, rcValue;
+  _scSliderRects(pGui, pNode, r, &rcTrack, &rcValue);
+
+  f32 fMin   = pNode->u.slider.fMin;
+  f32 fRange = pNode->u.slider.fMax - fMin;
+  f32 fValue = pNode->u.slider.pValue ? *pNode->u.slider.pValue : fMin;
+  f32 fFrac  = fRange > 0.0f ? (fValue - fMin) / fRange : 0.0f;
+  fFrac = fFrac < 0.0f ? 0.0f : (fFrac > 1.0f ? 1.0f : fFrac);
+
+  wchar_t wszValue[32];
+  if (bEditing) {
+    wcscpy_s(wszValue, ARRAYSIZE(wszValue), pGui->wszEdit);
+  } else {
+    swprintf_s(wszValue, ARRAYSIZE(wszValue), L"%.*f", _scSliderDecimals(pNode), fValue);
+  }
+
+  SelectObject(hDC, t->hFont);
+  SIZE szText = { 0, 0 };
+  GetTextExtentPoint32W(hDC, wszValue, lstrlenW(wszValue), &szText);
+  s32 iTextRight = rcValue.right - _scPx(pGui, 6.0f);
+
+  s32 iThumbX  = rcTrack.left + (s32)(fFrac * (rcTrack.right - rcTrack.left));
+  f32 fTrackR  = (rcTrack.bottom - rcTrack.top) / 2.0f;
+  f32 fThumb   = 16.0f * pGui->fScale;
+  f32 fThumbY  = (r.top + r.bottom) / 2.0f - fThumb / 2.0f;
+
+  GpGraphics* pGraphics = gpGraphicsBegin(hDC);
+  gpFillRound(pGraphics, r, _scRoundRad(pGui), gpColor(bHovered || bSliding ? t->dwCardHover : t->dwCard, 255));
+  gpStrokeRound(pGraphics, r, _scRoundRad(pGui), gpColor(t->dwStrokeSoft, 255), 1.0f);
+
+  gpFillRound(pGraphics, rcTrack, fTrackR, gpColor(t->dwPillOff, 255));
+  if (iThumbX > rcTrack.left) {
+    RECT rcFill = { rcTrack.left, rcTrack.top, iThumbX, rcTrack.bottom };
+    gpFillRound(pGraphics, rcFill, fTrackR, gpColor(t->dwAccent, 255));
+  }
+  gpFillEllipse(pGraphics, iThumbX - fThumb / 2.0f, fThumbY, fThumb, fThumb,
+                gpColor(bSliding || bHovered ? t->dwAccentHover : t->dwAccent, 255));
+
+  if (bEditing) {
+    f32 fBoxRad = 4.0f * pGui->fScale;
+    gpFillRound(pGraphics, rcValue, fBoxRad, gpColor(t->dwBackground, 255));
+    gpStrokeRound(pGraphics, rcValue, fBoxRad, gpColor(t->dwAccent, 255), 1.5f);
+    if (pGui->bEditFresh && szText.cx > 0) {
+      RECT rcSel = { iTextRight - szText.cx - _scPx(pGui, 2.0f), rcValue.top + _scPx(pGui, 4.0f),
+                     iTextRight + _scPx(pGui, 2.0f),             rcValue.bottom - _scPx(pGui, 4.0f) };
+      gpFillRound(pGraphics, rcSel, 2.0f * pGui->fScale, gpColor(t->dwAccent, 110));
+    }
+  }
+  gpGraphicsEnd(pGraphics);
+
+  SetTextColor(hDC, t->dwText);
+  RECT rLabel = { r.left + _scPx(pGui, 15.0f), r.top + _scPx(pGui, 10.0f), rcTrack.left - _scPx(pGui, 10.0f), r.bottom };
+  DrawTextW(hDC, pNode->wszText, -1, &rLabel, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+  RECT rValue = { rcValue.left, rcValue.top, iTextRight, rcValue.bottom };
+  DrawTextW(hDC, wszValue, -1, &rValue, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+  if (bEditing && !pGui->bEditFresh) {
+    RECT rcCaret = { iTextRight + _scPx(pGui, 1.0f), rcValue.top + _scPx(pGui, 5.0f),
+                     iTextRight + _scPx(pGui, 2.0f) + 1,  rcValue.bottom - _scPx(pGui, 5.0f) };
+    HBRUSH hBrush = CreateSolidBrush(t->dwAccent);
+    FillRect(hDC, &rcCaret, hBrush);
+    DeleteObject(hBrush);
+  }
 }
 
 scInternal void
@@ -1062,6 +1310,7 @@ _scPaintNode(scGui* pGui, HDC hDC, scNode* pNode, s32 iOffY, const RECT* pClip) 
     case SC_NODE_LINK:     _scDrawLink    (pGui, hDC, pNode, r, bHovered); break;
     case SC_NODE_TAB:      _scDrawTab     (pGui, hDC, pNode, r, bHovered); break;
     case SC_NODE_TOGGLE:   _scDrawToggle  (pGui, hDC, pNode, r, bHovered); break;
+    case SC_NODE_SLIDER:   _scDrawSlider  (pGui, hDC, pNode, r, bHovered); break;
     case SC_NODE_DROPDOWN: _scDrawDropdown(pGui, hDC, pNode, r, bHovered); break;
     case SC_NODE_CUSTOM: {
       if (pNode->u.custom.pfnDraw) {
@@ -1222,6 +1471,11 @@ void scGuiMouseMove(scGui* pGui, POINT pt) {
     return;
   }
 
+  if (pGui->pSliding) {
+    _scSliderApplyFromX(pGui, pGui->pSliding, pt.x);
+    return;
+  }
+
   scNode* pPressed = pGui->pPressed;
   if (pPressed && pPressed->eType == SC_NODE_CUSTOM && pPressed->u.custom.pfnDrag &&
       (abs(pt.x - pGui->ptPress.x) > GetSystemMetrics(SM_CXDRAG) ||
@@ -1289,6 +1543,19 @@ void scGuiMouseDown(scGui* pGui, POINT pt) {
   }
   _scEnsureLayout(pGui);
 
+  if (pGui->pEditing) {
+    RECT rcTrack, rcValue;
+    _scSliderRects(pGui, pGui->pEditing, _scScreenRect(pGui->pEditing), &rcTrack, &rcValue);
+    if (PtInRect(&rcValue, pt)) {
+      return;
+    }
+    _scEndEdit(pGui, true);
+    if (!pGui->pRoot) {
+      return;
+    }
+    _scEnsureLayout(pGui);
+  }
+
   if (pGui->pExpanded) {
     scNode* pNode = pGui->pExpanded;
     scPopupGeom pg = _scPopupGeom(pGui, pNode);
@@ -1333,6 +1600,10 @@ void scGuiMouseDown(scGui* pGui, POINT pt) {
   }
 
   scNode* pHit = _scHit(pGui->pRoot, pt, 0);
+  if (pHit && pHit->eType == SC_NODE_SLIDER) {
+    _scSliderMouseDown(pGui, pHit, pt);
+    return;
+  }
   if (pHit) {
     pGui->pPressed = pHit;
     pGui->ptPress  = pt;
@@ -1349,6 +1620,15 @@ void scGuiMouseUp(scGui* pGui, POINT pt) {
     pGui->drag.bActive = false;
     _scCapture(pGui, false);
     _scInvalidate(pGui, NULL);
+    return;
+  }
+
+  if (pGui->pSliding) {
+    pGui->pSliding = NULL;
+    _scCapture(pGui, false);
+    if (pGui->host.pfnValueChanged) {
+      pGui->host.pfnValueChanged(pGui->host.pUser);
+    }
     return;
   }
 
@@ -1397,6 +1677,67 @@ void scGuiMouseWheel(scGui* pGui, POINT pt, s32 iNotches) {
   _scInvalidateNode(pGui, pScroller);
 }
 
+bool scGuiChar(scGui* pGui, wchar_t wc) {
+  if (!pGui || !pGui->pEditing) {
+    return false;
+  }
+  if (wc == L',') {
+    wc = L'.';
+  }
+  bool bAllowed = (wc >= L'0' && wc <= L'9') || wc == L'.' || wc == L'-';
+  if (!bAllowed) {
+    return true;
+  }
+  if (pGui->bEditFresh) {
+    pGui->nEdit      = 0;
+    pGui->bEditFresh = false;
+  }
+  if (pGui->nEdit < (s32)ARRAYSIZE(pGui->wszEdit) - 1) {
+    pGui->wszEdit[pGui->nEdit++] = wc;
+    pGui->wszEdit[pGui->nEdit]   = 0;
+  }
+  _scInvalidateNode(pGui, pGui->pEditing);
+  return true;
+}
+
+bool scGuiKeyDown(scGui* pGui, u32 uVk) {
+  if (!pGui || !pGui->pEditing) {
+    return false;
+  }
+  switch (uVk) {
+    case VK_RETURN:
+      _scEndEdit(pGui, true);
+      return true;
+    case VK_ESCAPE:
+      _scEndEdit(pGui, false);
+      return true;
+    case VK_BACK:
+      if (pGui->bEditFresh) {
+        pGui->nEdit      = 0;
+        pGui->bEditFresh = false;
+      } else if (pGui->nEdit > 0) {
+        --pGui->nEdit;
+      }
+      pGui->wszEdit[pGui->nEdit] = 0;
+      _scInvalidateNode(pGui, pGui->pEditing);
+      return true;
+    case VK_DELETE:
+      pGui->nEdit      = 0;
+      pGui->bEditFresh = false;
+      pGui->wszEdit[0] = 0;
+      _scInvalidateNode(pGui, pGui->pEditing);
+      return true;
+    default:
+      return false;
+  }
+}
+
+void scGuiFocusLost(scGui* pGui) {
+  if (pGui) {
+    _scEndEdit(pGui, true);
+  }
+}
+
 bool scGuiHitClickable(scGui* pGui, POINT pt) {
   if (!pGui || !pGui->pRoot || pGui->pExpanded) {
     return false;
@@ -1411,6 +1752,7 @@ void scGuiCaptureLost(scGui* pGui) {
     return;
   }
   pGui->drag.bActive = false;
+  pGui->pSliding     = NULL;
   pGui->pPressed     = NULL;
 }
 
@@ -1455,6 +1797,12 @@ void scGuiSetRoot(scGui* pGui, scNode* pRoot) {
     pGui->drag.bActive = false;
     _scCapture(pGui, false);
   }
+  if (pGui->pSliding) {
+    pGui->pSliding = NULL;
+    _scCapture(pGui, false);
+  }
+  pGui->pEditing        = NULL;
+  pGui->pLastClick      = NULL;
   pGui->pPressed        = NULL;
   pGui->pHover          = NULL;
   pGui->pHotScroll      = NULL;
